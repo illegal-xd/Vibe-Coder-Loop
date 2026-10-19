@@ -1,0 +1,39 @@
+name: skill-authoring
+version: "1.2.0"
+type: protocol-skill
+
+description: >
+  Skill 维护协议：骨架化 / canonical source 分类 / 内容下沉与 fallback /
+  残留验证纪律。供工程 Agent Skill 的维护任务作为协议事实源引用。
+
+complexity:
+  min: 0
+  max: 2
+  levels:
+    - level: 0
+      name: 协议查阅
+      loop: quick
+      stages: [read]
+
+dependencies:
+  required: []
+  optional_integrations: []
+
+memory:
+  read: []
+  write: []
+  ttl: {}
+
+priority:
+  safety: high
+  correctness: high
+  maintainability: medium
+
+cost:
+  token: low
+  loop_max: 1
+
+architecture:
+  governance-protocol: 骨架化/canonical-source/下沉/fallback/残留验证纪律/自检脚本架构
+  smoke-check-core: 检查逻辑唯一事实源（被 source 的库）；实例与模板只做配置薄包装
+  host-binding: 维护任务激活时机与具体映射表归宿主 Skill 的 skill-maintenance profile

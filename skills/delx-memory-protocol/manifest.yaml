@@ -1,0 +1,43 @@
+name: delx-memory-protocol
+version: "1.2.0"
+type: protocol-skill
+
+description: >
+  通用记忆协议：记忆操作授权模型（增删改查常驻授权）/ 三层体系 / 命名空间 /
+  Tag-scope / TTL / Relevance / supersession / Consolidation / 跨项目迁移。
+  供工程 Agent Skill 作为协议事实源引用。
+
+complexity:
+  min: 0
+  max: 2
+  levels:
+    - level: 0
+      name: 协议查阅
+      loop: quick
+      stages: [read]
+
+dependencies:
+  required:
+    - delx-memory   # 协议假定后端存在；后端缺失 → 协议仅可查阅、不可执行
+  optional_integrations: []
+
+memory:
+  # 本 Skill 自身不持有运行时数据条目；dashboard / rollback-point 归宿主 Skill。
+  read:
+    - protocol
+    - architecture
+  write: []
+  ttl: {}
+
+priority:
+  safety: high
+  correctness: high
+  maintainability: medium
+
+cost:
+  token: low
+  loop_max: 1
+
+architecture:
+  protocol: 通用记忆协议（授权模型/三层/命名空间/TTL/Relevance/supersession/Consolidation/迁移）
+  host-binding: 出口时机与运行时数据归宿主 Skill（如 vibe-coder-loop）

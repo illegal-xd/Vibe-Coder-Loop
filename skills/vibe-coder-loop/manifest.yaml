@@ -1,0 +1,158 @@
+name: vibe-coder-loop
+version: "1.22.1"
+type: engineering-agent
+
+description: >
+  Vibe Coder Loop 工程循环 Skill。承载完整工程流程：
+  Intent → Preflight → Decision → Router → Clarify → Design → Plan →
+  Code → Test → Review → Reflection → Memory Evolution。
+  采用 profiles 任务入口 + kernel + engine + policy + learning 分层，按需加载。
+  完整迭代历史见 CHANGELOG.md（唯一事实源，rule:skill-iteration-manifest 规则 1）。
+
+complexity:
+  # levels.stages 为「Level → 激活阶段」的等价机器副本；唯一事实源 = engine/complexity-gate.md「Loop Depth」矩阵，
+  # 冲突时以 engine/ 为准（见 SKILL.md「任务入口路由」）。字段供外部工具读取，勿单独修改。
+  min: 0
+  max: 4
+  levels:
+    - level: 0
+      name: 文字修改
+      loop: quick
+      stages: [S1, S2, S4, S8, S10, S13]  # L0 的 S10 为「文档子集 4 项」内联（见 complexity-gate 矩阵）
+    - level: 1
+      name: 单文件修改
+      loop: quick
+      stages: [S1, S2, S4, S8, S9, S10, S13]
+    - level: 2
+      name: 功能修改
+      loop: standard
+      stages: [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13]
+    - level: 3
+      name: 架构变化
+      loop: full
+      stages: [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13]
+    - level: 4
+      name: 系统级变更
+      loop: full
+      stages: [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13]
+
+dependencies:
+  # 核心流程零外部依赖：仅标准 read/grep 文件工具 + 本目录 markdown 协议文件。
+  # 环境缺失任一可选集成 → 对应能力降级（记忆步骤跳过 / memory_search+Read 替代），循环不受阻。
+  required: []
+  optional_integrations:
+    # 「可选」指循环不因缺失而阻断，不指能力可省略——缺失时必须显式标注降级：
+    - delx-memory   # 记忆体系（三层/回写/仪表盘）。缺失 → skill:rules/* 规则条目不可用（skill:* 全量以 memory_list(prefix="skill:") 实时核对），对应规则仅剩文件内摘要可执行（governance.md 类型 C）→ 必须标注降级
+    - codegraph     # 代码图谱（符号定位/影响分析）；缺失 → 标注后降级 memory_search + Read
+    - skill-authoring  # 自检 core（scripts/smoke-check-core.sh——S13 残留验证的检查逻辑唯一事实源）。缺失 → smoke-check 显式 exit 3 并给 [next]，不静默跳过；修复训练外的技能目录时须 SMOKE_CORE 指定 core 路径
+
+memory:
+  read:
+    - project
+    - lesson
+    - reflection
+    - pattern
+    - principle
+    - preference
+    - stale
+  write:
+    # 本列表 = 技能自身写入范围（lifecycle.md 路径 A/B）；路径 C 的项目级 key（project:* / qa:* / external_ref:* / archive:* 等）见 lifecycle.md「记忆保存（三条路径）」
+    - reflection
+    - lesson
+    - pattern
+    - principle
+    - metrics
+    - preference
+  ttl:
+    lesson: 7776000         # 90 天
+    reflection: 15552000    # 180 天
+    pattern: 31536000       # 365 天
+    principle: 0            # 无限（不自动过期）
+    metrics: 15552000       # 180 天
+
+priority:
+  safety: high
+  security: high
+  correctness: medium
+  maintainability: medium
+  performance: low
+  style: low
+
+# 可调参数声明：以下阈值是项目无关的缺省参考值，不是契约。
+# 项目应在自己的工程规范/lint 配置中覆盖它们；未覆盖时按此缺省执行。
+# 修改缺省值不构成技能迭代（不迭代版本号）。
+tunable_parameters:
+  code_style:                # 见 policy/safety.md §3 Signal 项 #1/#2/#3
+    function_lines_default: 30
+    file_lines_default: 300
+    params_default: 4
+  retrieval_caps_default:     # 见 learning/memory/retrieval.md「检索量红线」
+    search_results_per_call: 5
+    searches_per_loop: 5
+    codegraph_lines: 200
+    read_lines_per_file: 300
+  safe_mode_triggers:         # 见 kernel.md §5（项目可按风险偏好调宽/调严）
+    files_touched: 10
+    consecutive_loops: 2
+    hard_violation_repeats: 3
+    failure_type_share: 0.15
+    loops_vs_avg_ratio: 1.5
+  memory_ttl_seconds:         # 见本文件 memory.ttl；仅集中镜像供查阅，事实源仍为 memory.ttl
+    lesson: 7776000
+    reflection: 15552000
+    pattern: 31536000
+    principle: 0
+  promotion_thresholds:       # 见 learning/memory/architecture.md + promotion.md
+    lesson_to_pattern: 3
+    pattern_to_principle: 5
+    cross_project_for_principle: 2
+
+cost:
+  # 描述性元数据（供外部工具读取）；轮次上限的运行期事实源 = kernel.md §7（loop_max 与之保持一致）
+  # ⚠️ 只允许描述性成本标签，禁止写入 max_tokens_per_phase 一类运行时 token 限制（Context 预算归 Runtime）
+  token: medium
+  loop_max: 3
+  timeout_per_loop: 300000  # 5 分钟
+  # profiles: 各类任务的描述性成本。唯一事实源 = 本块（不写入各 profile 文件，避免 6 处漂移）
+  # 取值只是量级标签（low/medium/high），不参与任何运行时判定，也不构成阈值
+  profiles:
+    skill-maintenance: {token: medium, load_profile: light,  complexity: medium}
+    debugging:         {token: medium, load_profile: light,  complexity: medium}
+    planning:          {token: high,   load_profile: heavy,  complexity: high}
+    refactoring:       {token: medium, load_profile: medium, complexity: high}
+    review:            {token: low,    load_profile: light,  complexity: low}
+    coding:            {token: medium, load_profile: medium, complexity: medium}
+
+stages:
+  S0:  idle
+  S1:  intent
+  S2:  preflight
+  S3:  decision
+  S4:  router
+  S5:  clarify
+  S6:  design
+  S7:  plan
+  S8:  code
+  S9:  test
+  S10: review
+  S11: reflection
+  S12: memory-evolution
+  S13: complete
+  S14: safe-mode
+
+# 只保留改变行为的角色；其余阶段名为 Phase Label（Intent/Decision/Reflection/Memory Evolution）
+roles:
+  - architect
+  - builder
+  - verifier
+  - critic
+
+architecture:
+  profiles: 任务入口路由（任务类型 → 需加载模块聚合，不复制规则内容）
+  kernel: R0 核心不可变原则
+  engine: 什么时候做（状态机/复杂度分级/路由/转移）
+  rules:  怎么做（格式模板/检查清单/输出规范）
+  policy: 不能做什么（安全约束/生命周期/置信度/优先级）
+  learning: 怎么进化（反思/记忆/演化/指标；memory/ 分片 + skill-metrics）
+  tools:  确定性执行（backup/memory_tool.py：preflight 加载计划 / artifact 结果外置 / touch 消费回写 / metrics 指标聚合 / check-keys 映射校验 / backup·restore·verify·list 快照）
+  load_plan:  加载计划的机器可读副本（load_plan.json：core/levels/profiles + level_stages 阶段集 + stage_sections 阶段→章节映射；人读事实源 = SKILL.md 两表，冲突以 SKILL.md 为准）

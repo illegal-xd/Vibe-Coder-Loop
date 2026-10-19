@@ -1,0 +1,5 @@
+# 忽略时间戳历史快照与写前快照，仅保留 latest（跨机器同步用）
+# 快照含本机绝对路径（payload.db 字段），不适合进版本库；且由 backup 自动生成，无需版本化
+skill_memory_*.json
+skill_memory_*.json.gz
+!skill_memory_latest.json

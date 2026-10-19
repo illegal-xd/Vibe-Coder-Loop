@@ -1,0 +1,457 @@
+{
+  "_doc": "Preflight 加载计划的机器可读副本。用途：memory_tool.py preflight 一次调用返回「加载清单 + 成本 + 命中章节（含实际行号）+ 记忆候选」，替代原先 N 次导航读取。",
+  "_canonical": "人读事实源 = SKILL.md「加载时机索引」+「分级加载」表。本文件是等价机器副本（同 manifest.yaml complexity.levels 的先例），冲突时以 SKILL.md 为准。scripts/smoke-check.sh 校验：① 本文件所有路径存在；② 每个路径均被 SKILL.md 提及；③ stage_sections 的每个匹配串都能在该文件中命中真实章节标题（防改名后成死指针）。 **口径**：人读表（SKILL.md）↔ 机器副本为「机器 ⊆ 人读允许范围」关系——过读侧允许超集；触发式文件（如触发命中才读的 learning/memory/advanced.md）可合法缺席于本文件。校验只做「路径存在 + 被 SKILL.md 提及 + 匹配串命中真实 H2 + 阶段值域合法」，**不承诺双向等价**。",
+  "_design": "章节索引（H2/H3 + 实际行号）与「命中节」均由 preflight 在运行时扫描生成，不写死行号 —— 避免行号漂移导致死指针。stage_sections 只存「阶段 → 章节标题子串」，不存行号。",
+  "core": [
+    "kernel.md",
+    "engine/state-machine.md",
+    "engine/transition.md"
+  ],
+  "_core_note": ".state.md 不在加载计划内——它由 S1 恢复协议单独读取（engine/state-machine.md「Workflow Checkpoint」），且属实例文件不计入规则成本口径",
+  "always_whole": [
+    "kernel.md"
+  ],
+  "_always_whole_note": "R0 宪法层永不按节裁剪——安全红线不冒漏读风险",
+  "levels": {
+    "0": [
+      "rules/intent.md",
+      "rules/code.md",
+      "engine/complexity-gate.md",
+      "engine/router.md",
+      "policy/safety.md",
+      "policy/confidence.md",
+      "learning/memory/lifecycle.md",
+      "learning/memory/retrieval.md",
+      "learning/skill-metrics.md"
+    ],
+    "0-doc": [
+      "rules/intent.md",
+      "engine/complexity-gate.md",
+      "engine/router.md",
+      "policy/safety.md",
+      "policy/confidence.md",
+      "learning/memory/lifecycle.md",
+      "learning/memory/retrieval.md",
+      "learning/skill-metrics.md"
+    ],
+    "1": [
+      "rules/intent.md",
+      "rules/code.md",
+      "rules/test.md",
+      "rules/review.md",
+      "engine/complexity-gate.md",
+      "engine/router.md",
+      "policy/safety.md",
+      "policy/confidence.md",
+      "learning/memory/lifecycle.md",
+      "learning/memory/retrieval.md",
+      "learning/skill-metrics.md"
+    ],
+    "2": [
+      "rules/intent.md",
+      "rules/design.md",
+      "rules/plan.md",
+      "rules/code.md",
+      "rules/test.md",
+      "rules/review.md",
+      "engine/complexity-gate.md",
+      "engine/router.md",
+      "policy/safety.md",
+      "policy/confidence.md",
+      "policy/lifecycle.md",
+      "policy/priority.md",
+      "learning/reflection.md",
+      "learning/skill-metrics.md",
+      "learning/memory/promotion.md",
+      "learning/memory/lifecycle.md",
+      "learning/memory/retrieval.md"
+    ],
+    "3": [
+      "rules/intent.md",
+      "rules/design.md",
+      "rules/plan.md",
+      "rules/code.md",
+      "rules/test.md",
+      "rules/review.md",
+      "rules/orchestration.md",
+      "engine/complexity-gate.md",
+      "engine/router.md",
+      "engine/skill-routing.md",
+      "policy/safety.md",
+      "policy/confidence.md",
+      "policy/lifecycle.md",
+      "policy/priority.md",
+      "learning/reflection.md",
+      "learning/evolution.md",
+      "learning/skill-metrics.md",
+      "learning/memory.md",
+      "learning/memory/architecture.md",
+      "learning/memory/promotion.md",
+      "learning/memory/lifecycle.md",
+      "learning/memory/retrieval.md"
+    ],
+    "4": [
+      "rules/intent.md",
+      "rules/design.md",
+      "rules/plan.md",
+      "rules/code.md",
+      "rules/test.md",
+      "rules/review.md",
+      "rules/orchestration.md",
+      "engine/complexity-gate.md",
+      "engine/router.md",
+      "engine/skill-routing.md",
+      "policy/safety.md",
+      "policy/confidence.md",
+      "policy/lifecycle.md",
+      "policy/priority.md",
+      "learning/reflection.md",
+      "learning/evolution.md",
+      "learning/skill-metrics.md",
+      "learning/memory.md",
+      "learning/memory/architecture.md",
+      "learning/memory/promotion.md",
+      "learning/memory/lifecycle.md",
+      "learning/memory/retrieval.md"
+    ]
+  },
+  "level_stages": {
+    "_note": "等价机器副本（唯一事实源 = engine/complexity-gate.md「Loop Depth」矩阵 + manifest.yaml complexity.levels.stages）。S13 对所有 Level 补入——轮次收尾清单（回写 + 仪表盘 + Checkpoint）每轮都执行，漏掉会静默跳过收尾义务。S10 对 L0/L0-doc 补入——其 S10 以「Level 0 文档修改约束子集」内联执行（矩阵 L0 列），需要载入 safety.md §5。 **条件触发的落法**（matrix 中 S3 四列、S11 于 L2–L4 标注为「条件触发」）：机器副本按其「是否可能执行」收录——L0/L1 不收 S3（条件命中时用 `--stage S3` 补回，恢复路径见 SKILL.md），L2–L4 收 S3/S11 为常载（过读侧 fail-safe）。`0-doc` 为 L0 的文档变体，manifest complexity.levels 只列 0–4，不另设条目（合法值，非不一致）。",
+    "0": [
+      "S1",
+      "S2",
+      "S4",
+      "S8",
+      "S10",
+      "S13"
+    ],
+    "0-doc": [
+      "S1",
+      "S2",
+      "S4",
+      "S8",
+      "S10",
+      "S13"
+    ],
+    "1": [
+      "S1",
+      "S2",
+      "S4",
+      "S8",
+      "S9",
+      "S10",
+      "S13"
+    ],
+    "2": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8",
+      "S9",
+      "S10",
+      "S11",
+      "S12",
+      "S13"
+    ],
+    "3": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8",
+      "S9",
+      "S10",
+      "S11",
+      "S12",
+      "S13"
+    ],
+    "4": [
+      "S1",
+      "S2",
+      "S3",
+      "S4",
+      "S5",
+      "S6",
+      "S7",
+      "S8",
+      "S9",
+      "S10",
+      "S11",
+      "S12",
+      "S13"
+    ]
+  },
+  "profiles": {
+    "coding": [
+      "profiles/coding.md"
+    ],
+    "debugging": [
+      "profiles/debugging.md",
+      "references/debug-mode.md"
+    ],
+    "refactoring": [
+      "profiles/refactoring.md"
+    ],
+    "planning": [
+      "profiles/planning.md",
+      "rules/orchestration.md"
+    ],
+    "review": [
+      "profiles/review.md"
+    ],
+    "skill-maintenance": [
+      "profiles/skill-maintenance.md",
+      "references/governance.md"
+    ]
+  },
+  "stage_sections": {
+    "_note": "阶段 → 章节标题子串（子串匹配 H2 标题）。**未列出的文件按整文件读**（默认全量，不冒漏读风险）。某个阶段的**任一**子串未命中真实章节标题 → 该文件回退整文件（fail-safe；粒度是「任一」——只在全部未命中时回退会把部分失效变成静默丢节）。engine/transition.md 不在此列——其 H2 标题自带阶段号，由代码按 `S<n>` 机械匹配 + `VC 错误码族` 恒含。 前言（首个 H2 之前）不属任何命中节——partial 模式下 preflight 会显式标注（仅当该前言存在实质行），需要时按 read 补读。",
+    "engine/state-machine.md": {
+      "S1": [
+        "状态定义",
+        "Workflow Checkpoint",
+        "防跳过规则"
+      ],
+      "S2": [
+        "防跳过规则"
+      ],
+      "S4": [
+        "状态转移图",
+        "防跳过规则"
+      ],
+      "S8": [
+        "循环计数规则",
+        "角色约束",
+        "上下文压缩",
+        "防跳过规则"
+      ],
+      "S9": [
+        "角色约束",
+        "防跳过规则"
+      ],
+      "S10": [
+        "循环计数规则",
+        "角色约束",
+        "防跳过规则",
+        "异常路径收敛表"
+      ],
+      "S11": [
+        "防跳过规则"
+      ],
+      "S12": [
+        "防跳过规则"
+      ],
+      "S13": [
+        "Workflow Checkpoint",
+        "防跳过规则"
+      ]
+    },
+    "rules/intent.md": {
+      "S1": [
+        "S1：Intent"
+      ],
+      "S3": [
+        "S3：Decision"
+      ]
+    },
+    "policy/safety.md": {
+      "_note": "§5 恒载于 S8/S10：L0 出口内联检查逐字执行 §5 内「Level 0 文档修改约束子集」四项（transition.md L0 出口引用），漏读 = 裁掉 R1 级检查表（审查 P0）。",
+      "S2": [
+        "3. 约束分级",
+        "4. 归档注释格式"
+      ],
+      "S3": [
+        "1. 不可逆操作清单",
+        "2. 冲突仲裁协议",
+        "5. 子 agent 首步加载包"
+      ],
+      "S8": [
+        "3. 约束分级",
+        "4. 归档注释格式",
+        "5. 子 agent 首步加载包"
+      ],
+      "S10": [
+        "3. 约束分级",
+        "5. 子 agent 首步加载包",
+        "6. 子 agent 安全责任"
+      ],
+      "S12": [
+        "3. 约束分级"
+      ]
+    },
+    "policy/confidence.md": {
+      "S2": [
+        "Confidence 三档",
+        "Evidence 五级"
+      ],
+      "S3": [
+        "联合标注格式",
+        "何时需要标注",
+        "Confidence 与 Evidence 的关系"
+      ],
+      "S8": [
+        "Confidence 三档",
+        "Evidence 五级",
+        "联合标注格式",
+        "何时需要标注",
+        "判定口径"
+      ],
+      "S9": [
+        "Evidence 五级"
+      ],
+      "S10": [
+        "Confidence 三档",
+        "Evidence 五级",
+        "联合标注格式",
+        "何时需要标注",
+        "判定口径"
+      ]
+    },
+    "policy/lifecycle.md": {
+      "S2": [
+        "适用范围",
+        "与约束分级的关系"
+      ],
+      "S8": [
+        "生命周期状态机",
+        "适用范围",
+        "各阶段操作规范"
+      ],
+      "S10": [
+        "各阶段操作规范",
+        "与约束分级的关系",
+        "子 agent 责任"
+      ],
+      "S12": [
+        "记忆条目删除义务",
+        "TTL 兜底机制"
+      ]
+    },
+    "policy/priority.md": {
+      "S3": [
+        "2. Skill Conflict",
+        "3. Rule Hierarchy",
+        "3.5 记忆裁决边界",
+        "5. 冲突解决示例"
+      ],
+      "S12": [
+        "准入与权限边界"
+      ]
+    },
+    "learning/memory/retrieval.md": {
+      "S2": [
+        "工具实际能力",
+        "上下文感知路由表",
+        "任务类型 → 规则/经验路由表",
+        "检索量红线",
+        "Memory ≠ Context 边界"
+      ],
+      "S4": [
+        "检索量红线",
+        "Memory ≠ Context 边界"
+      ],
+      "S8": [
+        "CodeGraph 专用触发条件",
+        "delx-memory vs CodeGraph 分工",
+        "检索量红线",
+        "Memory ≠ Context 边界"
+      ]
+    },
+    "learning/memory/lifecycle.md": {
+      "S1": [
+        "用户偏好记忆系统"
+      ],
+      "S2": [
+        "记忆生命周期管理"
+      ],
+      "S8": [
+        "记忆写入",
+        "记忆生命周期管理"
+      ],
+      "S9": [
+        "Test→Lesson 学习闭环"
+      ],
+      "S10": [
+        "记忆写入"
+      ],
+      "S12": [
+        "记忆写入",
+        "记忆生命周期管理",
+        "用户偏好记忆系统"
+      ],
+      "S13": [
+        "Quick Loop 记忆闭环",
+        "记忆生命周期管理"
+      ]
+    },
+    "learning/memory/promotion.md": {
+      "S11": [
+        "经验质量审计",
+        "去重协议",
+        "Pattern Fingerprint 算法"
+      ],
+      "S12": [
+        "S12 收尾",
+        "经验质量审计",
+        "去重协议",
+        "Merge 治理协议",
+        "Pattern Fingerprint 算法"
+      ]
+    },
+    "learning/reflection.md": {
+      "S11": [
+        "定位",
+        "触发判定",
+        "Reflection Card 产出",
+        "质量审计",
+        "降级条款"
+      ],
+      "S12": [
+        "与 Memory Evolution 的衔接"
+      ]
+    },
+    "learning/skill-metrics.md": {
+      "S12": [
+        "分工总览"
+      ],
+      "S13": [
+        "核心机制",
+        "系统状态仪表盘",
+        "token 报告口径"
+      ],
+      "S10": [
+        "核心机制"
+      ]
+    },
+    "learning/evolution.md": {
+      "S12": [
+        "核心原则",
+        "演化流程",
+        "触发条件",
+        "提案与确认",
+        "经验类型分类",
+        "协议有效性验收"
+      ]
+    }
+  },
+  "index_min_lines": 120,
+  "_unmapped_ok": {
+    "_note": "章节级映射覆盖度白名单：被映射文件的每个 H2 必须（a）命中某阶段映射 or（b）在此显式列出理由——防结构性新增/改名后静默漏读。机械校验位于 backup/test_memory_tool.py（随 smoke-check SELFTEST 每次运行）。白名单条目自身失效（改名/删除）同样报错，防僵尸白名单。",
+    "policy/priority.md :: 1. Global Priority — 价值维度（指针）": "背景指针节；裁决事实源 §2/§3 已映射",
+    "policy/priority.md :: 4. 三层优先级关系": "背景关系节；裁决事实源 §2/§3 已映射",
+    "learning/memory/retrieval.md :: 性能优化": "调优参考，按需",
+    "learning/memory/promotion.md :: 自动提升逻辑（Memory 系统职责，非 Agent 每轮动作）": "系统职责，非 Agent 动作",
+    "learning/memory/promotion.md :: 按需协议（下沉 `advanced.md`，默认不加载）": "显式声明默认不加载",
+    "learning/memory/promotion.md :: 进化防抖：观察期协议（Observation Window，系统职责）": "正文已与 §S12 收尾「系统/实现方参考」口径对齐；触发由 S12[2]/S13 检查时机驱动，非每轮动作",
+    "learning/memory/promotion.md :: Memory Consolidation（周期聚合，按需）": "周期性按需",
+    "learning/skill-metrics.md :: 周期 Metrics 输出摘要格式（周期落库时按需）": "标题自声明按需",
+    "learning/skill-metrics.md :: 闭环原则": "背景原则节"
+  }
+}
