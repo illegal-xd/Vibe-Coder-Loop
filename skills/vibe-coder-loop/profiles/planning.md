@@ -25,13 +25,12 @@ status: active
 
 Required:
 - kernel.md + policy/safety.md + policy/priority.md（冲突仲裁优先级）
-- engine/state-machine.md（S5-S7 出口）+ engine/transition.md
+- engine/state-machine.md（S5-S7 出口）+ engine/transition.md + engine/complexity-gate.md + engine/router.md（S4 分级 + Level 3/4 高风险升级判定）
 - rules/intent.md（S1）+ rules/design.md（S6）+ rules/plan.md（S7 五要素 Step + 编排决策）
 - engine/skill-routing.md（**仅存在能力缺口的 Step** 才绑定能力载体）
 
 Optional:
 - rules/orchestration.md（多 subagent 编排决策 + 角色人格化映射）
-- engine/complexity-gate.md（Level 3/4 高风险升级判定）
 - rules/review.md（规划产出物走 Review 时）
 - learning/memory/architecture.md（跨模块记忆网络挂载，S2）
 

@@ -37,12 +37,14 @@ complexity:
       stages: [S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13]
 
 dependencies:
-  # 核心流程零外部依赖：仅标准 read/grep 文件工具 + 本目录 markdown 协议文件。
-  # 环境缺失任一可选集成 → 对应能力降级（记忆步骤跳过 / memory_search+Read 替代），循环不受阻。
-  required: []
+  # 定位：本 Skill 配套**私有规则集**（rule store），不是开箱即用的公开规则集。
+  # 规则正文下沉在 delx-memory 的 skill:* 条目中（backup/rules/* 与 snapshots 不入库），
+  # 未恢复规则库 → [RULE_STORE_MISSING] 停止（fail-closed），不得用骨架摘要推断。
+  required:
+    - rule_store    # = delx-memory 的 skill:* 条目集合（私有通道恢复）；缺失 → 停止，不降级
   optional_integrations:
-    # 「可选」指循环不因缺失而阻断，不指能力可省略——缺失时必须显式标注降级：
-    - delx-memory   # 记忆体系（三层/回写/仪表盘）。缺失 → skill:rules/* 规则条目不可用（skill:* 全量以 memory_list(prefix="skill:") 实时核对），对应规则仅剩文件内摘要可执行（governance.md 类型 C）→ 必须标注降级
+    # 「可选」只指**规则库之外**的记忆能力；规则库本身是 required（见上），不可降级。
+    - delx-memory   # 记忆后端（三层/回写/仪表盘/检索）。缺失 → 标注降级（回写跳过、检索由 memory_search+Read 替代）；规则条目是否可用取决于 rule_store
     - codegraph     # 代码图谱（符号定位/影响分析）；缺失 → 标注后降级 memory_search + Read
     - skill-authoring  # 自检 core（scripts/smoke-check-core.sh——S13 残留验证的检查逻辑唯一事实源）。缺失 → smoke-check 显式 exit 3 并给 [next]，不静默跳过；修复训练外的技能目录时须 SMOKE_CORE 指定 core 路径
 

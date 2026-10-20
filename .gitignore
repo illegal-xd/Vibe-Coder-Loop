@@ -48,6 +48,10 @@ coverage/
 .codegraph/
 
 # Runtime state (personal instance data; never publish)
+# 协议声明位置 = <project_root>/.vibe-kernel/.state.md；整个目录禁止提交
+# （engine/state-machine.md「Workflow Checkpoint」；机检见 scripts/audit.sh C012）
+.vibe-kernel/
+# 遗留位置（v1.22 之前；仅供本机旧实例继续被忽略）
 skills/vibe-coder-loop/.state.md
 skills/vibe-coder-loop/backup/snapshots/*
 !skills/vibe-coder-loop/backup/snapshots/.gitignore

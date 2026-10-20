@@ -27,7 +27,7 @@ status: active
 
 Required:
 - kernel.md（R0 原则，任何阶段前）
-- engine/state-machine.md + engine/transition.md（对应 S 出口检查）
+- engine/state-machine.md + engine/transition.md（对应 S 出口检查）+ engine/complexity-gate.md + engine/router.md（S4 分级 + Quick/Standard/Full 模式选择）
 - policy/safety.md + policy/confidence.md
 - rules/intent.md（S1 目标三元组）→ rules/code.md（S8）→ rules/test.md（S9，L1+）→ rules/review.md（S10，L1+）
 - learning/memory/lifecycle.md（S2 计数协议 + 出口 Quick 闭环）

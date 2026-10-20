@@ -52,7 +52,7 @@
 | 变更 | 文件 | 说明 |
 |---|---|---|
 | 审计工具 v1.0.0 | `scripts/audit.sh`（未跟踪） | `scan/check/report/verify/rules/help/version`；TSV/JSONL；脱敏；严重度过滤；`--fail-on`；Bash 3.2 兼容 |
-| 工具自测 | `scripts/tests/test-audit.sh`（未跟踪） | 43 PASS / 0 FAIL；覆盖规则、脱敏、JSON、退出码、链接/软链/跟踪面检查 |
+| 工具自测 | `scripts/tests/test-audit.sh`（未跟踪） | 51 PASS / 0 FAIL；覆盖规则、脱敏、JSON、退出码、链接/软链/跟踪面/运行状态忽略面检查 |
 | 工具说明 | `docs/audits/audit-tool.md`（未跟踪） | 规则、命令、退出码、限制与维护方式 |
 | 报告基线 | `docs/audits/2026-10-19-open-source-readiness.md` | 修复前发现与修复后状态；保持脱敏 |
 | 生成物 | `docs/audits/baseline.tsv`、`docs/audits/scan-report.md` | 可重复生成；当前仅 H002 info，可安全公开 |
@@ -62,12 +62,12 @@
 
 | 命令 | 结果 |
 |---|---|
-| `python3 skills/vibe-coder-loop/backup/test_memory_tool.py` | 51 tests OK |
+| `python3 skills/vibe-coder-loop/backup/test_memory_tool.py` | 55 tests OK |
 | `bash skills/vibe-coder-loop/scripts/smoke-check.sh --quiet` | rc=0 |
 | `bash skills/skill-authoring/scripts/smoke-check.sh --quiet` | rc=0 |
 | `bash scripts/verify-symlinks.sh` | 仓库 PASS=15（关键文件/无断链） |
 | `bash scripts/verify-symlinks.sh --host` | 宿主检查全部 PASS（23 项） |
-| `bash scripts/tests/test-audit.sh` | 43 PASS / 0 FAIL |
+| `bash scripts/tests/test-audit.sh` | 51 PASS / 0 FAIL |
 | `bash scripts/audit.sh scan --min-severity=high` | rc=0，无 high/critical |
 | `bash scripts/audit.sh check --min-severity=high` | rc=0（C006 已随文档补齐消除） |
 | `bash -n` 全部 Shell 脚本 | 通过 |

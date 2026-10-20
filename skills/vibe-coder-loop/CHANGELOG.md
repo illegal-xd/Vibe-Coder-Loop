@@ -54,6 +54,56 @@
 
 **未验证（不宣称）**：`check-protocol` 与 `core state check` 尚未实现，当前只有契约没有门禁；OpenCode 三条 Hook 仅在类型定义层确认，真机行为待 Phase 3 冒烟（A3/B2）。
 
+## v1.22.1 — 体系评审缺陷修复（D1–D10 / P1–P8）
+
+> **同版本第三批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-20.md` 的 P1–P8 候选，逐项落地。**定位决策（用户指令）**：本仓库配套的规则集为**私有规则集**——不改造成公开最小规则集，改为把定位写清并让 fail-closed 行为可预期。
+
+### 一、状态泄漏（D1 / P1）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 1 | `.gitignore` 增 `.vibe-kernel/`（协议声明位置整体忽略），旧 `skills/vibe-coder-loop/.state.md` 降级为遗留条目保留 | `.gitignore` |
+| 2 | 新增 **C012** 机检：「协议声明的运行状态路径必须被 gitignore」——`git check-ignore .vibe-kernel/.state.md` 非 0 即 high 退出 1，防止协议改路径而 `.gitignore` 不跟随 | `scripts/audit.sh` `check_runtime_state_ignored` |
+| 3 | C012 自测：无 `.gitignore` → 命中；写入 `.vibe-kernel/` → 不报 | `scripts/tests/test-audit.sh`（49 → 51 PASS） |
+
+### 二、fresh clone 失败（D2 / P2，定位 = 私有规则集）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 4 | README 首屏新增「定位（先读）」：框架开源、**规则集私有**、fresh clone **不是开箱即用**，未恢复规则库时 fail-closed 属预期 | `README.md` |
+| 5 | 快速开始新增第 3 步「恢复私有规则集」（`restore` → `verify` → `check-keys`），验证步骤顺延为 4 | `README.md` |
+| 6 | `required: [rule_store]`；`optional_integrations` 语义收窄为**规则库之外**的能力（记忆后端/CodeGraph/skill-authoring），不再暗示规则可缺失 | `manifest.yaml` |
+| 7 | 依赖表述三处对齐：安装文档「可选集成」→「依赖与可选集成」、排障条目改为「fail-closed 预期结果」、兼容矩阵拆出「规则库必填」行 | `docs/installation.md` / `docs/audits/compatibility.md` |
+| 8 | SKILL.md 补一句：规则库缺失时 `smoke-check` 以 `MAP_INCONSISTENT` rc=1 退出，**属预期** | `SKILL.md` |
+
+### 三、自检路径与指令冲突（D3 / D4）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 9 | 6b 校验对象改为**随仓库分发的** `.state.template.md`（13 字段契约锚点）——fresh clone 不再静默跳过；需校验真实实例时传 `VIBE_CHECKPOINT_FILE=<绝对路径>` | `scripts/smoke-check.sh` |
+| 10 | core 6b 增「指定文件不存在 → 打印跳过原因，不计为通过」分支；`CHECKPOINT_FILE` 支持绝对路径 | `skill-authoring/scripts/smoke-check-core.sh` |
+| 11 | `AUTO_MODE` 收窄为「仅可逆、非破坏性操作免确认」，并明写不可逆操作/低置信判断仍须 Conflict Card 或暂停（R0 优先） | `kernel/Vibe Coder.md` |
+
+### 四、阶段漏读与命令路径（D5 / D6）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 12 | `coding` / `debugging` / `skill-maintenance` / `planning` / `review` 的 Required 补齐 S4 必读 `engine/complexity-gate.md` + `engine/router.md`（`refactoring` 原已具备）；`planning` 的 Optional 重复项移除 | `profiles/*.md` |
+| 13 | S13 收尾命令补明 cwd：`bash scripts/smoke-check.sh --table`（cwd = Skill 根）/ 仓库根写法二选一 | `profiles/skill-maintenance.md` |
+
+### 五、预算、文档漂移（D7–D10 / P7 / P8）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 14 | **总行数预算 3800 → 3900（棘轮例外，理由）**：本轮为修 D1/D5 净增行（profile 必读、SKILL/manifest 措辞），且 3870 已超旧预算；经核算规则文件实测 3871 行，取 3900 作**新下限**——后续只降不升，再需上调须在本节追加理由 | `scripts/smoke-check.sh` |
+| 15 | README 结构树补 `runtime/` `tests/` `scripts/tests/`，并注明 Skill 内部分层；`scripts/` 描述与 C012 对齐 | `README.md` |
+| 16 | 测试计数同步（`test_memory_tool` 51 → **55**、`test-audit` 43 → **51**） | `docs/audits/change-list.md` / `docs/audits/residual-risks.md` |
+| 17 | Checkpoint 字段口径统一为 **13 项（含 `updated_at`）**，路径统一为 `<project_root>/.vibe-kernel/.state.md` | `engine/transition.md` / `engine/state-machine.md` |
+
+**验证（E4）**：`smoke-check.sh` rc=0（本机，规则 3871 行 / 预算 3900）；`DELX_MEMORY_DB=/tmp/nonexistent` 下 rc=1 且 **6b 仍通过**（模板锚点不再依赖本机实例）；`audit.sh check` rc=0 含 C012；`test-audit.sh` 51/51；`test_memory_tool.py` 55/55；`git check-ignore .vibe-kernel/.state.md` rc=0。
+
+**未验证（不宣称）**：真 fresh clone（临时 HOME + 干净 DB）未实跑——规则库必填，无法在无私有快照的机器上得到 rc=0；跨平台（Linux/Windows）未真机复跑。
+
 ## v1.22.1 — 加载计划按阶段裁剪（preflight 瘦身 + stage→section 映射）
 
 > 提交 v1.22.0（4300e81）后递增。**触发**：对 v1.22.0 做收益评估，实测发现**保守档反而净增 7~8%** —— `preflight` 自身输出 L1 5,301 / L2 6,760 字符（章节索引占其约六成），超过它带来的节省；且"机械可定位"只覆盖 1 个文件（`engine/transition.md`，因只有它的 H2 标题自带阶段号）。本轮按评估结论实施两项：**① 输出瘦身 ② stage→section 映射**。

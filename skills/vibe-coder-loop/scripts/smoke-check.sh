@@ -35,10 +35,13 @@ MAP_TABLE_MODE=1       # 映射表为标准化表格 → 连 Canonical 类型一
 SELFTEST_CMD='python3 backup/test_memory_tool.py'
 LOAD_PLAN_FILE='load_plan.json'
 LOAD_PLAN_MENTION='SKILL.md'
-CHECKPOINT_FILE='.state.md'  # Workflow Checkpoint 的"YAML 可解析 + 12 字段"由 core 6b 机械判定
+# 6b 校验对象 = **Checkpoint 模板**（`.state.template.md`，随仓库分发的 13 字段契约锚点）。
+# 运行实例 `<project_root>/.vibe-kernel/.state.md` 属项目侧实例数据，不在 Skill 目录内：
+# 需要校验真实实例时显式传 `VIBE_CHECKPOINT_FILE=<绝对路径>`；两者都缺失时 core 打印跳过原因（不静默通过）。
+CHECKPOINT_FILE="${VIBE_CHECKPOINT_FILE:-.state.template.md}"
 # 行数预算：防规则膨胀。**棘轮语义 —— 只降不升**；确需上调须在 CHANGELOG 记明理由。
 BUDGET_FILE_LINES=320
-BUDGET_TOTAL_LINES=3800
+BUDGET_TOTAL_LINES=3900
 # ================================
 
 CORE=""

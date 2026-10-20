@@ -25,7 +25,7 @@ status: active
 Required:
 - kernel.md（资产生命周期 + 反自改纪律）
 - references/governance.md（本 skill **自身**骨架↔规则映射表 + canonical source 分类 + 下沉协议；**通用协议本体**在 `skill-authoring` skill 的 `governance-protocol.md`）
-- engine/transition.md（S13 出口残留验证）
+- engine/transition.md（S13 出口残留验证）+ engine/complexity-gate.md + engine/router.md（S4 分级：本类任务常走 Level 0-Doc）
 - CHANGELOG.md（迭代历史 + 版本规则：正文禁止日期/版本残留）
 - manifest.yaml（版本号唯一事实源；本次变更统一合并当前版本号，未提交 git 不迭代）
 
@@ -39,11 +39,11 @@ Optional:
 **出口纪律**：
 - **反自改原则**：无用户明确指令禁止自动修改 Skill 文件（`learning/evolution.md` 核心原则）
 - 版本策略：统一合并当前版本号（manifest.yaml `version`），未提交 git 期间不迭代；除非用户指定版本
-- S13 残留验证（强制）——走 `bash scripts/smoke-check.sh --table`。**检查逻辑唯一事实源 = `skill-authoring/scripts/smoke-check-core.sh`**（本 Skill 的 `scripts/smoke-check.sh` 只是配置薄包装——不得在此复制检查逻辑）
+- S13 残留验证（强制）——走 `bash scripts/smoke-check.sh --table`（cwd = **Skill 根目录** `skills/vibe-coder-loop/`；在仓库根执行时用 `bash skills/vibe-coder-loop/scripts/smoke-check.sh --table`）。**检查逻辑唯一事实源 = `skill-authoring/scripts/smoke-check-core.sh`**（本 Skill 的 `scripts/smoke-check.sh` 只是配置薄包装——不得在此复制检查逻辑）
   - **退出码即结论**：0 = 通过；1 = HARD 违规（必须修复后重跑）；2 = 仅预算超限；3 = 环境/用法错误
   - ① 日期/版本残留 → 必须 0 命中（`RESIDUAL_HIT`，HARD）
   - ② 死指针候选 → `DEAD_POINTER_CANDIDATE`，脚本输出候选；**已裁定为合法命中**的（节标题引用、机制自述行）记入 `DEAD_PTR_KNOWN` 白名单——键 = `文件::整行内容`，**双精确匹配**：内容或所在文件任一变动即重新成为候选；**跨文件复用不继承豁免**。这是**唯一**保留人工裁定的项——其余项已全部机械判定
   - ③ 映射一致性（`MAP_INCONSISTENT`，HARD）：映射表左列文件存在 + **声明的 `skill:*` key 真实存在** + **Canonical ≠ 数据 的条目 tags 含 `permanent`**（规则条目带 TTL = 到期静默降级）
   - ④ 加载计划一致性（`LOAD_PLAN_PATH_MISSING` / `LOAD_PLAN_UNDOCUMENTED`，HARD）：`load_plan.json` 内路径存在且被 `SKILL.md` 提及
   - ⑤ 行数预算（`BUDGET_EXCEEDED`，退出码 2）：**棘轮语义，只降不升**；确需上调须在 CHANGELOG 记明理由
-- 收尾义务：`bash scripts/smoke-check.sh --table` 退出码 0 + backup 快照重新生成 + verify
+- 收尾义务：`bash scripts/smoke-check.sh --table`（cwd = Skill 根目录）退出码 0 + backup 快照重新生成 + verify

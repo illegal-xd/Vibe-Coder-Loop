@@ -26,7 +26,7 @@ status: active
 
 Required:
 - kernel.md（调试模式触发条件 + 双队列契约）
-- engine/transition.md（S8→S9 回退规则 + S9 串行门控）
+- engine/transition.md（S8→S9 回退规则 + S9 串行门控）+ engine/complexity-gate.md + engine/router.md（S4 分级 + Loop 选择）
 - policy/safety.md + policy/confidence.md（Evidence 标注强制）
 - rules/test.md（S9 验证 + 降级条款）
 - rules/code.md（S8 修复，前置检查含 lesson 检索规避）

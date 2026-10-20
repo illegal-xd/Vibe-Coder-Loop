@@ -18,8 +18,9 @@
 - [ ] `git status --short` 中不包含 `.state.md`、`backup/snapshots/*.json`、`scan-report.local.*`、`.env`。
 - [ ] `git ls-files` 不含个人状态/快照：
       `git ls-files | grep -E '(^|/)\.state\.md$|skill_memory_.*\.json|scan-report\.local'`（应无输出）
-- [ ] 本地 `.state.md`、快照仍存在但被忽略（文件保留，不删除）：
-      `git check-ignore -v skills/vibe-coder-loop/.state.md skills/vibe-coder-loop/backup/snapshots/skill_memory_latest.json`
+- [ ] 运行状态目录与快照被忽略（文件保留，不删除）：
+      `git check-ignore -v .vibe-kernel/.state.md skills/vibe-coder-loop/backup/snapshots/skill_memory_latest.json`
+- [ ] `.gitignore` 与协议声明的状态路径一致：`bash scripts/audit.sh check` 无 C012（机检）
 - [ ] 仓库内无个人绝对路径、邮箱、私有 IP、真实凭证（允许 H002 info）：
       `bash scripts/audit.sh scan --fail-on=high`（rc=0）
 - [ ] 被 Git 跟踪的文件中无敏感运行时/快照：

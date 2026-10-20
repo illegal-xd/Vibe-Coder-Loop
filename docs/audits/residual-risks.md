@@ -53,5 +53,5 @@
 
 - macOS Darwin 25、Bash 3.2.57、Python 3.13.3 实跑通过。
 - `scan --min-severity=high` 与 `check --min-severity=high` 均为 rc=0；只剩 H002 info（Pi 提及）。
-- `test-audit.sh` 43/43、`test_memory_tool.py` 51/51、两个 smoke-check、`verify-symlinks.sh --host` 全部通过。
+- `test-audit.sh` 51/51、`test_memory_tool.py` 55/55、两个 smoke-check、`verify-symlinks.sh --host` 全部通过。
 - “未发现凭证”只代表当前规则/当前工作区；不等于绝对安全。

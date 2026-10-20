@@ -2,7 +2,9 @@
 
 面向 Coding Agent 的轻量级工程执行与持续改进框架。本仓库是约束、Skill 与验证工具的**唯一真实源**，供 OpenCode 等宿主通过 Skill 发现机制加载；不绑定单一宿主，也不要求固定安装目录。
 
-> 状态：开源准备中。许可证尚未声明（需项目所有者决策），因此当前默认保留所有权利，暂不建议直接再分发。
+> **定位（先读）**：本仓库分发**框架 + 协议骨架**，配套的**私有规则集**（`skill:*` 规则正文）**不在仓库内**——规则由本机 delx-memory 承载，跨机器只经安全私有通道（加密快照）恢复。因此 **fresh clone 不是开箱即用**：未恢复规则集时 Skill **fail-closed**（`[RULE_STORE_MISSING]` 停止；`smoke-check` 以 `MAP_INCONSISTENT` rc=1 退出）——这是**预期行为，不是环境故障**。需要可运行 → 先完成「快速开始」第 3 步。
+
+> 状态：公开分发准备中（框架开源；配套规则集私有）。许可证尚未声明（需项目所有者决策），因此当前默认保留所有权利，暂不建议直接再分发。
 
 ## 仓库结构
 
@@ -15,9 +17,18 @@ Vibe-Coder-Loop/
 │   ├── delx-memory-protocol/  # 通用记忆协议
 │   └── skill-authoring/       # Skill 维护协议 + 自检引擎
 ├── scripts/
-│   ├── audit.sh               # 开源就绪性审计工具（只读）
+│   ├── audit.sh               # 公开面审计工具（只读；含运行状态 gitignore 机检）
 │   ├── verify-symlinks.sh     # 仓库/宿主软链校验
-│   └── tests/test-audit.sh    # 审计工具自测
+│   └── tests/
+│       ├── test-audit.sh      # 审计工具自测
+│       ├── test-runtime-core.sh
+│       └── test-runtime-exec.sh
+├── runtime/
+│   ├── core/                  # 状态机 / Checkpoint / 协议一致性 CLI
+│   └── exec/                  # 受控执行（allowlist / 超时 / 输出截断 / 脱敏）
+├── tests/
+│   ├── core/                  # runtime/core 单测
+│   └── exec/                  # runtime/exec 单测
 ├── docs/
 │   ├── installation.md        # 安装、宿主集成、配置
 │   ├── migration.md           # 迁移与回滚记录（已脱敏）
@@ -28,6 +39,8 @@ Vibe-Coder-Loop/
 └── README.md
 ```
 
+> `skills/vibe-coder-loop/` 内部：`kernel.md` `engine/` `rules/` `policy/` `learning/` `profiles/` `references/`（协议分层）+ `scripts/smoke-check.sh`（S13 自检实例）+ `backup/`（记忆工具与**本机生成**的快照/脱敏规则集，均不入库）。
+
 ## 环境要求
 
 | 能力 | 要求 |
@@ -36,7 +49,8 @@ Vibe-Coder-Loop/
 | OpenCode 主 Agent | OpenCode；`kernel/Vibe Coder.md` 使用 OpenCode frontmatter |
 | Shell 工具（审计/自检） | Bash 3.2+；macOS 自带 Bash 可用；Linux 使用 Bash；Windows 使用 Git Bash 或 WSL |
 | 记忆工具 / 自检脚本 | Python 3.8+；`memory_tool.py` 仅标准库，完整 smoke-check 另需 PyYAML（缺失时显式跳过 YAML 校验） |
-| 可选集成 | `delx-memory`（记忆后端）、`codegraph`（代码图谱）；缺失时对应能力降级，不阻断主流程 |
+| 规则库（**必填**） | `delx-memory` 中的 `skill:*` 规则条目（私有通道恢复）。缺失 → `[RULE_STORE_MISSING]` **停止**，不降级继续 |
+| 可选集成 | `delx-memory` 记忆后端（回写/检索/仪表盘）、`codegraph`（代码图谱）；缺失时对应能力标注降级，**不影响规则库的必填性** |
 | 不支持 | Windows 原生 CMD / PowerShell 直接执行 `.sh`；请使用 Git Bash/WSL，或用 PowerShell 完成安装步骤 |
 
 完整说明见 [docs/installation.md](docs/installation.md) 与 [docs/audits/compatibility.md](docs/audits/compatibility.md)。
@@ -62,7 +76,18 @@ Vibe-Coder-Loop/
 
    OpenCode 用户还需把 `kernel/Vibe Coder.md` 链接到 agents 目录，并把 Skill 暴露到 `~/.config/opencode/skills/`。Windows、PowerShell、复制方式与卸载步骤见 [docs/installation.md](docs/installation.md)。
 
-3. 验证：
+3. **恢复私有规则集（必做，否则 Skill fail-closed 停止）**：`rules/` 等目录只有骨架版，完整规则正文在 delx-memory 的 `skill:*` 条目中：
+
+   ```bash
+   cd skills/vibe-coder-loop
+   python3 backup/memory_tool.py restore <私有规则快照路径>   # 加密快照，经私有通道获取
+   python3 backup/memory_tool.py verify                       # 校验条目完整性
+   python3 backup/memory_tool.py check-keys --files           # 校验 SKILL 声明的 key 全部存在
+   ```
+
+   无规则快照 → 无法启动 Workflow（`[RULE_STORE_MISSING]`）；这不是环境问题，是**定位**（见上方「定位（先读）」）。
+
+4. 验证：
 
    ```bash
    bash scripts/verify-symlinks.sh          # 校验仓库内资源
@@ -75,7 +100,7 @@ Vibe-Coder-Loop/
 
 | Skill | 职责 | 依赖 |
 |---|---|---|
-| `vibe-coder-loop` | 完整工程循环：Intent → Preflight → Decision → Router → Clarify → Design → Plan → Code → Test → Review → Reflection → Memory Evolution | 文件读取；记忆/CodeGraph 可选 |
+| `vibe-coder-loop` | 完整工程循环：Intent → Preflight → Decision → Router → Clarify → Design → Plan → Code → Test → Review → Reflection → Memory Evolution | 文件读取；**私有规则集（必填）**；记忆后端/CodeGraph 可选 |
 | `delx-memory-protocol` | 记忆授权模型、三层体系、命名空间、TTL、supersession、Consolidation | 无运行时数据 |
 | `skill-authoring` | 骨架化、canonical source 分类、内容下沉、残留验证 | 自检脚本需要 Bash + Python 3（完整检查） |
 
@@ -122,7 +147,8 @@ bash scripts/tests/test-audit.sh              # 工具自测（使用虚构路�
 
 ## 安全与隐私
 
-- 仓库不包含真实凭证；运行状态（`.state.md`）与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
+- 仓库不包含真实凭证；运行状态（`.vibe-kernel/`，含 `.state.md`）与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
+- **机检兜底**：`bash scripts/audit.sh check` 的 **C012** 检查「协议声明的运行状态路径（`.vibe-kernel/.state.md`）是否被 `.gitignore` 忽略」，防止协议路径与 `.gitignore` 漂移。
 - **规则内容不入库**：运行状态、记忆快照与脱敏规则集（`backup/snapshots/*`、`backup/rules/*`）均被忽略。仓库只分发协议骨架，规则内容由本机 delx-memory 生成，跨机器只经安全私有通道传输。
 - 示例路径使用 `<repo>`、`/path/to/...`、`$HOME` 或 `%USERPROFILE%`，不依赖作者本机目录。
 - 如发现疑似凭证或隐私泄露，请不要在 Issue 中粘贴原文；先脱敏，再联系维护者。

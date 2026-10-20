@@ -141,6 +141,7 @@ out="$(AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPE
   AUDIT_ROOT="$repo" bash "$AUDIT" check 2>&1)"
 assert_contains "$out" ':C008:' 'check 检出被跟踪的运行时文件'
 assert_contains "$out" ':C009:' 'check 检出被跟踪的记忆快照'
+assert_contains "$out" ':C012:' 'check 检出未被忽略的 .vibe-kernel（无 .gitignore）'
 assert_contains "$out" ':C006:' 'check 检出 Markdown 断链'
 assert_contains "$out" ':C011:' 'check 提示未生成脱敏规则集（info）'
 if [ -L "$repo/agents/vibe-coder-loop" ]; then
@@ -161,6 +162,12 @@ printf '{"entries":[{"value":"%s"}]}\n' "$home_path" > "$rules"
 out="$(AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPENCODE_AGENTS_DIR="$repo/agents_dir" \
   AUDIT_ROOT="$repo" bash "$AUDIT" check 2>&1)"
 assert_contains "$out" ':C011:' 'check 检出未脱敏规则集'
+
+# C012：.vibe-kernel/ 被忽略 → 不报（协议声明的运行状态路径必须 gitignore）
+printf '.vibe-kernel/\n' > "$repo/.gitignore"
+out="$(AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPENCODE_AGENTS_DIR="$repo/agents_dir" \
+  AUDIT_ROOT="$repo" bash "$AUDIT" check 2>&1)"
+assert_not_contains "$out" ':C012:' 'check 在 .vibe-kernel/ 已忽略时不报 C012'
 
 # check：真实规模回归（性能/稳定性）——大文件不得崩溃或长时间挂起
 # 背景：逐行 fork grep 的实现在 9408 行规模下 SIGILL + 70s 挂起（D1/D4），

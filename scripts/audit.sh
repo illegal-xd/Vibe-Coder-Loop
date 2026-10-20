@@ -421,6 +421,17 @@ check_canonical_rules() {
   return 0
 }
 
+# 协议声明的运行时状态路径必须被 Git 忽略（engine/state-machine.md「Workflow Checkpoint」：
+# 「整个 .vibe-kernel/ 须 gitignore，禁止提交」）。协议改了路径而 .gitignore 没跟上，
+# 下一次在本仓库跑 Workflow 就会产生未忽略的状态文件 —— 属静默漂移，故机械判定。
+check_runtime_state_ignored() {
+  local target='.vibe-kernel/.state.md'
+  has_git || return 0
+  git -C "$ROOT" check-ignore -q -- "$target" && return 0
+  add_check "$target" 0 C012 high '协议声明的运行时状态路径未被 .gitignore 忽略（禁止提交运行状态）'
+  return 0
+}
+
 check_tracked_sensitive() {
   local f base
   if ! has_git; then
@@ -453,6 +464,7 @@ run_check() {
   check_host_links
   check_markdown_links
   check_tracked_sensitive
+  check_runtime_state_ignored
   check_canonical_rules
   return 0
 }

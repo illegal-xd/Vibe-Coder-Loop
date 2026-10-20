@@ -19,8 +19,9 @@
 #   SELFTEST_CMD         可选。自测命令（相对 SKILL_DIR），非 0 即 HARD
 #   LOAD_PLAN_FILE       可选。加载计划 JSON（相对 SKILL_DIR），校验路径存在性
 #   LOAD_PLAN_MENTION    可选。必须提及加载计划内全部路径的文件（如 SKILL.md）
-#   CHECKPOINT_FILE       可选。Workflow Checkpoint 文件（相对 SKILL_DIR，如 .state.md），
-#                         校验 YAML 单文档可解析 + 13 字段齐全（含 updated_at freshness；pyyaml 缺失则显式跳过）
+#   CHECKPOINT_FILE       可选。Workflow Checkpoint 文件（相对 SKILL_DIR，或绝对路径），
+#                         校验 YAML 单文档可解析 + 13 字段齐全（含 updated_at freshness；pyyaml 缺失则显式跳过）。
+#                         指定的文件不存在 → 打印跳过原因（不计为通过）；空值 = 本 Skill 无 Checkpoint
 #   BUDGET_FILE_LINES    可选。单文件行数预算（0 = 关闭；超出 → BUDGET_EXCEEDED）
 #   BUDGET_TOTAL_LINES   可选。规则文件总行数预算（0 = 关闭）
 #   SCAN_EXCLUDE_PATHS   可选。额外排除的 path glob 片段（数组字符串）
@@ -431,10 +432,13 @@ PYX
 fi
 
 # ---------- 6b. Workflow Checkpoint 可解析性（HARD，机器可判定） ----------
-# 恢复协议（engine/state-machine.md「Workflow Checkpoint」）要求"YAML 可解析 + 12 字段齐全"，
+# 恢复协议（engine/state-machine.md「Workflow Checkpoint」）要求"YAML 可解析 + 13 字段齐全"，
 # 历史上该判定只存在于 prose —— 尾随 `---` 会让文件变成多文档，safe_load 直接抛错（已实际发生）。
 # 此处把它变成机械判定；pyyaml 缺失时显式跳过（不静默通过）。
-if [ -n "${CHECKPOINT_FILE:-}" ] && [ -f "$CHECKPOINT_FILE" ]; then
+if [ -n "${CHECKPOINT_FILE:-}" ] && [ ! -f "$CHECKPOINT_FILE" ]; then
+  smoke_section "6b. Checkpoint YAML 可解析性（单文档 + 13 字段）"
+  echo "  ⚠ 跳过（CHECKPOINT_FILE 指定的文件不存在：$CHECKPOINT_FILE）—— 不计为通过"
+elif [ -n "${CHECKPOINT_FILE:-}" ]; then
   smoke_section "6b. Checkpoint YAML 可解析性（单文档 + 13 字段）"
   if python3 -c "import yaml" >/dev/null 2>&1; then
     if python3 - "$CHECKPOINT_FILE" <<'PY'

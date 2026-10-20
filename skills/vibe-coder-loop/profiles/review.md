@@ -27,7 +27,7 @@ status: active
 **加载**：
 
 Required:
-- engine/router.md（三分支细则：Investigation / Level 0-Doc / 判定优先级；**三维审查定义在此**）
+- engine/complexity-gate.md + engine/router.md（S4 分级 + 三分支细则：Investigation / Level 0-Doc / 判定优先级；**三维审查定义在 router**）
 - rules/review.md（代码向硬约束与审查维度；Investigation 分支不适用）
 - references/output-format.md（输出格式规范）
 - policy/confidence.md（Evidence 标注强制）

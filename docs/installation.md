@@ -97,11 +97,14 @@ Copy-Item -Force (Join-Path $Repo "kernel\Vibe Coder.md") (Join-Path $OpenCodeAg
 
 不要把 OpenCode 专属字段描述成所有宿主通用能力。Pi 适配器目前未纳入本仓库。
 
-## 五、可选集成
+## 五、依赖与可选集成
+
+> **必填**：`delx-memory` 中的 `skill:*` **私有规则集**（rule store）。本仓库只分发骨架版规则文件，规则正文不入库；未恢复规则集 → Skill **fail-closed**（`[RULE_STORE_MISSING]` 停止；`smoke-check` 以 `MAP_INCONSISTENT` rc=1 退出，属预期行为）。恢复方式见「快速开始」第 3 步。
 
 | 集成 | 是否必需 | 缺失时行为 |
 |---|---|---|
-| `delx-memory` | 否 | 记忆读写/回写步骤跳过或降级；Kernel 的记忆兜底也跳过 |
+| `delx-memory` 规则库（`skill:*` 条目） | **是** | `[RULE_STORE_MISSING]` 停止，不降级继续 |
+| `delx-memory` 记忆后端（回写/检索/仪表盘） | 否 | 记忆读写/回写步骤跳过或降级；Kernel 的记忆兜底也跳过（规则库仍需可用） |
 | `codegraph` | 否 | 代码定位降级为 `grep` + 文件读取 |
 | Python 3 | 否（仅工具/自检） | 审计 Bash 工具仍可用；`memory_tool.py` 与完整 smoke-check 不可用 |
 
@@ -172,7 +175,7 @@ Windows 下若 `python3` 不可用，尝试 `python` 或 `py -3`。
 | Bash 脚本报 `bad interpreter` / `\r` | Windows 检出为 CRLF | 确保 `.gitattributes` 生效；执行 `git config core.autocrlf false` 后重新检出 |
 | `python3: command not found` | Windows 只安装了 `python` / `py` | 使用 `python` 或 `py -3`；把 Python 加入 PATH |
 | smoke-check 报找不到 core | Skill 安装目录不是同级布局 | 设置 `SMOKE_CORE` |
-| smoke-check 因记忆库缺失失败 | 本机没有 delx-memory 数据库 | 该检查是维护者工具；公共使用不需要运行，或配置 `DELX_MEMORY_DB` |
+| smoke-check 因记忆库缺失失败 | 本机没有 delx-memory 数据库 / 规则集未恢复 | 这是 **fail-closed 的预期结果**（规则库是必填）：按「快速开始」第 3 步恢复私有规则快照，或配置 `DELX_MEMORY_DB` 指向已有库 |
 | `memory_tool.py list` 找不到库 | 数据库路径不同 | 使用 `--db` 或 `DELX_MEMORY_DB`，或修改本地 `backup/config.json`（不要提交） |
 | 路径含空格 / 中文 | 未加引号 | 所有示例均使用引号；自定义脚本中也要引用变量 |
 | 大小写不一致 | Linux 区分大小写，macOS/Windows 通常不区分 | 引用路径时保持与仓库实际大小写一致 |

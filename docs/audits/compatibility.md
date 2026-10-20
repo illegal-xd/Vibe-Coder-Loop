@@ -47,7 +47,8 @@
 | grep/sed/awk/find/sort/comm | 审计脚本必需 | POSIX/BSD/GNU 常用选项；不使用 `grep -P` |
 | Python | 记忆工具、完整 smoke-check 必需（对使用者可选） | 3.8+；仅标准库；完整 smoke-check 另需 PyYAML |
 | OpenCode | Prompt 原宿主的必需项 | 非本仓库依赖；其他宿主需适配 |
-| delx-memory | 可选 | 缺失时记忆能力降级并标注 |
+| delx-memory 规则库（`skill:*`） | **必填** | 缺失 → `[RULE_STORE_MISSING]` 停止；`smoke-check` rc=1 属预期 |
+| delx-memory 记忆后端 | 可选 | 缺失时记忆能力降级并标注（规则库仍需可用） |
 | codegraph | 可选 | 缺失时用 grep + 读取替代 |
 | PyYAML | 可选 | 仅 smoke-check 的 Checkpoint YAML 校验；缺失时显式跳过 |
 | Node.js / Bun | 不需要 | 本仓库工具不依赖 |

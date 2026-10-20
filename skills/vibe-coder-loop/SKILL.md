@@ -7,7 +7,7 @@ description: Vibe Coder Loop 工程循环 Skill。承载完整工程流程：Int
 
 > ⚠️ **首次使用必读（依赖声明 · fail-closed）**：`rules/`、`references/`、`learning/reflection.md`、`learning/evolution.md`、`learning/skill-metrics.md` 等为**骨架版**——完整规则内容下沉在 `skill:` 前缀的 delx-memory 条目中（映射表见 `references/governance.md`）。**首次部署或新机器克隆后，必须先执行** `python3 backup/memory_tool.py restore <规则快照或脱敏规则集>` 恢复 `skill:*` 条目。规则内容**不入库**（隐私约束）：`backup/snapshots/*`（本机快照）与 `backup/rules/*`（`export-rules` 生成的脱敏规则集）均由本机生成、均被 gitignore，跨机器只经安全私有通道传输。
 >
-> **缺失时不得降级继续**：`rules/` 规则条目不可用且快照未恢复 → 输出 `[RULE_STORE_MISSING]` + `[next]` 恢复动作并**停止**（信号定义见 `engine/transition.md`「VC 错误码族」），**禁止**用残缺摘要继续推断——"以为自己有规则其实没有"会产出难追溯的错误结论，返工成本高于直接停下。`manifest.yaml` `optional_integrations` 标注仅为依赖声明，**不等于规则可缺失**。
+> **缺失时不得降级继续**：`rules/` 规则条目不可用且快照未恢复 → 输出 `[RULE_STORE_MISSING]` + `[next]` 恢复动作并**停止**（信号定义见 `engine/transition.md`「VC 错误码族」），**禁止**用残缺摘要继续推断——"以为自己有规则其实没有"会产出难追溯的错误结论，返工成本高于直接停下。`manifest.yaml` `optional_integrations` 标注仅为**规则库之外**能力的依赖声明；规则库（`rule_store`）在 `required` 中，**不等于规则可缺失**。此时 `scripts/smoke-check.sh` 也会以 `MAP_INCONSISTENT`（key 校验失败）rc=1 退出——**属预期 fail-closed 状态，不是环境故障**。
 
 **机器可读契约**：`manifest.yaml` 是 Skill 元数据的单一来源（版本/依赖/复杂度/优先级/成本，description 仅保留当前事实摘要）；**迭代历史唯一事实源 = `CHANGELOG.md`**。本文件为人类可读入口。
 

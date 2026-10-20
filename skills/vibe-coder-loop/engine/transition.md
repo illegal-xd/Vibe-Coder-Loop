@@ -44,7 +44,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 ## S1 Intent → S2 Preflight
 
-> **Checkpoint（循环开始，强制）**：先读 `.state.md`——不存在 → 从 `.state.template.md` 复制创建；存在 → 做 freshness + 12 字段校验，通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新 `.state.md`；轮次收尾（S13）必写一次 `status` + `resume`。**
+> **Checkpoint（循环开始，强制）**：先读 `<project_root>/.vibe-kernel/.state.md`——不存在 → 从 `<skill>/.state.template.md` 复制创建；存在 → 做 freshness + **13 字段**校验（含 `updated_at` freshness，机械判定见 `scripts/smoke-check.sh` 6b），通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新该文件；轮次收尾（S13）必写一次 `status` + `resume`。**
 
 **出口条件**：
 - [ ] 目标三元组已输出（显式意图 + 隐含约束 + 风险标签）
