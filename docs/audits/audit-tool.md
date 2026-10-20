@@ -98,6 +98,7 @@ bash scripts/audit.sh check --format=json
 | C008 | high | 敏感运行时/凭证文件被 Git 跟踪 |
 | C009 | high | 记忆快照被 Git 跟踪 |
 | C010 | info | 非 Git 工作区，跳过跟踪面检查 |
+| C011 | info / high | 本机脱敏规则集不存在（info：未生成，规则内容按隐私约束不入库）／存在但含个人路径（high：应导出为 `~` / `<USERPROFILE>`） |
 
 宿主目录可用环境变量覆盖：
 
@@ -145,7 +146,7 @@ bash scripts/audit.sh verify -b docs/audits/baseline.local.tsv
 bash scripts/tests/test-audit.sh
 ```
 
-覆盖：规则命中、脱敏、JSONL、严重度过滤、`--fail-on`、`check` 的 C003/C006/C008/C009、`verify` 新增高危、`report` stdout、参数错误。测试使用临时目录与运行时拼接的虚构样例，不接触真实数据库/凭证。
+覆盖：规则命中、脱敏、JSONL、严重度过滤、`--fail-on`、`check` 的 C003/C006/C008/C009/C011、**大文件规模回归**（1500 行 + 围栏内外链接，20s 看门狗，防「逐行 fork」性能/崩溃回归）、`verify` 新增高危、`report` stdout、参数错误。测试使用临时目录与运行时拼接的虚构样例，不接触真实数据库/凭证。
 
 ## 七、已知误报与限制
 

@@ -51,6 +51,8 @@ coverage/
 skills/vibe-coder-loop/.state.md
 skills/vibe-coder-loop/backup/snapshots/*
 !skills/vibe-coder-loop/backup/snapshots/.gitignore
+# 本机生成的脱敏规则集（规则内容不入库：隐私约束；仅在私有通道内分发）
+skills/vibe-coder-loop/backup/rules/
 
 # Local audit outputs that may contain unredacted or environment-specific evidence
 docs/audits/scan-report.local.*

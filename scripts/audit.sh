@@ -18,6 +18,7 @@ ROOT="${AUDIT_ROOT:-$DEFAULT_ROOT}"
 TMPBASE="${TMPDIR:-/tmp}"
 TMPBASE="${TMPBASE%/}"
 TOOL_VERSION="1.0.0"
+TAB="$(printf '\t')"  # IFS 分隔用（避免在源码里写裸 tab）
 
 SCAN_RAW=""
 SCAN_ERR=""
@@ -365,38 +366,59 @@ check_host_links() {
 }
 
 check_markdown_links() {
-  local rel line link target base cand in_fence
+  local rel link target base cand lineno
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     is_scan_excluded "$rel" && continue
     case "$rel" in *.md) ;; *) continue ;; esac
     base="$(dirname "$ROOT/$rel")"
-    in_fence=0
-    while IFS= read -r line; do
-      case "$line" in
-        '```'*|'~~~'*)
-          if [ "$in_fence" -eq 0 ]; then in_fence=1; else in_fence=0; fi
-          continue
-          ;;
+    # 单文件一次 awk 提取「围栏外」的行内链接（行号 + 链接）：复杂度 O(文件数 × fork)，
+    # 而非 O(行数 × fork)。逐行 fork 一个 grep 会在真实仓库规模下耗尽进程资源
+    # （macOS Bash 3.2 实测 SIGILL + 70s+ 挂起），故一律在本文件内批量处理。
+    while IFS="$TAB" read -r lineno link; do
+      [ -n "$link" ] || continue
+      target="${link#']('}"
+      target="${target%)}"
+      target="${target%%#*}"
+      case "$target" in
+        ''|'#'*|http://*|https://*|mailto:*|tel:*|data:*|javascript:*|//*) continue ;;
       esac
-      [ "$in_fence" -eq 1 ] && continue
-      while IFS= read -r link; do
-        target="${link#']('}"
-        target="${target%)}"
-        target="${target%%#*}"
-        case "$target" in
-          ''|'#'*|http://*|https://*|mailto:*|tel:*|data:*|javascript:*|//*) continue ;;
-        esac
-        target="${target#<}"
-        target="${target%>}"
-        case "$target" in /*) continue ;; esac
-        cand="$base/$target"
-        if [ ! -e "$cand" ]; then
-          add_check "$rel" 0 C006 low "相对链接目标不存在：$target"
-        fi
-      done < <(printf '%s\n' "$line" | grep -oE '\]\([^)]+\)')
-    done < "$ROOT/$rel"
+      target="${target#<}"
+      target="${target%>}"
+      case "$target" in /*) continue ;; esac
+      cand="$base/$target"
+      if [ ! -e "$cand" ]; then
+        add_check "$rel" "$lineno" C006 low "相对链接目标不存在：$target"
+      fi
+    done < <(awk '
+      /^```/ || /^~~~/ { in_fence = !in_fence; next }
+      in_fence { next }
+      {
+        rest = $0
+        while (match(rest, /\]\([^)]+\)/)) {
+          printf "%d\t%s\n", NR, substr(rest, RSTART, RLENGTH)
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+      }
+    ' "$ROOT/$rel" 2>/dev/null)
   done < <(surface)
+}
+
+# 本机脱敏规则集（export-rules 生成）的脱敏兜底：
+# 规则内容按隐私约束不入库（gitignore），故「不存在」只作 info 提示；一旦存在却含个人路径 → high。
+check_canonical_rules() {
+  local rel base
+  base='skills/vibe-coder-loop'
+  [ -d "$ROOT/$base" ] || return 0
+  rel="$base/backup/rules/skill_memory_canonical.json"
+  if [ ! -f "$ROOT/$rel" ]; then
+    add_check "$rel" 0 C011 info '未生成本机脱敏规则集（规则内容不入库；需要时运行 export-rules）'
+    return 0
+  fi
+  if grep -qE '/(Users|home)/[A-Za-z0-9_.-]+' "$ROOT/$rel" 2>/dev/null; then
+    add_check "$rel" 0 C011 high '规则集含个人主目录路径（应导出为 ~ / <USERPROFILE>）'
+  fi
+  return 0
 }
 
 check_tracked_sensitive() {
@@ -431,6 +453,7 @@ run_check() {
   check_host_links
   check_markdown_links
   check_tracked_sensitive
+  check_canonical_rules
   return 0
 }
 

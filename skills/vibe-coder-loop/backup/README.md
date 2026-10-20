@@ -2,23 +2,37 @@
 
 备份与更新 **vibe-coder-loop 技能相关联的数据记忆**（delx-memory 数据库中的 `skill:*` 规则条目 + 直接关联的 rule/lesson/pattern/reference/agent 条目）。**不备份其他项目记忆**（其他项目的数据不受影响）。
 
+## 两个制品（本机快照 vs 脱敏规则集）
+
+| 制品 | 路径 | 是否入库 | 用途 |
+|---|---|---|---|
+| 本机快照 | `snapshots/skill_memory_latest.json`（+ 历史 `.json.gz`） | ❌ gitignore | 本机回滚、私有通道迁移（含实时计数/本机上下文） |
+| 脱敏规则集 | `rules/skill_memory_canonical.json` | ❌ gitignore | 私有通道分发的规则内容 + 与活库的漂移比对（`--check`） |
+
+**规则内容一律不入库**（隐私约束：条目正文属于个人知识，公开仓库只分发协议骨架）。两者条目范围相同，规则集只多一层脱敏（绝对主目录 → `~` / `<USERPROFILE>`，去掉 `db` 字段），且**脱敏后仍含本机路径/个人目录名/邮箱/凭证时拒绝写入**（退出码 4，fail-closed）。跨机器恢复：先用私有通道取回 `snapshots/skill_memory_latest.json` 或 `rules/skill_memory_canonical.json`，再 `restore`。
+
 ## 快速开始
 
 ```bash
-# 1. 备份（导出技能相关记忆到 snapshots/）
+# 1. 备份（导出技能相关记忆到 snapshots/，本机用）
 python3 memory_tool.py backup
 
 # 2. 查看备份范围与数据库路径
 python3 memory_tool.py list
 
-# 3. 更新数据库（从备份文件恢复/同步，upsert，保留 created_at）
-python3 memory_tool.py restore snapshots/skill_memory_latest.json            # 实际写入（写前自动落一份当前库快照）
-python3 memory_tool.py restore snapshots/skill_memory_latest.json --dry-run  # 只打印将发生的变更，不写库
+# 3. 生成脱敏规则集（本机，不入库；用于漂移比对与私有通道分发）
+python3 memory_tool.py export-rules
 
-# 4. 校验备份与数据库一致性
-python3 memory_tool.py verify snapshots/skill_memory_latest.json
+# 4. 校验：本机规则集 vs 活库是否漂移（一致 0 / 漂移 4）
+python3 memory_tool.py export-rules --check
 
-# 5. 工具自测（标准库 unittest，自建临时库，不触碰真实库）
+# 5. 本机回滚：从本机最新快照恢复（含实时计数与上下文）
+python3 memory_tool.py restore snapshots/skill_memory_latest.json
+
+# 6. 新机器/新克隆：经私有通道取回快照或规则集后 restore
+python3 memory_tool.py restore <快照或规则集> --dry-run   # 先看变更，再实际写入
+
+# 7. 工具自测（标准库 unittest，自建临时库，不触碰真实库）
 python3 test_memory_tool.py
 ```
 
@@ -80,9 +94,9 @@ python3 memory_tool.py metrics --conflict 1 --retrieval 3 --budget-hit 3 --memor
 
 ## 跨机器迁移流程
 
-1. **源机器**：运行 `python3 memory_tool.py backup` → 生成 `snapshots/skill_memory_latest.json`（仅本机/受控迁移使用，不要提交）
-2. **目标机器**（如 Windows）：clone 仓库 → 设置 `DELX_MEMORY_DB`（或使用 `--db`）指向本机 delx-memory 库，不要把个人路径写进受跟踪的 `config.json` → 运行 `python3 memory_tool.py restore snapshots/skill_memory_latest.json`
-3. 运行 `python3 memory_tool.py verify ...` 确认一致
+1. **源机器**：`python3 memory_tool.py backup`（本机快照）与 `export-rules`（脱敏规则集，需分享规则内容时用）→ 两者都**不提交**。
+2. **目标机器**：clone 仓库 → 设置 `DELX_MEMORY_DB`（或 `--db`）指向本机 delx-memory 库 → 经安全私有通道取回其中一个文件 → `python3 memory_tool.py restore <文件>`。
+3. 运行 `python3 memory_tool.py verify <所用文件>` 确认一致；本机后续用 `export-rules --check` 比对漂移。
 
 ## Windows 说明
 
@@ -110,7 +124,7 @@ python3 memory_tool.py metrics --conflict 1 --retrieval 3 --budget-hit 3 --memor
 ## 维护约定（技能迭代时必守）
 
 - **新增/删除技能相关记忆 key**（skill:* 或显式关联）→ 同步更新 `memory_tool.py` 的 `SKILL_LINKED_KEYS` 与本 README「备份范围」说明
-- **技能规则/关联内容更新后** → 重新执行 `python3 memory_tool.py backup`（快照溯源随版本更新）
+- **技能规则/关联内容更新后** → 重新执行 `python3 memory_tool.py backup`（快照溯源随版本更新）**并** `python3 memory_tool.py export-rules`（本机脱敏规则集与活库同步；`export-rules --check` 应回 0）
 - 迭代历史唯一事实源 = `../CHANGELOG.md`；版本号唯一事实源 = `../manifest.yaml` `version` 字段
 
 ## 说明
@@ -127,3 +141,4 @@ python3 memory_tool.py metrics --conflict 1 --retrieval 3 --budget-hit 3 --memor
   - **注意**：`restore` 按备份值**精确**写入，会把软提示部分回退到快照时刻 → 回滚前先 `--dry-run` 确认影响范围
 - FTS 全文索引由数据库触发器自动维护，无需手动同步
 - `skill_memory_latest.json` 始终为最新（仅本机/受控迁移使用）；所有快照与写前快照均由 `.gitignore` 忽略，不要提交
+- **规则集同样不入库**：`rules/skill_memory_canonical.json` 与快照一样被 `.gitignore` 排除（规则内容按隐私约束不外发）；`restore` 会忽略其内部（或旧快照内）的 `db` 字段，写入目标始终是本机库

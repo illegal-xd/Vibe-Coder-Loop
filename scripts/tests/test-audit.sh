@@ -37,6 +37,27 @@ assert_not_contains() {
   esac
 }
 
+# 带看门狗的调用：超时即强杀并回 124，避免性能回归把自测挂死。
+# 输出留在 $TMP/watch.out，由调用方读取到 $out。
+run_with_timeout() {
+  local limit="$1" waited=0 pid
+  shift
+  : > "$TMP/watch.out"
+  "$@" > "$TMP/watch.out" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$limit" ]; then
+      kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      printf '[timeout] 超过 %ss 未返回\n' "$limit" >> "$TMP/watch.out"
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+}
+
 slash="/"
 bs='\'
 email_local="tester"
@@ -121,12 +142,48 @@ out="$(AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPE
 assert_contains "$out" ':C008:' 'check 检出被跟踪的运行时文件'
 assert_contains "$out" ':C009:' 'check 检出被跟踪的记忆快照'
 assert_contains "$out" ':C006:' 'check 检出 Markdown 断链'
+assert_contains "$out" ':C011:' 'check 提示未生成脱敏规则集（info）'
 if [ -L "$repo/agents/vibe-coder-loop" ]; then
   assert_contains "$out" ':C003:' 'check 检出宿主断链'
 fi
 AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPENCODE_AGENTS_DIR="$repo/agents_dir" \
   AUDIT_ROOT="$repo" bash "$AUDIT" check --fail-on=high >/dev/null 2>&1
 assert_rc 1 "$?" 'check fail-on=high 命中'
+
+# C011：规则集存在且已脱敏 → 不报；含个人路径 → 报
+rules="$repo/skills/vibe-coder-loop/backup/rules/skill_memory_canonical.json"
+mkdir -p "$(dirname "$rules")"
+printf '{"entries":[]}\n' > "$rules"
+out="$(AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPENCODE_AGENTS_DIR="$repo/agents_dir" \
+  AUDIT_ROOT="$repo" bash "$AUDIT" check 2>&1)"
+assert_not_contains "$out" ':C011:' 'check 规则集存在且已脱敏时不报 C011'
+printf '{"entries":[{"value":"%s"}]}\n' "$home_path" > "$rules"
+out="$(AGENTS_SKILLS_DIR="$repo/agents" OPENCODE_SKILLS_DIR="$repo/opencode" OPENCODE_AGENTS_DIR="$repo/agents_dir" \
+  AUDIT_ROOT="$repo" bash "$AUDIT" check 2>&1)"
+assert_contains "$out" ':C011:' 'check 检出未脱敏规则集'
+
+# check：真实规模回归（性能/稳定性）——大文件不得崩溃或长时间挂起
+# 背景：逐行 fork grep 的实现在 9408 行规模下 SIGILL + 70s 挂起（D1/D4），
+# 合成小仓库永远测不到，故此处用 >1000 行 + 围栏内外混合链接回归。
+big="$TMP/big"
+mkdir -p "$big/docs"
+printf 'ok\n' > "$big/docs/README.md"
+awk 'BEGIN {
+  for (i = 0; i < 1500; i++) {
+    if (i % 10 == 0) print "[ok](README.md)";
+    else if (i == 777) print "[broken](missing-target.md)";
+    else printf "text line %d\n", i;
+  }
+  print "```";
+  print "[fenced](fenced-missing.md)";
+  print "```";
+}' > "$big/docs/big.md"
+run_with_timeout 20 env AUDIT_ROOT="$big" bash "$AUDIT" check
+rc=$?
+out="$(cat "$TMP/watch.out")"
+assert_rc 0 "$rc" 'check 大文件退出 0（不崩溃/不挂起，限 20s）'
+assert_contains "$out" ':C006:' 'check 大文件仍检出围栏外断链'
+assert_not_contains "$out" 'fenced-missing.md' 'check 忽略围栏内链接'
 
 # verify：基线无变化 → 0；新增 high → 1
 mkdir -p "$TMP/verify"

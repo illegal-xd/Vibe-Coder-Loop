@@ -17,6 +17,7 @@
 
 - `skills/vibe-coder-loop/.state.md` —— Workflow 运行状态，**不进入版本库**；公共模板为 `.state.template.md`。
 - `skills/vibe-coder-loop/backup/snapshots/*` —— 本机记忆快照，**不进入版本库**；需要迁移时通过安全私有通道传输。
+- `skills/vibe-coder-loop/backup/rules/*` —— 本机生成的脱敏规则集（`export-rules`），**同样不进入版本库**：规则内容按隐私约束不外发，跨机器只经安全私有通道传输。
 
 源目录未被删除；本仓库成为唯一运行源后，旧副本不再被软链引用。
 

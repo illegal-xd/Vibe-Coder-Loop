@@ -37,6 +37,9 @@ vibe-coder-loop 记忆 Tool（跨平台：macOS / Linux / Windows）
 
   maintenance —— 技能迭代时调用，非运行时路径
     backup / restore / verify / list   技能相关记忆的快照导出 / 恢复 / 校验 / 列举
+    export-rules [--check]            导出**脱敏**规则集（私有通道分发/漂移比对）
+                                      —— snapshots/ 与 rules/ 均为本机数据（gitignore）：
+                                         规则内容按隐私约束不入库，跨机只走安全私有通道
 
   自测 —— 标准库 unittest（自建临时库，不触碰真实库）：
     python3 test_memory_tool.py
@@ -49,6 +52,7 @@ vibe-coder-loop 记忆 Tool（跨平台：macOS / Linux / Windows）
 维护约定（技能迭代时必守）：
   - 新增/删除技能相关记忆 key → 同步更新 SKILL_LINKED_KEYS 与 backup/README.md 备份范围说明
   - 技能规则/关联内容更新后 → 重新执行 python3 memory_tool.py backup（快照含 skill_version + changelog_top 溯源）
+    并执行 python3 memory_tool.py export-rules 刷新脱敏规则集（本机生成，不入库）
   - 迭代历史唯一事实源 = ../CHANGELOG.md；版本号唯一事实源 = ../manifest.yaml version
 
 数据库路径解析优先级：
@@ -67,6 +71,11 @@ vibe-coder-loop 记忆 Tool（跨平台：macOS / Linux / Windows）
         # --dry-run 只打印将发生的变更（不写库）；--force 放行越界 key（须自行确认范围）
   python3 memory_tool.py verify <file>      # 校验备份/数据库一致性（支持 .json.gz）
         # 硬校验：缺失/值/tags/metadata/created_at/ttl_expires_at + 范围完整性（库内技能 key 是否都进过备份）
+  python3 memory_tool.py export-rules [--check] [--out P] [--dry-run]
+        # 导出脱敏规则集到 rules/skill_memory_canonical.json（**不入库**，仅本机/私有通道）：
+        #   留 key/value/tags/metadata，去掉 db / snapshot 时间戳；本机绝对路径 → ~ / <USERPROFILE>
+        #   脱敏后仍含本机路径/邮箱/凭证 → 拒绝写入（退出码 4，fail-closed）
+        # --check 比对本机规则集与活库（漂移 → 退出码 4）
   python3 memory_tool.py list               # 列出技能相关 key 与当前数据库路径
 
 运行时写入（确定性执行，属 Skill 的 Tool 侧；Skill 只声明「何时调用」）：
@@ -460,8 +469,100 @@ def build_snapshot_payload(db):
         "scope": "vibe-coder-loop skill memories",
         "skill_version": read_skill_version(),
         "changelog_top": read_changelog_top(),
-        "db": str(db),
+        # 不写本机绝对路径：快照可能经私有通道迁移到其他机器（D5）
+        "db": portable_db_path(db),
         "exported_at": int(time.time() * 1000),
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+# ---------------------------------------------------------------------------
+# canonical rules：本机生成的脱敏规则集（不入库；供私有通道分发与漂移比对）
+# ---------------------------------------------------------------------------
+#
+# 两个制品分工（D2 修复）：
+#   1) snapshots/skill_memory_latest.json —— 本机运行时快照：完整条目 + 运行时字段，
+#      含个人记忆/本机路径 → 一律 gitignore，仅本机或私有通道迁移使用。
+#   2) rules/skill_memory_canonical.json —— 脱敏规则集：仅 key/value/tags/metadata，
+#      本机绝对路径换成 ~ / <USERPROFILE> → 同样 gitignore（规则内容按隐私约束不入库），
+#      用途是本机漂移比对（export-rules --check）与私有通道分发。
+# 两者都不入库：仓库只分发协议骨架，规则内容由本机库生成。
+CANONICAL_RULES_FILE = (
+    Path(__file__).resolve().parent / "rules" / "skill_memory_canonical.json"
+)
+
+# 脱敏：绝对主目录 / 个人目录名 → 可移植占位符
+SANITIZE_RULES = (
+    (re.compile(r"/Users/[^/\s\"'`)]+"), "~"),
+    (re.compile(r"/home/[^/\s\"'`)]+"), "~"),
+    (re.compile(r"[A-Za-z]:[\\/]Users[\\/][^\\/\s\"'`)]+"), "<USERPROFILE>"),
+    (re.compile(r"(?:Desktop|Documents|Downloads)/"), "<user-dir>/"),
+)
+
+# 残留检测：脱敏后仍命中 → fail-closed，拒绝写文件
+RESIDUE_RULES = (
+    (re.compile(r"/Users/|/home/"), "个人主目录绝对路径"),
+    (re.compile(r"[A-Za-z]:[\\/]Users[\\/]"), "Windows 个人目录"),
+    (re.compile(r"(?:Desktop|Documents|Downloads)/"), "个人目录名"),
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "邮箱地址"),
+    (
+        re.compile(r"(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})"),
+        "疑似凭证",
+    ),
+)
+
+
+def portable_db_path(db):
+    """快照 db 字段的可移植写法：主目录内 → `~/...`；其他 → `<external-db>`。"""
+    try:
+        p = Path(db).expanduser().resolve()
+        return f"~/{p.relative_to(Path.home()).as_posix()}"
+    except (OSError, RuntimeError, ValueError):
+        return "<external-db>"
+
+
+def sanitize_rules_text(text):
+    for pattern, repl in SANITIZE_RULES:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def rules_residue(text):
+    """返回脱敏残留项（空列表 = 无本机信息）。"""
+    return [label for pattern, label in RESIDUE_RULES if pattern.search(text)]
+
+
+def canonical_signature(payload):
+    """规则集指纹：只比 key→value（时间戳/计数漂移不算差异）。"""
+    entries = payload.get("entries") or []
+    if not isinstance(entries, list):
+        return {}
+    sig = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        key = e.get("key")
+        if isinstance(key, str) and key:
+            sig[key] = e.get("value")
+    return sig
+
+
+def build_canonical_payload(db):
+    """构造脱敏规则集（无 db 绝对路径、无个人目录名）。"""
+    payload = build_snapshot_payload(db)
+    if payload is None:
+        return None
+    entries = []
+    for e in payload["entries"]:
+        item = dict(e)
+        item["value"] = sanitize_rules_text(e["value"])
+        entries.append(item)
+    return {
+        "scope": "vibe-coder-loop canonical rules (sanitized; local only, not versioned)",
+        "skill_version": payload["skill_version"],
+        "changelog_top": payload["changelog_top"],
+        "exported_at": payload["exported_at"],
         "count": len(entries),
         "entries": entries,
     }
@@ -484,7 +585,8 @@ def cmd_backup(args, db):
         )
     print(f"[backup] 技能相关记忆 {len(entries)} 条已备份")
     print(f"[backup] 时间戳快照: {hist}")
-    print(f"[backup] 最新快照:   {latest}（跨机器同步请提交 git）")
+    print(f"[backup] 最新快照:   {latest}（本机备份，勿提交；跨机器迁移走私有通道）")
+    print("[backup] 需要脱敏规则集请执行 export-rules（本机生成，不入库）")
     removed = dedupe_daily_snapshots()
     if removed:
         print(f"[backup] 按天去重: 清理同天多余快照 {len(removed)} 个")
@@ -524,6 +626,9 @@ def cmd_restore(args, db):
     if err or payload is None:
         print(err or "[restore] 备份内容为空。")
         return 1
+    # 快照内的 db 只是「导出时的来源机器」记录，写入目标永远是本机库（D5）
+    if payload.get("db"):
+        print(f"[restore] 忽略备份内 db 字段（{payload.get('db')}）：写入本机库 {db}")
     raw_entries = payload.get("entries", [])
     if not isinstance(raw_entries, list) or len(raw_entries) > MAX_SNAPSHOT_ENTRIES:
         shown = len(raw_entries) if isinstance(raw_entries, list) else type(raw_entries).__name__
@@ -652,6 +757,79 @@ def cmd_restore(args, db):
     print(f"[restore] 更新完成：新增 {inserted} 条，更新 {updated} 条（db={db}）")
     print("[restore] FTS 索引由数据库触发器自动维护，无需额外操作")
     return 0
+
+
+# ============================================================================
+# maintenance: export-rules —— 导出脱敏规则集（本机生成，不入库）
+# ============================================================================
+#
+# 为什么需要它：SKILL.md 的 fail-closed 恢复动作要求「新机器克隆后恢复 skill:* 规则」，
+# 但本机快照含个人记忆与本机路径，不能提交。故把「可分发」与「本机运行时」拆成两个文件：
+#   snapshots/skill_memory_latest.json  （gitignore，本机/私有通道）
+#   rules/skill_memory_canonical.json   （gitignore，脱敏后的规则内容：私有通道分发/漂移比对）
+# 退出码：0 = 写入成功 / 一致；1 = 无源数据或文件缺失；4 = 脱敏残留或规则集漂移（fail-closed）。
+
+
+def cmd_export_rules(args, db):
+    payload = build_canonical_payload(db)
+    if payload is None:
+        print(f"[export-rules] 未找到技能相关记忆（db={db}），无输出。")
+        return 1
+    target = Path(args.out) if args.out else CANONICAL_RULES_FILE
+    blob = json.dumps(payload, ensure_ascii=False, indent=2)
+    residue = rules_residue(blob)
+    if residue:
+        print("[export-rules] 拒绝写入：脱敏后仍含本机/凭证信息（fail-closed）")
+        for label in residues_summary(residue):
+            print(f"  - {label}")
+        print("[next] 清理相关条目内容（本机路径/个人目录名/邮箱/凭证）后重试。")
+        return 4
+
+    if args.check:
+        if not target.exists():
+            print(f"[export-rules] 规则集不存在: {target}")
+            print("[next] 运行 python3 backup/memory_tool.py export-rules 生成并提交。")
+            return 1
+        disk, err = load_payload(target, "export-rules")
+        if err or disk is None:
+            print(err or "[export-rules] 规则集内容为空。")
+            return 1
+        live = canonical_signature(payload)
+        stored = canonical_signature(disk)
+        missing = sorted(set(live) - set(stored))
+        extra = sorted(set(stored) - set(live))
+        changed = sorted(k for k in set(live) & set(stored) if live[k] != stored[k])
+        if missing or extra or changed:
+            print(
+                f"[export-rules] 规则集已漂移：缺 {len(missing)} / 多 {len(extra)}"
+                f" / 值不同 {len(changed)}"
+            )
+            for label, keys in (("缺", missing), ("多", extra), ("值不同", changed)):
+                for k in keys[:10]:
+                    print(f"  - {label}: {k}")
+            print("[next] 运行 python3 backup/memory_tool.py export-rules 刷新并提交。")
+            return 4
+        print(f"[export-rules] 一致：{len(stored)} 条规则与活库同步（{target}）")
+        return 0
+
+    if args.dry_run:
+        print(f"[export-rules] --dry-run：将写入 {len(payload['entries'])} 条 → {target}")
+        return 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(blob + "\n", encoding="utf-8")
+    print(f"[export-rules] 已写入 {len(payload['entries'])} 条脱敏规则: {target}")
+    print("[export-rules] 该文件无本机路径与凭证，可经私有通道分发；rules/ 与 snapshots/ 均由 .gitignore 排除。")
+    return 0
+
+
+def residues_summary(residue):
+    """按类别去重（同一类别可能出现多次匹配）。"""
+    seen, out = set(), []
+    for label in residue:
+        if label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
 
 
 def cmd_verify(args, db):
@@ -2013,6 +2191,19 @@ def main():
     )
     p_verify = sub.add_parser("verify", help="校验备份文件与数据库一致性")
     p_verify.add_argument("file", help="备份 JSON 文件路径")
+    p_er = sub.add_parser(
+        "export-rules",
+        help="导出脱敏规则集（本机生成，不入库；供私有通道分发与漂移比对）",
+    )
+    p_er.add_argument(
+        "--out", default=None, help="输出路径（缺省 backup/rules/skill_memory_canonical.json）"
+    )
+    p_er.add_argument(
+        "--check",
+        action="store_true",
+        help="只比对本机规则集与活库（一致 0 / 漂移 4），不写文件",
+    )
+    p_er.add_argument("--dry-run", action="store_true", help="只打印将写入的条目数")
     sub.add_parser("list", help="列出技能相关 key 与当前数据库路径")
     p_ck = sub.add_parser("check-keys", help="校验给定 key 是否存在（stdin 每行一个；缺 → 退出码 4）")
     p_ck.add_argument("--files", nargs="*", default=None, help="改从文件读取 key（每行一个）")
@@ -2106,6 +2297,7 @@ def main():
         "backup": cmd_backup,
         "restore": cmd_restore,
         "verify": cmd_verify,
+        "export-rules": cmd_export_rules,
         "list": cmd_list,
         "touch": cmd_touch,
         "metrics": cmd_metrics,

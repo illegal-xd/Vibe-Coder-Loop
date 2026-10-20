@@ -211,6 +211,22 @@
 | 70 | **preflight 读盘合一**：新增 `_read_text_cached`（按 `(path, mtime_ns, size)` 记忆化 + 按轮清理），`file_stats` / `read_sections` / 前言判据 / 成本统计共享**同一快照** —— 清单文件读盘 **4 次 → 1 次**（实测 21/21 各 1 次，总读盘 41），并消除 D25 记录的理论 TOCTOU（同轮内跨度与提示必一致） | `backup/memory_tool.py` |
 | 71 | 验证（第六轮） | 单测 **51/51**（+1 读盘缓存行为用例）；双技能 smoke-check HARD 0 / exit 0；模板 exit 3；**规则文件 3758/3800**（单源化净 −1 行）；耗时 0.20s（**读盘减少不改耗时**，如实标注）；收益数字再测（见上方订正块） |
 
+### 十二、体系评估缺陷修复批次（D1–D6，同版本第三批）
+
+> 触发：对仓库做证据驱动体系评估（产物在 `skill-evaluation/`），除基线结论外给出 4 个待验证候选（P1–P4）。本批次按报告逐项落地并**逐项验证**（不再停留在「暂缓待验证」）。评估发现的 D1/D2 属阻断性问题，故本批次优先闭环。
+
+| # | 缺陷 | 修复 | 验证 |
+|---|---|---|---|
+| 72 | **D1/D4（Critical/Medium）** `audit.sh check` 真实仓库崩溃 + 72s（逐行 fork `grep`，9408 forks → macOS Bash 3.2 SIGILL/exit 132） | `check_markdown_links` 改**单文件一次 awk** 提取围栏外链接（含行号），复杂度 O(文件数×fork)；fence 过滤改在 awk 内状态机完成（语义等价） | 全仓 `check` **0.85s / exit 0**（原 72s+/崩溃）；自测 43 → **49 项全过** |
+| 73 | **D6（Low）** 审计自测只用合成小仓库，永不暴露 D1/D4 | `test-audit.sh` 增**规模回归**：1500 行 + 围栏内外混合链接，20s 看门狗，断言不崩溃、围栏外断链仍被检出、围栏内链接仍被忽略 | 该用例 PASS；变异（回退逐行 fork）会被 20s 看门狗判 FAIL |
+| 74 | **D2（High）** 完整规则内容只在 gitignored 快照/local DB，**无任何可校验的规则制品** | 新增 `export-rules`：从活库生成**脱敏规则集** `backup/rules/skill_memory_canonical.json`（主目录→`~`/`<USERPROFILE>`、去 `db` 字段），与活库可机械比对；`SKILL.md` fail-closed 动作改为「经私有通道取得快照/规则集后 restore」；`audit check` 增 **C011**（规则集存在但未脱敏 = high；未生成 = info）。**规则内容仍不入库**（用户隐私裁决：条目正文不外发，仓库只分发协议骨架） | `export-rules --check` → 一致（45 条）；`restore` 规则集 `--dry-run` 通过；C011 双向用例 PASS |
+| 75 | **D5（Low）** 快照内嵌本机绝对路径 `db: /Users/...` | `build_snapshot_payload` 的 `db` 改可移植写法（主目录内 → `~/...`，否则 `<external-db>`）；`restore` 显式忽略备份内 `db` 并提示 | 新增用例断言快照无本机路径、`restore` 打印忽略提示 |
+| 76 | **D3（Medium）** `python3 -m runtime.exec` 不可执行 | 新增 `runtime/exec/__main__.py`（与 `runtime/core` 同构） | `python3 -m runtime.exec --help` 可执行 |
+| 77 | 脱敏护栏（防 D2/D5 复发） | `export-rules` 内置**残留检测**（主目录路径/个人目录名/邮箱/凭证）→ 命中即 **fail-closed exit 4**，不写文件；`.gitignore` 排除 `backup/rules/`；测试样例运行时拼接，避免测试源码自身被审计命中 | 用例：含邮箱 → rc 4 且不落盘；`git check-ignore backup/rules/*` 生效；仓库 `scan --min-severity=high` 无新增命中 |
+| 78 | 验证（本批次） | 单测 **55/55**（+4：脱敏/拒绝/漂移/db 可移植）；`test-audit.sh` **49/49**；`check-protocol` 81/81 零漂移；软链 15/15；smoke-check HARD 0（规则行数 3870 为**既有**超预算，本批次零行数增量）；`audit check` 0.85s / exit 0；提交面 `git ls-files` 不含任何规则/快照文件 |
+
+**说明**：`skill-evaluation/` 报告中的 P1–P4 与本批次 72/73/74/76 一一对应；报告要求「先跑对照再采纳」，故 72–77 均给出修复前后对照数据。
+
 ## v1.22.0 — 上下文成本治理（加载计划 / 结果外置 / 结构化错误码）
 
 > 提交 v1.21.0（dd3b437）后递增。**触发**：对照 `dsh-ops`（DSH 性能工具插件）的省 token 机制做同构分析，得出四项可迁移原则 ——

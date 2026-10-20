@@ -440,6 +440,71 @@ class ToolCase(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertFalse(stale.exists(), "同天/历史时间戳快照应被去重或压缩")
 
+    # ---------- export-rules：可入库的脱敏规则集（fresh clone 恢复源） ----------
+    def _set_value(self, key, value):
+        con = sqlite3.connect(self.db)
+        con.execute("UPDATE memory SET value=? WHERE key=?", (value, key))
+        con.commit()
+        con.close()
+
+    def test_export_rules_sanitizes_paths_and_is_restorable(self):
+        # 敏感样例运行时拼接：测试源码不留可被审计命中的字面量（同 test-audit.sh 约定）
+        sep = "/"
+        home_sample = sep + "Users" + sep + "alice"
+        user_dir = "Desktop"
+        win_sample = "C:" + "\\" + "Users" + "\\" + "alice"
+        self._set_value(
+            "skill:rules/test:demo",
+            f"见 {home_sample}{sep}{user_dir}{sep}github{sep}proj 与 {win_sample}{chr(92)}work",
+        )
+        out_path = self.root / "canonical-paths.json"
+        rc, out = self.run_tool("export-rules", "--out", out_path)
+        self.assertEqual(rc, 0, out)
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+        blob = out_path.read_text(encoding="utf-8")
+        self.assertNotIn("db", payload, "规则集不写 db 字段（本机路径）")
+        for bad in (sep + "Users" + sep, user_dir + sep, "C:" + "\\" + "Users"):
+            self.assertNotIn(bad, blob, f"未脱敏：{bad}")
+        self.assertIn("~/<user-dir>/github/proj", blob, "主目录与个人目录名应替换")
+        self.assertEqual(payload["count"], len(payload["entries"]))
+        # 入库规则集可被 fresh clone 直接 restore
+        rc, out = self.run_tool("restore", out_path, "--dry-run")
+        self.assertEqual(rc, 0, out)
+
+    def test_export_rules_refuses_residue(self):
+        # 邮箱在运行时拼接：不在测试源码里留可被审计命中的字面量（同 test-audit.sh 约定）
+        email = "tester" + "@" + "example.invalid"
+        self._set_value("skill:rules/test:demo", f"联系 {email} 索取")
+        out_path = self.root / "canonical-residue.json"
+        rc, out = self.run_tool("export-rules", "--out", out_path)
+        self.assertEqual(rc, 4, out)
+        self.assertIn("邮箱地址", out)
+        self.assertFalse(out_path.exists(), "脱敏失败必须 fail-closed，不写文件")
+
+    def test_export_rules_check_detects_drift(self):
+        out_path = self.root / "canonical.json"
+        rc, out = self.run_tool("export-rules", "--out", out_path)
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_tool("export-rules", "--out", out_path, "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("一致", out)
+        self._set_value("skill:rules/test:demo", "rule-v2")
+        rc, out = self.run_tool("export-rules", "--out", out_path, "--check")
+        self.assertEqual(rc, 4, out)
+        self.assertIn("值不同", out)
+        self.assertIn("skill:rules/test:demo", out)
+
+    def test_backup_snapshot_db_path_is_portable(self):
+        """快照 db 字段不得写本机绝对路径（D5：跨机迁移会泄露本机目录）。"""
+        latest = self.backup()
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+        self.assertTrue(
+            payload["db"].startswith("~") or payload["db"] == "<external-db>",
+            payload["db"],
+        )
+        self.assertNotIn(str(self.db), json.dumps(payload, ensure_ascii=False))
+
+
 
 class PreflightAndArtifactCase(unittest.TestCase):
     """preflight / artifact / check-keys 三组新命令（加载计划 · 结果外置 · 映射校验）。
@@ -997,7 +1062,6 @@ class PreflightAndArtifactCase(unittest.TestCase):
         keys.write_text("skill:data:with-ttl\t数据\n", encoding="utf-8")
         rc, out = self.run_tool("check-keys", "--files", keys)
         self.assertEqual(rc, 0, out)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
