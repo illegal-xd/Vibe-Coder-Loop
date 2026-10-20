@@ -225,14 +225,14 @@ def _parse_name_status(diff_out: str) -> tuple[list[tuple[str, str]], list[tuple
             i += 1
             if i >= len(parts):
                 break
-            path = parts[i]
+            path = parts[i]  # git -z: 第一个路径是 old_path（rename 时）或普通文件路径
             i += 1
             if status.startswith("R") or status.startswith("C"):
-                # rename/copy：还需读 old_path
+                # rename/copy：path 是 old_path，还需读 new_path
                 if i < len(parts):
-                    old_path = parts[i]
+                    new_path = parts[i]
                     i += 1
-                    renames.append((old_path, path))
+                    renames.append((path, new_path))  # (old, new) ✓
                 else:
                     renames.append(("", path))
             else:

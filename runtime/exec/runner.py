@@ -366,7 +366,7 @@ def run(req: ExecRequest) -> ExecResult:
         sink_err.close()
 
     # 7. 码判定
-    ok = (proc.returncode == 0) and not cancelled
+    ok = (proc.returncode == 0) and not cancelled and not timed_out
     if timed_out:
         vc_code = vc_codes.TIMEOUT
         nxt = vc_codes.next_action(vc_codes.TIMEOUT)
