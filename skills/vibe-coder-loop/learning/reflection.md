@@ -9,7 +9,7 @@ status: active
 
 # Learning: Reflection — 经验反思机制（骨架版）
 
-> **骨架化说明**：触发条件表/Reflection Card 模板/5 Why 要求/Feedback 写入格式已下沉为 `skill:` 规则条目（level:domain, permanent——加载全文执行）；检索失败按本文件摘要降级执行。
+> **骨架化说明**：触发条件表/Reflection Card 模板/5 Why 要求/Feedback 写入格式已下沉为 `skill:` 规则条目（level:domain, permanent——加载全文执行）；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 本文件定义触发式 Reflection 的定位与流程。Reflection 位于 Review 情况 C 通过后、Memory Evolution 之前，由主 agent 执行。
 

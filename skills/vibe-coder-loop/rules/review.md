@@ -12,7 +12,7 @@ status: active
 [Phase: Review]
 [Loop: N]
 
-> **骨架化说明**：本文件为 Review 阶段**流程骨架**。检查清单/维度定义/模板要点已下沉为 `skill:` 规则条目（见文内各节引用），加载时按需 `memory_get`。**内容主源按 `references/governance.md`「Canonical Source」分类判定**（类型 A 以文件为源，如硬约束清单在 `policy/safety.md` §3；类型 C 以记忆条目为源）；memory 检索失败时按本文件摘要降级执行。
+> **骨架化说明**：本文件为 Review 阶段**流程骨架**。检查清单/维度定义/模板要点已下沉为 `skill:` 规则条目（见文内各节引用），加载时按需 `memory_get`。**内容主源按 `references/governance.md`「Canonical Source」分类判定**（类型 A 以文件为源，如硬约束清单在 `policy/safety.md` §3；类型 C 以记忆条目为源）；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 ## 审查角色
 

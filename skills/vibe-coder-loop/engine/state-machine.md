@@ -21,7 +21,7 @@ status: active
 | S3 Decision | `[Phase: Decision]` | 0 | —（Phase Label） | 冲突仲裁（条件触发） |
 | S4 Router | `[Phase: Router]` | 0 | — | 工作流选择（Complexity Gate → 模式映射） |
 | S5 Clarify | `[Phase: Clarify]` | 0 | — | 需求澄清 |
-| S6 Design | `[Phase: Design]` | 0 | Architect | 高层设计 |
+| S6 Design | `[Phase: Design]` | 0（首次）/ N+1（情况 B） | Architect | 高层设计 |
 | S7 Plan | `[Phase: Plan]` | 0 | Architect | 实现计划（Step 五要素：为什么/能力绑定/依赖/完成判据/验证） |
 | S8 Code | `[Phase: Code]` | N | Builder | 编写代码（执行中 Skill 不匹配 → 重新路由，见 `engine/skill-routing.md`） |
 | S9 Test | `[Phase: Test]` | N | Verifier | 测试验证 |
@@ -118,6 +118,8 @@ S14 Safe Mode
 | 不递增条件 | S6/S7 回退属同一轮内修正，Loop 不变 |
 | 上限 | Loop 3 仍未通过 → 停止并输出警告 |
 | 重置 | 用户发送"继续循环"重置计数器（**常规场景**）；**契约外兜底暂停**（`kernel.md` §1「引用对象不可重建」）的恢复**不重置**，维持原 Loop N |
+
+> **Case B 记号**：`Design[0]` 中的 `0` 是设计阶段重入序号，不是 `loop` 字段；`S10→S6` 时 checkpoint `loop` 已为 `N+1`，`S6→S7→S8` 继承该值（机器块见 `engine/transition.md` `S10 -> S6(+1)`）。
 
 ## 角色约束（只保留改变行为的 4 个角色）
 

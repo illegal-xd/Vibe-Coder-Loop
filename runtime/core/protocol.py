@@ -25,6 +25,7 @@ from .state_machine import (
     ESCALATION_EDGES,
     INCREMENT_EDGES,
     INIT_EDGES,
+    INIT_IF_ZERO_EDGES,
     LEGAL_TRANSITIONS,
     LOOP_MAX_QUICK as _LOOP_MAX_QUICK,
     LOOP_MAX_STANDARD,
@@ -101,6 +102,8 @@ def _normalize_modifier(text: str | None) -> str | frozenset[str]:
             normalized.add("reset0")
         elif low == "loop=1":
             normalized.add("init1")
+        elif low == "loop=init":
+            normalized.add("init_if_zero")
         elif low == "resume":
             normalized.add("resume")
         else:
@@ -472,6 +475,12 @@ def check_protocol(
             collector.check()
             if "Loop = 1" not in start_rule or ("S4", "S8") not in INIT_EDGES:
                 collector.drift("loop-table", "起点规则与 INIT_EDGES 不一致")
+            collector.check()
+            if ("S7", "S8") not in INIT_IF_ZERO_EDGES:
+                collector.drift(
+                    "loop-table",
+                    "标准路径 S7→S8 未声明 init_if_zero（首次进 Code 应为 Loop 1）",
+                )
             inc_rule = rules.get("递增条件", "")
             collector.check()
             if not all(code in inc_rule for code in ("S9", "S10")) or not {

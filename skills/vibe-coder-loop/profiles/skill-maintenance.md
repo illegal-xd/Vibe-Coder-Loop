@@ -24,6 +24,7 @@ status: active
 
 Required:
 - kernel.md（资产生命周期 + 反自改纪律）
+- policy/safety.md + policy/lifecycle.md（修改 Skill 文件属用户资产：先归档/保留旧内容，不物理删除）
 - references/governance.md（本 skill **自身**骨架↔规则映射表 + canonical source 分类 + 下沉协议；**通用协议本体**在 `skill-authoring` skill 的 `governance-protocol.md`）
 - engine/transition.md（S13 出口残留验证）+ engine/complexity-gate.md + engine/router.md（S4 分级：本类任务常走 Level 0-Doc）
 - CHANGELOG.md（迭代历史 + 版本规则：正文禁止日期/版本残留）

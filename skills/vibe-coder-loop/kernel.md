@@ -196,7 +196,7 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 ## 7. 计数器规则
 
 - **最多执行 3 轮 Code+Review 循环**（Loop 1/2/3；Intent/Preflight/Decision/Clarify/Design/Plan 阶段不递增计数器）
-- **Quick Loop（Level 0/1）上限 1 轮**：回退修复仅 1 轮上限（Level 0/1 违反 → 回退修复 1 次；仍不通过 → 停止并建议升级 Standard Loop）
-- **情况 B 回退不重置计数器**：Review[N] → Design[0] → Code[N+1]
+- **Quick Loop（Level 0/1）上限 1 轮**：S8 出口内联检查不通过 → 同一轮内回退修复 1 次（不递增 Loop）；Level 1 的 S9 Test 失败 → **不回退 Code**，直接输出 `⚠️ Quick Loop 未通过，建议升级 Standard Loop`（见 `rules/test.md`；运行时 `loop_max=1` 会拒绝 `S9→S8`）。仍不通过 → 停止并建议升级 Standard Loop
+- **情况 B 回退不重置计数器**：Review[N] → Design（重入序号 0，checkpoint `loop=N+1`）→ Code[N+1]
 - **计数器上限拦截**：若 Review[3] 触发情况 B（N+1=4>3），不进入 Design，直接停止
 - **防跳过回退不消耗计数**：因无法引用上一阶段而回退，属同一轮内修正，Code 仍标原 N

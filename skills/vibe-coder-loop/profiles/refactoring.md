@@ -28,14 +28,15 @@ status: active
 Required:
 - kernel.md（资产生命周期三红线 + SAFE MODE 阈值）
 - engine/state-machine.md + engine/complexity-gate.md + engine/router.md（S4 分级）
-- rules/design.md（S6 状态矩阵/先验证再假设）+ rules/plan.md（S7 五要素 Step）+ rules/code.md + rules/review.md
+- rules/intent.md（S1 目标三元组）+ rules/design.md（S6 状态矩阵/先验证再假设）+ rules/plan.md（S7 五要素 Step）+ rules/code.md + rules/test.md（S9）+ rules/review.md
 - policy/safety.md + policy/lifecycle.md（Active→Deprecated→Archived 流转强制）+ policy/confidence.md
 - engine/transition.md（情况 B 回退 + 各阶段出口）
+- learning/memory/lifecycle.md（S12 计数回写）
 
 Optional:
 - rules/orchestration.md（多 subagent/混合编排时）
 - engine/skill-routing.md（能力绑定）
-- learning/memory/promotion.md（S12 收尾 2 步 / 提升协议——提升·Consolidation 由系统承担）+ learning/memory/lifecycle.md（计数回写）
+- learning/memory/promotion.md（S12 收尾 2 步 / 提升协议——提升·Consolidation 由系统承担）
 - learning/evolution.md（经验类型分类：项目经验 vs Skill 提案）
 
 **出口纪律**：

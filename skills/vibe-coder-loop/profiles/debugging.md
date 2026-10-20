@@ -26,14 +26,13 @@ status: active
 
 Required:
 - kernel.md（调试模式触发条件 + 双队列契约）
-- engine/transition.md（S8→S9 回退规则 + S9 串行门控）+ engine/complexity-gate.md + engine/router.md（S4 分级 + Loop 选择）
-- policy/safety.md + policy/confidence.md（Evidence 标注强制）
-- rules/test.md（S9 验证 + 降级条款）
-- rules/code.md（S8 修复，前置检查含 lesson 检索规避）
+- engine/state-machine.md + engine/transition.md（S1 Checkpoint + S8→S9 回退规则 + S9 串行门控）+ engine/complexity-gate.md + engine/router.md（S4 分级 + Loop 选择）
+- policy/safety.md + policy/confidence.md（Evidence 标注强制）+ policy/lifecycle.md（资产归档）
+- rules/intent.md（S1 目标三元组）+ rules/test.md（S9 验证 + 降级条款）→ rules/code.md（S8 修复）→ rules/review.md（S10，L1+）
+- learning/memory/lifecycle.md（「Test→Lesson 学习闭环」：失败先存 lesson 再回退）
 
 Optional:
 - references/debug-mode.md（调试模式触发时）
-- learning/memory/lifecycle.md（「Test→Lesson 学习闭环」：失败先存 lesson 再回退）
 - learning/memory/retrieval.md（lesson/reflection 召回同类失败模式）
 - engine/skill-routing.md（systematic-debugging 等调试类 Skill 绑定）
 - learning/reflection.md（S11 触发判定：解决复杂 Bug / 同类错误重复 ≥2 次）

@@ -62,6 +62,17 @@ class ProtocolConformanceTests(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertTrue(any(d["kind"] == "modifier" for d in report.drifts))
 
+    def test_standard_loop_init_modifier_drift_detected(self) -> None:
+        mutated = self.transition.replace("S7  -> S8(loop=init)", "S7  -> S8")
+        report = self.check(transition_text=mutated)
+        self.assertFalse(report.ok)
+        self.assertTrue(any(d["kind"] == "modifier" and "S7" in d["detail"] for d in report.drifts))
+
+    def test_code_declares_standard_loop_init_edge(self) -> None:
+        from runtime.core.state_machine import INIT_IF_ZERO_EDGES
+
+        self.assertIn(("S7", "S8"), INIT_IF_ZERO_EDGES)
+
     def test_unparsable_block_fail_closed(self) -> None:
         mutated = self.transition.replace("S11 -> S12", "S11 => S12")
         report = self.check(transition_text=mutated)

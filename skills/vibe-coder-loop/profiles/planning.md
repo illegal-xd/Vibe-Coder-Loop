@@ -19,13 +19,13 @@ status: active
 
 **任务分类**：D. Architecture（设计产出）/ A-E 混合多模块；记忆路由行 = 「架构/重构」或「技能/文档维护」视内容（`memory/retrieval.md` 路由表）
 
-**执行路径**：全阶段 S1-S13（Standard/Full Loop）；规划产出后转执行 profile（编码类落地 → `coding.md`）
+**执行路径**：S1–S7（Standard/Full 的设计与计划段）；S8 起编码类转 `coding.md`，审查类转 `review.md`（本 profile 不直接承担 S8–S13）。
 
 **加载**：
 
 Required:
 - kernel.md + policy/safety.md + policy/priority.md（冲突仲裁优先级）
-- engine/state-machine.md（S5-S7 出口）+ engine/transition.md + engine/complexity-gate.md + engine/router.md（S4 分级 + Level 3/4 高风险升级判定）
+- engine/state-machine.md（S1–S7 出口）+ engine/transition.md + engine/complexity-gate.md + engine/router.md（S4 分级 + Level 3/4 高风险升级判定）
 - rules/intent.md（S1）+ rules/design.md（S6）+ rules/plan.md（S7 五要素 Step + 编排决策）
 - engine/skill-routing.md（**仅存在能力缺口的 Step** 才绑定能力载体）
 

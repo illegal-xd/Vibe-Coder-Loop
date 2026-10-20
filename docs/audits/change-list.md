@@ -51,9 +51,9 @@
 
 | 变更 | 文件 | 说明 |
 |---|---|---|
-| 审计工具 v1.0.0 | `scripts/audit.sh`（未跟踪） | `scan/check/report/verify/rules/help/version`；TSV/JSONL；脱敏；严重度过滤；`--fail-on`；Bash 3.2 兼容 |
-| 工具自测 | `scripts/tests/test-audit.sh`（未跟踪） | 51 PASS / 0 FAIL；覆盖规则、脱敏、JSON、退出码、链接/软链/跟踪面/运行状态忽略面检查 |
-| 工具说明 | `docs/audits/audit-tool.md`（未跟踪） | 规则、命令、退出码、限制与维护方式 |
+| 审计工具 v1.0.0 | `scripts/audit.sh`（已跟踪） | `scan/check/report/verify/rules/help/version`；TSV/JSONL；脱敏；严重度过滤；`--fail-on`；Bash 3.2 兼容 |
+| 工具自测 | `scripts/tests/test-audit.sh`（已跟踪） | 51 PASS / 0 FAIL；覆盖规则、脱敏、JSON、退出码、链接/软链/跟踪面/运行状态忽略面检查 |
+| 工具说明 | `docs/audits/audit-tool.md`（已跟踪） | 规则、命令、退出码、限制与维护方式 |
 | 报告基线 | `docs/audits/2026-10-19-open-source-readiness.md` | 修复前发现与修复后状态；保持脱敏 |
 | 生成物 | `docs/audits/baseline.tsv`、`docs/audits/scan-report.md` | 可重复生成；当前仅 H002 info，可安全公开 |
 | 误报自排除 | `scripts/audit.sh` | 扫描器自身与规则文档不参与路径规则匹配 |
@@ -77,7 +77,7 @@
 - Git 历史 `ccda1dd`：未重写、未推送。
 - `LICENSE`：未选择。
 - `skills/vibe-coder-loop/CHANGELOG.md`：append-only，未自动改写。
-- `docs/design/*` 与 `scripts/audit.sh`、`docs/audits/*`：仍为未跟踪文件，提交范围待确认。
+- `docs/design/*` 与 `scripts/audit.sh`、`docs/audits/*`：均已纳入 Git 跟踪（A-19 已闭合）。
 - 未在真实 Windows/Linux 主机运行；仅有 macOS 实跑与静态审查。
 
 ## 八、建议提交分组

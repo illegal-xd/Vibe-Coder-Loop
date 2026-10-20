@@ -27,16 +27,17 @@ status: active
 **加载**：
 
 Required:
+- kernel.md（R0 原则，任何阶段前）
+- engine/state-machine.md + engine/transition.md（S1 Checkpoint + S10 判定路径）
 - engine/complexity-gate.md + engine/router.md（S4 分级 + 三分支细则：Investigation / Level 0-Doc / 判定优先级；**三维审查定义在 router**）
-- rules/review.md（代码向硬约束与审查维度；Investigation 分支不适用）
+- policy/safety.md + policy/confidence.md（安全约束 + Evidence 标注强制）
+- rules/intent.md（S1 目标三元组）+ rules/review.md（代码向硬约束与审查维度；Investigation 分支不适用）
 - references/output-format.md（输出格式规范）
-- policy/confidence.md（Evidence 标注强制）
 
 Optional:
 - references/example.md（Review 格式参考）
 - learning/memory/retrieval.md（调研素材召回：reference:* / lesson:*）
 - learning/reflection.md（审查发现沉淀）
-- engine/state-machine.md（情况 A/B/C 判定路径）
 - 审查类能力载体（code-review 系列；存在能力缺口时才按 `engine/skill-routing.md` 绑定）
 
 **出口纪律**：

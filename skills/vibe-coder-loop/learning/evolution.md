@@ -9,7 +9,7 @@ status: active
 
 # Learning: Evolution — Skill 演化机制（骨架版）
 
-> **骨架化说明**：Patch Proposal 格式/Evaluation 标准/Human Approve 响应/触发条件表/Pattern-Driven 映射/经验分类已下沉为 `skill:` 规则条目（level:domain, permanent——加载全文执行）；检索失败按本文件摘要降级执行。
+> **骨架化说明**：Patch Proposal 格式/Evaluation 标准/Human Approve 响应/触发条件表/Pattern-Driven 映射/经验分类已下沉为 `skill:` 规则条目（level:domain, permanent——加载全文执行）；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 本文件定义 Agent 如何基于经验提出 Skill 优化建议。
 

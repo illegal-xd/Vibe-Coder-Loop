@@ -706,6 +706,20 @@ class PreflightAndArtifactCase(unittest.TestCase):
         finally:
             (self.root / "load_plan.json.bak").rename(self.plan)
 
+    def test_preflight_fails_closed_when_rule_store_empty(self):
+        """DB 存在但 skill:rules/* 为 0 时必须 fail-closed（不得用骨架摘要继续）。"""
+        con = sqlite3.connect(self.db)
+        con.execute("DELETE FROM memory WHERE key LIKE 'skill:rules/%'")
+        con.commit()
+        con.close()
+        rc, out = self.run_tool("preflight", "--level", "2")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("RULE_STORE_MISSING", out)
+        self.assertIn("[next]", out)
+        # --files 是显式应急清单，仍允许执行（不属于静默降级）
+        rc, out = self.run_tool("preflight", "--files", "kernel.md")
+        self.assertEqual(rc, 0, out)
+
     def test_preflight_files_bypasses_missing_plan(self):
         """--files 显式清单不依赖 load_plan.json（fail-closed 的唯一恢复路径，曾失效）。"""
         self.plan.rename(self.root / "load_plan.json.bak")

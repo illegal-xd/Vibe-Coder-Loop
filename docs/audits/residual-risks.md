@@ -11,9 +11,9 @@
 | A-18 | 无 `LICENSE` | 默认“保留所有权利”，他人不能合法复用/分发；公开仓库语义不完整 | 选择 OSI 许可证（如 MIT/Apache-2.0）或明确专有/仅公开可见；由所有者决定 |
 | A-22 | Git 历史 `ccda1dd` 含个人快照/状态内容 | 仅 `git rm --cached` 不会清除历史；一旦推送即公开 | ① 重写历史后再公开；② 新建干净历史（保留工作树）；③ 确认不公开该提交/仓库 |
 | A-13 | `CHANGELOG.md` 含内部项目代号、会话事故与个人工作细节 | 历史变更记录可能泄露内部业务；append-only 原则下未自动改写 | 人工逐条复核；裁剪/脱敏/将仓库私有化；或确认内容可公开 |
-| A-19 | `scripts/audit.sh`、`docs/design/*`、`docs/audits/*`、`.gitattributes`、`docs/installation.md` 等未跟踪 | 不提交则成果不进入版本库；全量 `git add .` 又可能带入本地状态/快照 | 按 `change-list.md` 的分组选择性提交；提交前检查 `git status` |
+| A-19 | ~~`scripts/audit.sh`、`docs/design/*`、`docs/audits/*`、`.gitattributes`、`docs/installation.md` 等未跟踪~~ **已闭合** | 不再阻断——上述文件均已纳入 Git 跟踪（`git ls-files` 可验） | 保留本行仅作历史；后续仍按 `git status` 检查勿误带入本地状态/快照 |
 
-> 这四项未完成前，不应执行 `git push` 到公共远端，也不应创建公开 Release。
+> 当前仍阻断公开的是 A-18 / A-22 / A-13 三项。这三项未完成前，不应执行 `git push` 到公共远端，也不应创建公开 Release。
 
 ## 二、环境与平台风险
 
@@ -31,8 +31,8 @@
 | 风险 | 说明 | 影响 | 缓解 |
 |---|---|---|---|
 | Pi/OpenCode 引用边界 | 文档已声明 OpenCode 优先、其他宿主需等价发现机制；H002 仍为 info | 非 OpenCode 用户可能误认为开箱即用 | 保持兼容矩阵与安装文档的“可选/需适配”措辞；发布说明中重复声明 |
-| Skill 是协议，不是强制代码 | 状态机、恢复、出口清单仍由 LLM 遵循 Markdown；`memory_tool.py` 是唯一确定性代码 | 不同模型/宿主行为可能漂移 | 不宣称“自动保证”；设计文档中的 Core/Exec/Adapter 尚未实现 |
-| 设计文档 `docs/design/*` | 未跟踪的规划稿，引用内部任务/调研日期；已做占位化 | 读者可能把规划当已交付功能 | 如提交，加“设计稿/未实现”标识；或暂不公开 |
+| Skill 是协议，不是强制代码 | 状态机、恢复、出口清单仍由 LLM 遵循 Markdown；`memory_tool.py` 是确定性代码之一 | 不同模型/宿主行为可能漂移 | 不宣称“自动保证”；**Core（`runtime/core`）与 Exec（`runtime/exec`）已实现并有测试**；宿主 Adapter 尚未实现 |
+| 设计文档 `docs/design/*` | 已跟踪的规划稿，引用内部任务/调研日期；已做占位化 | 读者可能把规划当已交付功能 | 已加“设计稿”定位；如公开仍建议复核内容 |
 | 记忆工具 key 变更 | `SKILL_LINKED_KEYS` 由 16 减为 14，移除了两个项目专属 key | 已存在的本地记忆可能出现“孤立 key” | 备份/迁移时保留旧库；如需要，先导出再升级；不影响现有 51 项测试 |
 | 快照含个人数据 | 快照仍在本机 `backup/snapshots/`，已忽略但未删除 | 误提交/误打包会泄露 | 不执行 `git add -f`；迁移只走私有通道；发布前检查 `git ls-files` |
 

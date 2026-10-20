@@ -4,7 +4,7 @@
 
 ## 骨架化设计原则
 
-SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），内容型规则/清单/模板下沉为 `skill:` 前缀记忆条目（level:core/domain + permanent）。加载：进入对应阶段按 key `memory_get`；检索失败按文件内摘要降级执行。
+SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），内容型规则/清单/模板下沉为 `skill:` 前缀记忆条目（level:core/domain + permanent）。加载：进入对应阶段按 key `memory_get`；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 ## Canonical Source（一个规则只能有一个事实源）
 

@@ -2,7 +2,7 @@
 
 面向 Coding Agent 的轻量级工程执行与持续改进框架。本仓库是约束、Skill 与验证工具的**唯一真实源**，供 OpenCode 等宿主通过 Skill 发现机制加载；不绑定单一宿主，也不要求固定安装目录。
 
-> **定位（先读）**：本仓库分发**框架 + 协议骨架**，配套的**私有规则集**（`skill:*` 规则正文）**不在仓库内**——规则由本机 delx-memory 承载，跨机器只经安全私有通道（加密快照）恢复。因此 **fresh clone 不是开箱即用**：未恢复规则集时 Skill **fail-closed**（`[RULE_STORE_MISSING]` 停止；`smoke-check` 以 `MAP_INCONSISTENT` rc=1 退出）——这是**预期行为，不是环境故障**。需要可运行 → 先完成「快速开始」第 3 步。
+> **定位（先读）**：本仓库分发**框架 + 协议骨架**，配套的**私有规则集**（`skill:*` 规则正文）**不在仓库内**——规则由本机 delx-memory 承载，跨机器只经安全私有通道（gzip/JSON 快照，未加密；传输时请自行加密通道）恢复。因此 **fresh clone 不是开箱即用**：未恢复规则集时 Skill **fail-closed**（`[RULE_STORE_MISSING]` 停止；`smoke-check` 以 `MAP_INCONSISTENT` rc=1 退出）——这是**预期行为，不是环境故障**。需要可运行 → 先完成「快速开始」第 3 步。
 
 > 状态：公开分发准备中（框架开源；配套规则集私有）。许可证尚未声明（需项目所有者决策），因此当前默认保留所有权利，暂不建议直接再分发。
 
@@ -80,9 +80,9 @@ Vibe-Coder-Loop/
 
    ```bash
    cd skills/vibe-coder-loop
-   python3 backup/memory_tool.py restore <私有规则快照路径>   # 加密快照，经私有通道获取
-   python3 backup/memory_tool.py verify                       # 校验条目完整性
-   python3 backup/memory_tool.py check-keys --files           # 校验 SKILL 声明的 key 全部存在
+   python3 backup/memory_tool.py restore <私有规则快照路径>   # gzip/JSON 快照，经私有通道获取（未加密）
+   python3 backup/memory_tool.py verify <私有规则快照路径>    # 校验条目完整性
+   bash scripts/smoke-check.sh --table                       # 含 SKILL 声明 key 的存在性校验（4b）
    ```
 
    无规则快照 → 无法启动 Workflow（`[RULE_STORE_MISSING]`）；这不是环境问题，是**定位**（见上方「定位（先读）」）。
@@ -148,6 +148,7 @@ bash scripts/tests/test-audit.sh              # 工具自测（使用虚构路�
 ## 安全与隐私
 
 - 仓库不包含真实凭证；运行状态（`.vibe-kernel/`，含 `.state.md`）与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
+- `runtime/exec` 是**防手滑**，不是权限沙箱：allowlist 只拦截显式的危险命令（`rm -rf`、`git push` 等）；`python3 -c`、`npm` 脚本等仍可执行任意操作。不要把 exec 当作对抗性隔离边界，不可逆操作仍须走 `policy/safety.md` 的 Conflict Card 仲裁。
 - **机检兜底**：`bash scripts/audit.sh check` 的 **C012** 检查「协议声明的运行状态路径（`.vibe-kernel/.state.md`）是否被 `.gitignore` 忽略」，防止协议路径与 `.gitignore` 漂移。
 - **规则内容不入库**：运行状态、记忆快照与脱敏规则集（`backup/snapshots/*`、`backup/rules/*`）均被忽略。仓库只分发协议骨架，规则内容由本机 delx-memory 生成，跨机器只经安全私有通道传输。
 - 示例路径使用 `<repo>`、`/path/to/...`、`$HOME` 或 `%USERPROFILE%`，不依赖作者本机目录。

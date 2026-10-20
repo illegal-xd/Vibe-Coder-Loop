@@ -72,6 +72,7 @@ ESCALATION_EDGES: dict[str, set[str]] = {"*": {"S14"}}
 # 值为 set 表示该边允许多种 Loop 结果，调用方必须显式指定
 LOOP_RULES: dict[tuple[str, str], str | frozenset[str]] = {
     ("S4", "S8"): "init1",
+    ("S7", "S8"): "init_if_zero",
     ("S9", "S8"): "inc",
     ("S10", "S8"): "inc",
     ("S10", "S6"): "inc",
@@ -82,6 +83,9 @@ LOOP_RULES: dict[tuple[str, str], str | frozenset[str]] = {
 INCREMENT_EDGES = frozenset(edge for edge, rule in LOOP_RULES.items() if rule == "inc")
 RESET_EDGES = frozenset(edge for edge, rule in LOOP_RULES.items() if rule == "reset0")
 INIT_EDGES = frozenset(edge for edge, rule in LOOP_RULES.items() if rule == "init1")
+INIT_IF_ZERO_EDGES = frozenset(
+    edge for edge, rule in LOOP_RULES.items() if rule == "init_if_zero"
+)
 MULTI_LOOP_EDGES = frozenset(edge for edge, rule in LOOP_RULES.items() if isinstance(rule, frozenset))
 
 LOOP_MAX_QUICK = 1
@@ -680,6 +684,17 @@ def transition(
                     to_code=target,
                 )
             new_loop = 1
+        elif rule == "init_if_zero":
+            expected = current_loop or 1
+            if loop is not None and loop != expected:
+                return _fail(
+                    vc_codes.INVALID_ARGUMENT,
+                    f"{current_code}→{target} 的 loop 必须为 {expected}，收到 {loop}",
+                    snapshot,
+                    current_code=current_code,
+                    to_code=target,
+                )
+            new_loop = expected
         else:
             if loop is not None and loop != current_loop:
                 return _fail(

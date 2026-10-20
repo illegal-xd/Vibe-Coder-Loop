@@ -17,7 +17,7 @@ status: active
 
 ## 上下文感知路由表
 
-> 已下沉：`skill:learning/memory:query-router`（路由表全量 + 主动关联召回协议 Step 0-4 + 分级执行 + 注入格式，lightweight-queries 已并入本条目）。加载全文执行；检索失败按本文件摘要降级。路由要点：代码事实 → CodeGraph；版本/模块/经验/偏好 → memory；pattern / skill: 规则条目用 `memory_list(prefix)`（FTS5 不匹配前缀 key）。
+> 已下沉：`skill:learning/memory:query-router`（路由表全量 + 主动关联召回协议 Step 0-4 + 分级执行 + 注入格式，lightweight-queries 已并入本条目）。加载全文执行；条目不可用时以本文件（canonical）为准，不存在摘要降级。路由要点：代码事实 → CodeGraph；版本/模块/经验/偏好 → memory；pattern / skill: 规则条目用 `memory_list(prefix)`（FTS5 不匹配前缀 key）。
 
 ## 任务类型 → 规则/经验路由表（Task→Memory Router）
 
@@ -36,7 +36,7 @@ status: active
 
 **执行规则（最小充分召回 / Progressive Retrieval）**：
 
-1. **S1 Intent 后判定任务类型**；S2 Preflight 执行对应**最小召回清单**（`memory_get` 精确 key，不经 search——避免 snippet 截断且保证必中）
+1. **S1 Intent 后判定任务类型**；S2 Preflight 执行对应**最小召回清单**——已知 key 用 `memory_get` 精确取值（不经 search，避免 snippet 截断且保证必中）；经验域按表用 `memory_search`（关键词，≤2 次、取前 5）。`memory_get` 不计入检索次数。
 2. **一次只取最相关的那一类**；类型模糊时**选最可能的一类**起步 —— **不取并集**（旧的「并集召回」策略已废弃）
 3. 执行中发现信息不足 → **按需二次检索**（先说明缺口，再 `memory_search` 关键词）；仍不足 → 第三次
 4. **排序原则**：Relevance > Specificity > Freshness > Frequency；边缘相关的一律不注入

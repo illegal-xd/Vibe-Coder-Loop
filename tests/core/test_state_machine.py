@@ -40,6 +40,20 @@ class TransitionTests(CoreTest):
         self.assertTrue(result.ok)
         self.assertEqual(result.loop, 2)
 
+    def test_v3c_standard_loop_initializes_at_code_entry(self) -> None:
+        """标准路径首次进入 S8 必须是 Loop 1（S7→S8 init_if_zero）。"""
+        self.seed_code("S7", loop=0, level=2)
+        result = self.t("S8")
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.loop, 1)
+
+    def test_v3d_standard_loop_budget_is_three_rounds(self) -> None:
+        """Loop 3 之后不得再进入 S8（文档：最多 3 轮）。"""
+        self.seed_code("S10", loop=3, level=2)
+        result = self.t("S8")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.code, "LOOP_BUDGET_EXHAUSTED")
+
     def test_v3b_case_b_increments_once(self) -> None:
         self.seed_code("S10", loop=1)
         first = self.t("S6", loop=2)

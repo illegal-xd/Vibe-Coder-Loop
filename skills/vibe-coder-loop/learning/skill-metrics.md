@@ -9,7 +9,7 @@ status: active
 
 # Skill Metrics — 指标追踪（骨架版）
 
-> **骨架化说明**：指标定义/失败类型分类/Buffer 结构/存储格式/早期预警规则已下沉为 `skill:` 规则条目（level:domain, permanent——加载全文执行）；检索失败按本文件摘要降级执行。
+> **骨架化说明**：指标定义/失败类型分类/Buffer 结构/存储格式/早期预警规则已下沉为 `skill:` 规则条目（level:domain, permanent——加载全文执行）；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 本文件定义 vibe-coder-loop 的运行指标收集、存储、分析机制。Metrics 是 Memory Evolution 的数据依据，没有 Metrics 的演化是盲目的。
 

@@ -4,6 +4,27 @@
 > 规则：技能文件正文禁止日期/版本备注；变更记录一律追加到本文件（格式 `## vX.Y — 标题`）。
 > 版本策略（用户指令）：**未提交 git 期间版本号保持不变**——同版本内可含多个批次，改动多少次都不迭代；提交后才递增下一版本。
 
+## v1.22.1 — 第二轮评审修复（D1–D9，同版本第四批）
+
+> **同版本第四批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-20-r2.md` 第二轮独立复评发现的 D1–D9。本批修复了 D1（标准 Loop 起点与预算）、D2（空规则库 fail-open）、D3–D8（规则一致性、profile、README、记忆路由、6b 文案、文档漂移）、D9.1–D9.2（协议门禁与 smoke 4b 输出）。D9.3（遗留 `skills/vibe-coder-loop/.state.md` 本地实例）按资产生命周期不物理删除，保持 gitignore + 不引用；D9.4 预算若超限则上调并记明理由（见末尾验证）。
+
+| # | 缺陷 | 修复 | 落点 |
+|---|---|---|---|
+| 1 | D1 标准 Loop 从 0 开始、实际 4 轮 | 新增 `S7→S8: init_if_zero`（首次进 Code=1，Case B 保持 N+1）；机器块加 `(loop=init)`；`check-protocol` 增加 S7→S8 初始化校验；新增 3 个回归测试 | `runtime/core/state_machine.py`、`runtime/core/protocol.py`、`engine/transition.md`、`tests/core/` |
+| 2 | D2 空规则库 preflight rc0 fail-open | `preflight` 在 `skill:rules/*` 为 0 且非 `--files` 时输出 `[RULE_STORE_MISSING]` + rc3；`--files` 应急路径仍允许 | `backup/memory_tool.py`、`backup/test_memory_tool.py` |
+| 3 | D2 11 处“检索失败降级”与 fail-closed 冲突 | 类型 C 骨架文件改为 fail-closed 措辞；`retrieval.md`（文件 canonical）澄清“不存在摘要降级” | `references/*.md`、`rules/*.md`、`learning/*.md` |
+| 4 | D3 Quick Loop 重试三方矛盾 | `kernel.md` §7 改为“S9 失败不回退 Code，建议升级”，与 `rules/test.md` 与 `loop_max=1` 一致 | `kernel.md` |
+| 5 | D4 README 快速开始命令不可执行 | `verify <快照路径>`；key 校验改用 `smoke-check.sh --table`（4b）；“加密快照”改为 gzip/JSON（未加密） | `README.md` |
+| 6 | D5 profile 必读清单缺口 | review/debugging/coding/planning/refactoring/skill-maintenance 补齐 S1/S8/S10/S12 必读 | `profiles/*.md` |
+| 7 | D6 记忆路由精确 key vs memory_search 矛盾 | 散文改为“已知 key 用 memory_get，经验域用 memory_search，均最小充分” | `learning/memory/retrieval.md`、`engine/transition.md` |
+| 8 | D7 smoke 6b 虚假 freshness 声明 | 文案改为“含 updated_at 字段；freshness 由 load-checkpoint 判定”；Case B 记号澄清 | `smoke-check-core.sh`、`engine/transition.md`、`engine/state-machine.md` |
+| 9 | D8 文档漂移（Core/Exec 未实现、未跟踪、加密） | residual-risks / change-list / README 修正现状；2026-10-19 报告加历史快照说明 | `docs/audits/*`、`README.md` |
+| 10 | D9.1 协议门禁盲区 | `check-protocol` 增加 S7→S8 初始化校验 + 回归测试 | `runtime/core/protocol.py`、`tests/core/` |
+| 11 | D9.2 smoke 4b `MISSING\t` 前缀 | 解析 `MISSING`/`NOT_PERMANENT` 前缀，输出分类原因 | `skill-authoring/scripts/smoke-check-core.sh` |
+| 12 | D9.5 exec 非权限沙箱未声明 | README 安全与隐私补一句“exec 是防手滑，不是权限沙箱” | `README.md` |
+
+**验证**：见文末「第二轮评审修复回执」与 `skill-evaluation/evaluation-report-2026-10-20-r2.md` §修复回执。
+
 ## v1.22.1 — 设计收敛补丁（`.state.md` 迁出 + 机器可读契约）
 
 > **同版本第二批**（未提交 git，版本不迭代）。**触发**：对 `docs/design/` 三份 MVP 设计做 P0 级评审，发现 6 项会导致实现跑偏的硬缺陷；其中两项**必须改协议文件**才能闭环，故本批次落 Skill 侧最小增补。核心判别：**运行时状态不属于 Skill 安装目录**，**副本必须被机械校验**。

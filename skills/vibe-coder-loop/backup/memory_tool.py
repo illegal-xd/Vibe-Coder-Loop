@@ -1813,6 +1813,10 @@ def cmd_preflight(args, db):
         if len(rule_keys) > PREFLIGHT_KEY_CAP:
             print(f"  … 另有 {len(rule_keys) - PREFLIGHT_KEY_CAP} 条（超出显示上限，用 memory_list 取全量）")
     else:
+        if not args.files:
+            print("  [RULE_STORE_MISSING] 未找到任何 skill:rules/* 规则条目（规则库缺失）。")
+            print("  [next] 执行 memory_tool.py restore <规则快照> 恢复规则库后重跑 preflight；不得以骨架摘要继续。")
+            return 3
         print("  （无 skill:rules/* 条目 —— 骨架化规则不可用，按文件内摘要降级并标注）")
     print()
 

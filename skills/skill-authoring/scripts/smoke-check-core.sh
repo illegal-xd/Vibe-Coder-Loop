@@ -252,7 +252,19 @@ PY
     if [ "$keys_rc" -eq 4 ]; then
       while IFS= read -r mk; do
         [ -z "$mk" ] && continue
-        smoke_hit MAP_INCONSISTENT "$GOV_FILE" 0 "声明的 key 在记忆库中不存在: $mk"
+        case "$mk" in
+          MISSING$'\t'*)
+            mk="${mk#MISSING$'\t'}"
+            smoke_hit MAP_INCONSISTENT "$GOV_FILE" 0 "声明的 key 在记忆库中不存在: $mk"
+            ;;
+          NOT_PERMANENT$'\t'*)
+            mk="${mk#NOT_PERMANENT$'\t'}"
+            smoke_hit MAP_INCONSISTENT "$GOV_FILE" 0 "声明的 key 缺少 permanent tag（TTL 不变量）: $mk"
+            ;;
+          *)
+            smoke_hit MAP_INCONSISTENT "$GOV_FILE" 0 "声明的 key 校验失败: $mk"
+            ;;
+        esac
       done <<< "$missing"
     elif [ "$keys_rc" -ne 0 ]; then
       smoke_hit MAP_INCONSISTENT "$GOV_FILE" 0 "key 校验命令失败（退出码 $keys_rc）: $missing"
@@ -454,7 +466,7 @@ if not isinstance(d, dict) or [k for k in req if k not in d]:
     sys.exit(1)
 PY
     then
-      [ "$SMOKE_QUIET" -eq 1 ] || echo "  ✓ Checkpoint 单文档可解析且 13 字段齐全（含 updated_at freshness）"
+      [ "$SMOKE_QUIET" -eq 1 ] || echo "  ✓ Checkpoint 单文档可解析且 13 字段齐全（含 updated_at 字段；freshness 由 load-checkpoint 判定）"
     else
       smoke_hit STRUCTURAL_INCONSISTENT "$CHECKPOINT_FILE" 0 "Checkpoint YAML 不可解析（多为多文档/尾随 ---）或 13 字段缺失 —— 按恢复协议会被降级为仅参考"
     fi

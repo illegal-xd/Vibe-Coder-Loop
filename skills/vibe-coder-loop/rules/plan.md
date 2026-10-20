@@ -12,7 +12,7 @@ status: active
 [Phase: Plan]
 [Loop: 0]
 
-> **骨架化说明**：Step 拆分格式与编排决策详表已下沉为 `skill:rules/plan:step-orchestration`（level:domain, permanent——加载全文执行）；检索失败按本文件摘要降级执行。
+> **骨架化说明**：Step 拆分格式与编排决策详表已下沉为 `skill:rules/plan:step-orchestration`（level:domain, permanent——加载全文执行）；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 **要求**：可执行，可拆分。Plan 必须让 Agent 在开始 Coding 之前真正知道"这次任务应该怎么做"。
 

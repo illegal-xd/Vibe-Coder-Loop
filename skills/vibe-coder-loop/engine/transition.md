@@ -18,7 +18,7 @@ status: active
 ```text
 <!-- vc:transitions v1
 # 语法：<from> -> <to>[, <to>]*        ;  "| pause" = 暂停等用户输入（不是状态，不落 phase）
-# 修饰：(+1)=Loop+1   (loop=0)=Loop 归 0   (loop=1)=Loop 初始化   (resume)=维持原 Loop
+# 修饰：(+1)=Loop+1   (loop=0)=Loop 归 0   (loop=1)=Loop 初始化   (loop=init)=首次进 S8 初始化为 1，已有 N+1 则保持   (resume)=维持原 Loop
 #       (a/b)=该边允许多种 Loop 结果，调用方须显式指定（缺失 → INVALID_ARGUMENT）
 # 自环：S8->S8（同轮自检修复）合法且 Loop 不变，不列为边
 S0  -> S1
@@ -28,7 +28,7 @@ S3  -> S4 | pause
 S4  -> S5, S8(loop=1)
 S5  -> S6
 S6  -> S7
-S7  -> S8, S10
+S7  -> S8(loop=init), S10
 S8  -> S9, S13
 S9  -> S10, S8(+1)
 S10 -> S11, S8(+1), S6(+1), S13
@@ -44,7 +44,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 ## S1 Intent → S2 Preflight
 
-> **Checkpoint（循环开始，强制）**：先读 `<project_root>/.vibe-kernel/.state.md`——不存在 → 从 `<skill>/.state.template.md` 复制创建；存在 → 做 freshness + **13 字段**校验（含 `updated_at` freshness，机械判定见 `scripts/smoke-check.sh` 6b），通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新该文件；轮次收尾（S13）必写一次 `status` + `resume`。**
+> **Checkpoint（循环开始，强制）**：先读 `<project_root>/.vibe-kernel/.state.md`——不存在 → 从 `<skill>/.state.template.md` 复制创建；存在 → 做 freshness + **13 字段**校验（含 `updated_at` 字段存在性，机械判定见 `scripts/smoke-check.sh` 6b；freshness 值由 `runtime.core load-checkpoint` 判定）。通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新该文件；轮次收尾（S13）必写一次 `status` + `resume`。**
 
 **出口条件**：
 - [ ] 目标三元组已输出（显式意图 + 隐含约束 + 风险标签）
@@ -62,7 +62,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 > **Level 0 轻量 S2 范围**：Level 0（Quick Loop）的 S2 仅执行第 1 项（Task→Memory Router 最小召回 Step 0-1）+ 消费清单记录；其余检查项（代码向检查）由 Level 1+ 执行。Level 0 与 S2 的职责边界见 `engine/complexity-gate.md`「Level 0 细分」（唯一事实源）。
 
 **出口条件**：
-- [ ] **Task→Memory Router 已执行（强制）**：S1 判定任务类型后，按 `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」执行对应**强制召回清单**（`memory_get` 精确 key，不经 search——防 snippet 截断 + 保证必中）。**路由表唯一事实源 = `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节**（`skill:learning/memory:query-router` 条目为其可执行副本），本文件不重复清单内容。**此项为状态机强制动作，不依赖 Agent 自发检索**
+- [ ] **Task→Memory Router 已执行（强制）**：S1 判定任务类型后，按 `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」执行对应**强制召回清单**（已知 key 用 `memory_get` 精确取值，不经 search；经验域用 `memory_search`，均须最小充分——防 snippet 截断 + 保证必中）。**路由表唯一事实源 = `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节**（`skill:learning/memory:query-router` 条目为其可执行副本），本文件不重复清单内容。**此项为状态机强制动作，不依赖 Agent 自发检索**
 - [ ] 上下文感知路由已执行（按用户输入特征选择 memory/codegraph 路径，清单外条目按需加载）
 - [ ] CodeGraph 新鲜度检查已标注
 - [ ] 版本号一致性检查已标注
@@ -131,6 +131,8 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 - [ ] 若产生可复用项目约束，按 `learning/memory/lifecycle.md` 路径 B/C 写入记忆
 
 **转移**：`>>> 进入 Code`
+
+**Loop 初始化**：S7→S8 首次进入时 Loop=1；若从 S10 情况 B 回退，S6/S7 已携带 N+1，S8 保持 N+1（不二次递增）。
 
 **Investigation 分支**（E 类只读任务，Router 判定后生效）：
 - S7 输出**调查步骤清单**（替代代码实现计划）→ 跳过 S8/S9 → `>>> 进入 S10 文档审查`
