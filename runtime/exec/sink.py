@@ -81,13 +81,16 @@ class Sink:
     def head_text(self, *, encoding: str = "utf-8", errors: str = "replace") -> str:
         return bytes(self.buf).decode(encoding, errors)
 
-    def spill_content(self, *, encoding: str = "utf-8", errors: str = "replace") -> str | None:
-        """读取 spill 文件全部内容。落盘量大时慎用。"""
+    def spill_content(self, *, encoding: str = "utf-8", errors: str = "replace",
+                       max_bytes: int | None = None) -> str | None:
+        """读取 spill 文件内容。max_bytes 限制读取量（避免全文读入内存违反有界原则）。"""
         if self.spill_path is None or self.spill_file is None:
             return None
         try:
             self.spill_file.flush()
             with open(self.spill_path, "rb") as f:
+                if max_bytes is not None:
+                    return f.read(max_bytes).decode(encoding, errors)
                 return f.read().decode(encoding, errors)
         except OSError:
             return None

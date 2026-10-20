@@ -1,4 +1,4 @@
-"""E1–E16 验收场景测试。
+"""E1–E16 验收场景测试（审查强化版）。
 
 事实源：docs/design/mvp-2-execution-verification.md §九
 """
@@ -14,8 +14,9 @@ import unittest
 from runtime.exec import ExecRequest, run
 from runtime.exec.sink import Sink
 from runtime.exec.fingerprint import compute_fingerprint
-from runtime.exec.normalizers import normalize
+from runtime.exec.normalizers import normalize, infer_lang
 from runtime.exec import policy
+from runtime.exec.diff import summarize_diff
 
 from .util import ExecTest
 
@@ -25,7 +26,26 @@ def _req(cmd, cwd, **kw) -> ExecRequest:
 
 
 class TestE1E2Pytest(ExecTest):
-    """E1: pytest 全过；E2: pytest 部分失败。"""
+    """E1: pytest 全过；E2: pytest 部分失败。用真实 pytest 格式输出。"""
+
+    PYTEST_PASS = (
+        "============================= test session starts ==============================\n"
+        "collected 3 items\n\n"
+        "tests/test_a.py ... [100%]\n\n"
+        "============================== 3 passed in 0.50s ==============================\n"
+    )
+    PYTEST_FAIL = (
+        "============================= test session starts ==============================\n"
+        "collected 4 items\n\n"
+        "tests/test_a.py ...F [100%]\n\n"
+        "=================================== FAILURES ===================================\n"
+        "tests/test_a.py::test_d\n"
+        "    assert 1 == 2\n"
+        "E   assert 1 == 2\n"
+        "=========================== short test summary info ===========================\n"
+        "FAILED tests/test_a.py::test_d - assert 1 == 2\n"
+        "=========================== 3 passed, 1 failed in 0.50s ========================\n"
+    )
 
     def test_e1_success_ok_true(self) -> None:
         r = run(_req(["python3", "-c", "print('ok')"], self.tmp, timeout_ms=10000))
@@ -34,6 +54,22 @@ class TestE1E2Pytest(ExecTest):
         self.assertIsNone(r.vc_code)
         self.assertFalse(r.externalized)
 
+    def test_e1_pytest_normalize_pass(self) -> None:
+        """验证 pytest 归一化器正确解析 pass_count。"""
+        norm = normalize("pytest", self.PYTEST_PASS, "", 0, ["pytest"])
+        self.assertIsNotNone(norm)
+        self.assertEqual(norm.kind, "test")
+        self.assertEqual(norm.pass_count, 3)
+        self.assertEqual(norm.fail_count, 0)
+
+    def test_e2_pytest_normalize_fail(self) -> None:
+        """验证 pytest 归一化器正确解析 fail_count + error_summaries。"""
+        norm = normalize("pytest", self.PYTEST_FAIL, "", 1, ["pytest"])
+        self.assertIsNotNone(norm)
+        self.assertEqual(norm.pass_count, 3)
+        self.assertEqual(norm.fail_count, 1)
+        self.assertTrue(len(norm.error_summaries) > 0)
+
     def test_e2_failure_fingerprint_and_norm(self) -> None:
         r = run(_req(["python3", "-c", "import sys; sys.exit(2)"], self.tmp, timeout_ms=10000))
         self.assertFalse(r.ok)
@@ -41,12 +77,18 @@ class TestE1E2Pytest(ExecTest):
         self.assertTrue(r.fingerprint.startswith("fp:"))
         self.assertIsNotNone(r.normalized)
 
+    def test_e2_python3_m_pytest_recognized(self) -> None:
+        """DL-04 修复：python3 -m pytest 应被 infer_lang 识别为 pytest。"""
+        self.assertEqual(infer_lang(["python3", "-m", "pytest", "-x"]), "pytest")
+        self.assertEqual(infer_lang(["python", "-m", "pytest"]), "pytest")
+        self.assertEqual(infer_lang(["pytest", "-v"]), "pytest")
+
 
 class TestE3OutputBound(ExecTest):
     """E3/E3b/E3c: 输出有界。"""
 
     def test_e3_externalize_and_ref(self) -> None:
-        # 产生超过 max_output_bytes 的输出，启用外置
+        """TS-10 强化：断言 ref + externalized + artifact_error。"""
         from runtime.core.artifacts import ArtifactStore
         from runtime.core.checkpoint import StateResolver
 
@@ -65,12 +107,31 @@ class TestE3OutputBound(ExecTest):
         )
         self.assertTrue(r.truncated)
         self.assertEqual(r.vc_code, "OUTPUT_LIMIT")
-        # stdout_head 仍有界可用
         self.assertLessEqual(len(r.stdout_head.encode("utf-8")), 200)
-        self.assertEqual(r.stdout_bytes, 200001)  # 真实总字节
+        self.assertEqual(r.stdout_bytes, 200001)
+        # TS-10 强化断言
+        self.assertTrue(r.externalized)
+        self.assertIsNotNone(r.stdout_ref)
+        self.assertIsNone(r.artifact_error)
+
+    def test_e3_no_store_truncated_sets_output_limit(self) -> None:
+        """TS-01 修复验证：无 artifact_store 时 truncated 仍设 OUTPUT_LIMIT。"""
+        r = run(
+            _req(
+                ["python3", "-c", "print('x'*10000)"],
+                self.tmp,
+                timeout_ms=15000,
+                max_output_bytes=100,
+                max_spill_bytes=100000,
+            )
+        )
+        self.assertTrue(r.truncated)
+        self.assertEqual(r.vc_code, "OUTPUT_LIMIT")
+        self.assertFalse(r.externalized)
+        self.assertIsNone(r.stdout_ref)
 
     def test_e3b_memory_bounded(self) -> None:
-        """内存前缀恒有界（Sink 不变量 #1）：head ≤ max_output_bytes。"""
+        """E3b 必测项：head ≤ max_output_bytes（严格 1× 上限）。"""
         r = run(
             _req(
                 ["python3", "-c", "import sys; sys.stdout.write('y'*10_000_000)"],
@@ -81,9 +142,8 @@ class TestE3OutputBound(ExecTest):
             )
         )
         self.assertTrue(r.truncated)
-        # 内存前缀有界：head 编码字节 ≤ max_output_bytes（不等大（3×max_output_bytes）
-        self.assertLessEqual(len(r.stdout_head.encode("utf-8")), 50_000 * 3)
-        # 真实总字节准确
+        # 严格断言：head 编码字节 ≤ max_output_bytes
+        self.assertLessEqual(len(r.stdout_head.encode("utf-8")), 50_000)
         self.assertEqual(r.stdout_bytes, 10_000_000)
 
     def test_e3c_spill_overflow_dropped(self) -> None:
@@ -102,19 +162,19 @@ class TestE3OutputBound(ExecTest):
 
 
 class TestE4EnvError(ExecTest):
-    """E4: 命令不存在 → ENV_ERROR（不消耗 Loop）。"""
+    """E4: 命令不存在 → ENV_ERROR/SCOPE_DENIED。"""
 
-    def test_env_error_for_missing_allowlisted_binary(self) -> None:
-        # allowlist 内但未安装的二进制
-        r = run(_req(["pytest", "--version"], self.tmp, timeout_ms=10000))
-        # pytest 可能存在也可能不存在；若不存在则 ENV_ERROR
-        if not r.ok:
-            self.assertIn(r.vc_code, ("ENV_ERROR", ""))
-
-    def test_scope_denied_for_unlisted_binary(self) -> None:
+    def test_e4_scope_denied_unlisted(self) -> None:
+        """不在 allowlist 的二进制 → SCOPE_DENIED（无条件断言）。"""
         r = run(_req(["nonexistent_cmd_xyz"], self.tmp, timeout_ms=10000))
         self.assertFalse(r.ok)
         self.assertEqual(r.vc_code, "SCOPE_DENIED")
+
+    def test_e4_env_error_allowlisted_missing(self) -> None:
+        """在 allowlist 但 PATH 中不存在 → ENV_ERROR（无条件断言）。"""
+        r = run(_req(["vitest", "--version"], self.tmp, timeout_ms=10000))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.vc_code, "ENV_ERROR")
 
 
 class TestE5TimeoutCancel(ExecTest):
@@ -155,9 +215,11 @@ class TestE5TimeoutCancel(ExecTest):
         )
         self.assertFalse(r.ok)
         self.assertEqual(r.vc_code, "CANCELLED")
+        # TS-16 强化：验证进程被终止
+        self.assertFalse(r.tree_leaked)
 
     def test_e5c_graceful_then_sigkill(self) -> None:
-        # 忽略 SIGTERM 的进程 → 宽限后 SIGKILL
+        """E5c 必测项：忽略 SIGTERM → 宽限后 SIGKILL；tree_leaked=False。"""
         script = (
             "import signal, time\n"
             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
@@ -168,6 +230,22 @@ class TestE5TimeoutCancel(ExecTest):
         )
         self.assertFalse(r.ok)
         self.assertEqual(r.vc_code, "TIMEOUT")
+        # TS-12 强化：SIGKILL 必须生效，tree_leaked=False
+        self.assertFalse(r.tree_leaked)
+
+    def test_e5c_subprocess_tree_killed(self) -> None:
+        """验证孙进程也被终止（整树 killpg）。"""
+        script = (
+            "import subprocess, time\n"
+            "p = subprocess.Popen(['python3', '-c', 'import time; time.sleep(60)'])\n"
+            "time.sleep(30)\n"
+        )
+        r = run(
+            _req(["python3", "-c", script], self.tmp, timeout_ms=400, kill_grace_ms=500)
+        )
+        self.assertFalse(r.ok)
+        self.assertEqual(r.vc_code, "TIMEOUT")
+        self.assertFalse(r.tree_leaked)
 
 
 class TestE6FingerprintStability(ExecTest):
@@ -183,8 +261,39 @@ class TestE6FingerprintStability(ExecTest):
     def test_e7_different_failure_different_fp(self) -> None:
         r1 = run(_req(["python3", "-c", "import sys; sys.exit(2)"], self.tmp, timeout_ms=10000))
         r2 = run(_req(["python3", "-c", "import sys; sys.exit(3)"], self.tmp, timeout_ms=10000))
-        # 不同 exit code → 不同指纹
         self.assertNotEqual(r1.fingerprint, r2.fingerprint)
+
+    def test_e6_consecutive_to_core(self) -> None:
+        """E6: 连续 2 次同指纹 → Core repeat_check 触发 NO_PROGRESS。"""
+        from runtime.core import WorkflowCore, transition
+
+        os.environ["HOME"] = self.tmp
+        core = WorkflowCore(self.tmp)
+        core.transition("S1", reason="start")
+        core.transition("S8", loop=1)
+
+        cmd = ["python3", "-c", "import sys; sys.exit(2)"]
+        r1 = run(_req(cmd, self.tmp, timeout_ms=10000))
+        fr1 = core.feed_exec(r1.to_core_result())
+        self.assertFalse(fr1.no_progress)
+
+        r2 = run(_req(cmd, self.tmp, timeout_ms=10000))
+        fr2 = core.feed_exec(r2.to_core_result())
+        self.assertTrue(fr2.no_progress)
+        self.assertEqual(fr2.consecutive_count, 2)
+
+
+class TestE7bCrossStageSameFp(unittest.TestCase):
+    """E7b: 同错跨 S8/S9 同指纹。"""
+
+    def test_e7b_same_fp_different_stage(self) -> None:
+        from runtime.exec.normalizers import NormalizedResult
+
+        norm = NormalizedResult(kind="test", fail_count=1, error_summaries=["e"])
+        cmd = ["python3", "-c", "x"]
+        fp_s8 = compute_fingerprint(cmd, 2, norm, stderr_head="err", cwd="/tmp")
+        fp_s9 = compute_fingerprint(cmd, 2, norm, stderr_head="err", cwd="/tmp")
+        self.assertEqual(fp_s8, fp_s9)
 
 
 class TestE8DiffSixClasses(ExecTest):
@@ -193,16 +302,12 @@ class TestE8DiffSixClasses(ExecTest):
     def setUp(self) -> None:
         super().setUp()
         self.init_git_repo()
-        # 初始提交
-        (os.path.join(self.tmp, "a.py"))
         with open(os.path.join(self.tmp, "a.py"), "w") as f:
             f.write("a=1\n")
         self._git("add", ".")
         self._git("commit", "-qm", "init")
 
     def test_e8_modified_untracked(self) -> None:
-        from runtime.exec import summarize_diff
-
         with open(os.path.join(self.tmp, "a.py"), "w") as f:
             f.write("a=2\n")
         with open(os.path.join(self.tmp, "b.py"), "w") as f:
@@ -211,20 +316,15 @@ class TestE8DiffSixClasses(ExecTest):
         self.assertIn("a.py", [e.path for e in s.modified])
         self.assertIn("b.py", [e.path for e in s.untracked])
 
-    def test_e8b_staged_included(self) -> None:
-        from runtime.exec import summarize_diff
-
+    def test_e8b_staged_in_added(self) -> None:
+        """TS-19 强化：staged 新增应出现在 added（修复 -z 解析后）。"""
         with open(os.path.join(self.tmp, "c.py"), "w") as f:
             f.write("c=1\n")
-        self._git("add", "c.py")  # 已暂存
+        self._git("add", "c.py")
         s = summarize_diff(self.tmp)
-        # c.py 应出现在 added 或 untracked
-        all_paths = [e.path for e in s.added + s.untracked + s.modified]
-        self.assertIn("c.py", all_paths)
+        self.assertIn("c.py", [e.path for e in s.added])
 
     def test_e8c_untracked_in_drift(self) -> None:
-        from runtime.exec import summarize_diff
-
         with open(os.path.join(self.tmp, "new.py"), "w") as f:
             f.write("n=1\n")
         s = summarize_diff(self.tmp, plan_files=["a.py"])
@@ -232,11 +332,33 @@ class TestE8DiffSixClasses(ExecTest):
         unplanned = [e.path for e in s.plan_drift.unplanned]
         self.assertIn("new.py", unplanned)
 
+    def test_e8d_rename_detected(self) -> None:
+        """E8d：重命名被记为 rename，不算成删+增。"""
+        os.rename(os.path.join(self.tmp, "a.py"), os.path.join(self.tmp, "a_renamed.py"))
+        self._git("add", "-A")
+        s = summarize_diff(self.tmp)
+        renamed_paths = [(f.path, t.path) for f, t in s.renamed]
+        self.assertTrue(
+            any("a.py" in f and "a_renamed" in t for f, t in renamed_paths),
+            f"expected rename a.py → a_renamed.py, got {renamed_paths}",
+        )
+        # rename 不算成 deleted + added
+        added_paths = [e.path for e in s.added]
+        deleted_paths = [e.path for e in s.deleted]
+        self.assertNotIn("a_renamed.py", added_paths)
+        self.assertNotIn("a.py", deleted_paths)
+
+    def test_e8_numstat_correct(self) -> None:
+        """DL-03 修复验证：numstat 正确解析 insertions/deletions。"""
+        with open(os.path.join(self.tmp, "a.py"), "w") as f:
+            f.write("a=2\nb=3\n")
+        s = summarize_diff(self.tmp)
+        self.assertGreater(s.total_insertions, 0)
+        self.assertGreater(s.total_deletions, 0)
+
 
 class TestE9HighRisk(ExecTest):
     def test_e9_high_risk_files(self) -> None:
-        from runtime.exec import summarize_diff
-
         self.init_git_repo()
         with open(os.path.join(self.tmp, "auth.py"), "w") as f:
             f.write("# auth\n")
@@ -246,6 +368,29 @@ class TestE9HighRisk(ExecTest):
             f.write("# auth changed\n")
         s = summarize_diff(self.tmp)
         self.assertIn("auth.py", [e.path for e in s.high_risk_files])
+
+    def test_e9_key_not_false_positive(self) -> None:
+        """DL-13 修复：keyboard.py 不触发高风险。"""
+        self.init_git_repo()
+        with open(os.path.join(self.tmp, "keyboard.py"), "w") as f:
+            f.write("# keyboard\n")
+        self._git("add", ".")
+        self._git("commit", "-qm", "init")
+        with open(os.path.join(self.tmp, "keyboard.py"), "w") as f:
+            f.write("# keyboard v2\n")
+        s = summarize_diff(self.tmp)
+        self.assertNotIn("keyboard.py", [e.path for e in s.high_risk_files])
+
+    def test_e9_api_key_is_high_risk(self) -> None:
+        self.init_git_repo()
+        with open(os.path.join(self.tmp, "api_key.py"), "w") as f:
+            f.write("# key\n")
+        self._git("add", ".")
+        self._git("commit", "-qm", "init")
+        with open(os.path.join(self.tmp, "api_key.py"), "w") as f:
+            f.write("# changed\n")
+        s = summarize_diff(self.tmp)
+        self.assertIn("api_key.py", [e.path for e in s.high_risk_files])
 
 
 class TestE10PlanDrift(ExecTest):
@@ -258,8 +403,6 @@ class TestE10PlanDrift(ExecTest):
         self._git("commit", "-qm", "init")
 
     def test_e10_unplanned(self) -> None:
-        from runtime.exec import summarize_diff
-
         with open(os.path.join(self.tmp, "a.py"), "w") as f:
             f.write("a=2\n")
         with open(os.path.join(self.tmp, "x.py"), "w") as f:
@@ -268,32 +411,83 @@ class TestE10PlanDrift(ExecTest):
         self.assertIn("x.py", [e.path for e in s.plan_drift.unplanned])
 
     def test_e10b_missing(self) -> None:
-        from runtime.exec import summarize_diff
-
         s = summarize_diff(self.tmp, plan_files=["a.py", "declared_but_unchanged.py"])
         self.assertIn("declared_but_unchanged.py", [e.path for e in s.plan_drift.missing])
 
 
 class TestE11NonGitBaseline(ExecTest):
     def test_e11_first_call_creates_baseline(self) -> None:
-        from runtime.exec import summarize_diff
-
         with open(os.path.join(self.tmp, "x.py"), "w") as f:
             f.write("x=1\n")
         s = summarize_diff(self.tmp)
         self.assertTrue(s.degraded)
-        self.assertIsNone(s.plan_drift)
+        self.assertIsNone(s.plan_drift)  # DL-12: first_run → None
 
     def test_e11_second_call_detects_changes(self) -> None:
-        from runtime.exec import summarize_diff
-
         with open(os.path.join(self.tmp, "x.py"), "w") as f:
             f.write("x=1\n")
-        summarize_diff(self.tmp)  # 建基线
+        summarize_diff(self.tmp)
         with open(os.path.join(self.tmp, "y.py"), "w") as f:
             f.write("y=1\n")
         s = summarize_diff(self.tmp)
         self.assertIn("y.py", [e.path for e in s.added])
+
+    def test_e11_first_run_plan_drift_none(self) -> None:
+        """DL-12 修复：first_run 且有 plan_files → plan_drift=None（非全 missing）。"""
+        s = summarize_diff(self.tmp, plan_files=["a.py", "b.py"])
+        self.assertIsNone(s.plan_drift)
+
+
+class TestE12TruncatedNoFalseZero(unittest.TestCase):
+    """E12: truncated=True 且无统计行 → None（不报 0 failed）。"""
+
+    def test_e12_pytest_truncated_no_stats(self) -> None:
+        norm = normalize("pytest", "no stats here", "", 1, ["pytest"], truncated=True)
+        self.assertIsNone(norm)
+
+    def test_e12_generic_truncated_still_works(self) -> None:
+        norm = normalize("generic", "some output", "", 1, ["cmd"], truncated=True)
+        self.assertIsNotNone(norm)
+
+
+class TestE14EnvRedact(ExecTest):
+    """E14/E14b: 环境隔离 + 脱敏。"""
+
+    def test_e14_env_isolation(self) -> None:
+        """E14: 宿主敏感 env 变量不传递到子进程。"""
+        os.environ["SECRET_TOKEN_TEST"] = "supersecret123"
+        try:
+            r = run(
+                _req(
+                    ["python3", "-c", "import os; print(os.environ.get('SECRET_TOKEN_TEST', 'ABSENT'))"],
+                    self.tmp,
+                    timeout_ms=10000,
+                )
+            )
+            self.assertTrue(r.ok)
+            self.assertIn("ABSENT", r.stdout_head)
+            self.assertNotIn("supersecret123", r.stdout_head)
+        finally:
+            del os.environ["SECRET_TOKEN_TEST"]
+
+    def test_e14b_secret_redacted(self) -> None:
+        """E14b 必测项：env 中的 token 值若被打到输出 → 被脱敏。"""
+        os.environ["GITHUB_TOKEN"] = "ghp_" + "a" * 36
+        try:
+            r = run(
+                _req(
+                    ["python3", "-c", "import os; v=os.environ.get('GITHUB_TOKEN',''); print(f'GITHUB_TOKEN={v}')"],
+                    self.tmp,
+                    timeout_ms=10000,
+                    env_passthrough=["GITHUB_TOKEN"],
+                )
+            )
+            self.assertTrue(r.ok)
+            self.assertGreaterEqual(r.env_redactions, 1)
+            self.assertNotIn("ghp_aaaa", r.stdout_head)
+            self.assertIn("REDACTED", r.stdout_head)
+        finally:
+            del os.environ["GITHUB_TOKEN"]
 
 
 class TestE15PolicyDeny(ExecTest):
@@ -307,20 +501,27 @@ class TestE15PolicyDeny(ExecTest):
         self.assertFalse(r.ok)
         self.assertEqual(r.vc_code, "SCOPE_DENIED")
 
+    def test_e15_git_fetch_denied(self) -> None:
+        """TS-05 修复：非只读 git 子命令被拒绝。"""
+        r = run(_req(["git", "fetch"], self.tmp, timeout_ms=10000))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.vc_code, "SCOPE_DENIED")
 
-class TestE14EnvRedact(ExecTest):
-    def test_e14b_secret_redacted(self) -> None:
-        r = run(
-            _req(
-                ["python3", "-c", "print('GITHUB_TOKEN=ghp_' + 'a'*36)"],
-                self.tmp,
-                timeout_ms=10000,
-            )
-        )
+    def test_e15_git_pull_denied(self) -> None:
+        r = run(_req(["git", "pull"], self.tmp, timeout_ms=10000))
+        self.assertFalse(r.ok)
+        self.assertEqual(r.vc_code, "SCOPE_DENIED")
+
+    def test_e15_git_readonly_allowed(self) -> None:
+        """只读 git 子命令（status/log/diff）仍允许。"""
+        self.init_git_repo()
+        with open(os.path.join(self.tmp, "a.txt"), "w") as f:
+            f.write("a\n")
+        self._git("add", ".")
+        self._git("commit", "-qm", "init")
+        r = run(_req(["git", "status"], self.tmp, timeout_ms=10000))
         self.assertTrue(r.ok)
-        self.assertGreaterEqual(r.env_redactions, 1)
-        self.assertNotIn("ghp_aaaaa", r.stdout_head)
-        self.assertIn("REDACTED", r.stdout_head)
+        self.assertIsNone(r.vc_code)
 
 
 class TestSink(ExecTest):
@@ -334,11 +535,21 @@ class TestSink(ExecTest):
 
     def test_dropped_bytes(self) -> None:
         sink = Sink(cap=50, max_spill=100)
-        sink.write(b"x" * 300)  # 50 内存 + 100 spill + 150 丢弃
+        sink.write(b"x" * 300)
         self.assertEqual(sink.dropped, 150)
         self.assertEqual(sink.in_memory, 50)
         self.assertEqual(sink.spilled, 100)
         self.assertEqual(sink.total_bytes, 300)
+        sink.close()
+
+    def test_spill_content_max_bytes(self) -> None:
+        """DL-07 修复：spill_content 支持 max_bytes 限制读取量。"""
+        sink = Sink(cap=50, max_spill=10_000)
+        sink.write(b"x" * 5000)
+        full = sink.spill_content()
+        self.assertEqual(len(full), 4950)  # 5000 - 50 in memory
+        limited = sink.spill_content(max_bytes=100)
+        self.assertEqual(len(limited), 100)
         sink.close()
 
 
@@ -349,23 +560,40 @@ class TestFingerprint(unittest.TestCase):
         norm = NormalizedResult(kind="test", fail_count=1, error_summaries=["e"])
         cmd = ["python3", "-c", "x"]
         fp1 = compute_fingerprint(cmd, 2, norm, stderr_head="err", cwd="/tmp")
-        # 同输入不同 stage → 同指纹（stage 不进指纹）
         fp2 = compute_fingerprint(cmd, 2, norm, stderr_head="err", cwd="/tmp")
         self.assertEqual(fp1, fp2)
+
+    def test_env_failures_no_fingerprint(self) -> None:
+        """环境类失败 fingerprint="" （不进指纹计数）。"""
+        # TIMEOUT/CANCELLED 由 runner 设 fingerprint=""，这里验证 compute_fingerprint 本身
+        # 正常退出 0 + no norm → 仍可算（非环境类）
+        fp = compute_fingerprint(["cmd"], 0, None, stderr_head="", cwd="/tmp")
+        self.assertTrue(fp.startswith("fp:"))
 
 
 class TestNormalizers(unittest.TestCase):
     def test_pytest_parse(self) -> None:
-        out = "=== 3 passed, 1 failed, 2 skipped in 0.5s ===\nFAILED tests/test_a.py::test_x\n"
+        out = (
+            "=== 3 passed, 1 failed, 2 skipped in 0.5s ===\n"
+            "FAILED tests/test_a.py::test_x\n"
+        )
         norm = normalize("pytest", out, "", 1, ["pytest"])
         self.assertIsNotNone(norm)
         self.assertEqual(norm.fail_count, 1)
         self.assertEqual(norm.pass_count, 3)
 
     def test_truncated_no_false_zero(self) -> None:
-        """truncated=True 且无统计行 → None（不报 0 failed）。"""
         norm = normalize("pytest", "no stats here", "", 1, ["pytest"], truncated=True)
         self.assertIsNone(norm)
+
+    def test_infer_lang_python3_variants(self) -> None:
+        """DL-04 修复：所有 python 变体 + -m pytest/vitest/mypy 被识别。"""
+        self.assertEqual(infer_lang(["python3", "-m", "pytest"]), "pytest")
+        self.assertEqual(infer_lang(["python", "-m", "pytest", "-x"]), "pytest")
+        self.assertEqual(infer_lang(["py", "-m", "pytest"]), "pytest")
+        self.assertEqual(infer_lang(["python3", "-m", "mypy", "."]), "mypy")
+        self.assertEqual(infer_lang(["npm", "run", "vitest"]), "vitest")
+        self.assertEqual(infer_lang(["npx", "jest"]), "jest")
 
 
 if __name__ == "__main__":

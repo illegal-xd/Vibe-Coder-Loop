@@ -90,6 +90,8 @@ class ExecResult:
     vc_code: str | None
     next: str | None
     env_redactions: int
+    stdout_ref_meta: dict[str, Any] | None = None
+    stderr_ref_meta: dict[str, Any] | None = None
     files_modified: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     plan_files: list[str] | None = None
@@ -104,6 +106,8 @@ class ExecResult:
             "duration_ms": self.duration_ms,
             "stdout_ref": self.stdout_ref,
             "stderr_ref": self.stderr_ref,
+            "stdout_ref_meta": self.stdout_ref_meta,
+            "stderr_ref_meta": self.stderr_ref_meta,
             "stdout_head": self.stdout_head,
             "stderr_head": self.stderr_head,
             "stdout_bytes": self.stdout_bytes,
@@ -124,17 +128,20 @@ class ExecResult:
             "stage": self.stage,
         }
 
-    def to_core_result(self) -> "CoreExecResult":
-        """转换为 Core.feed_exec 可消费的 ExecResult。"""
-        return CoreExecResult(
+    def to_core_result(self) -> Any:
+        """转换为 Core.feed_exec 可消费的 ExecResult（延迟导入避免循环依赖）。"""
+        from runtime.core.core import ExecResult as CoreER
+        return CoreER(
             exec_id=self.exec_id,
             ok=self.ok,
             exit_code=self.exit_code,
             fingerprint=self.fingerprint,
             files_modified=list(self.files_modified),
-            errors=list(self.errors),
+            errors=list(self.errors) or (
+                [self.normalized.stats_raw] if self.normalized and not self.ok else []
+            ),
             plan_files=list(self.plan_files) if self.plan_files is not None else None,
-            vc_violation="",  # 由调用方按 vc_code 填
+            vc_violation=self.vc_code if self.vc_code == vc_codes.SCOPE_DENIED else "",
             started_at="",
             finished_at="",
         )
@@ -258,6 +265,8 @@ def run(req: ExecRequest) -> ExecResult:
     t_out.start()
     t_err.start()
 
+    from .proc_tree import KillResult
+    kill_result = KillResult(ok=True, tree_leaked=False, method="none")
     timed_out = cancelled = False
     deadline = time.monotonic() + req.timeout_ms / 1000
     try:
@@ -284,72 +293,77 @@ def run(req: ExecRequest) -> ExecResult:
 
     duration_ms = int((time.monotonic() - start) * 1000)
 
-    # 4. 脱敏（全文，含落盘内容）
-    redact_out = redact_output(sink_out.head_text(), env)
-    redact_err = redact_output(sink_err.head_text(), env)
-    redactions = redact_out.redactions + redact_err.redactions
-    head_out = redact_out.text
-    head_err = redact_err.text
-    # spill 内容也需脱敏
-    spill_out_text = None
-    spill_err_text = None
-    if sink_out.spill_path:
-        raw = sink_out.spill_content()
-        if raw:
-            r = redact_output(raw, env)
-            redactions += r.redactions
-            spill_out_text = r.text
-    if sink_err.spill_path:
-        raw = sink_err.spill_content()
-        if raw:
-            r = redact_output(raw, env)
-            redactions += r.redactions
-            spill_err_text = r.text
-
-    truncated = sink_out.truncated or sink_err.truncated
-    dropped_bytes = sink_out.dropped + sink_err.dropped
-    total_out_bytes = sink_out.total_bytes
-    total_err_bytes = sink_err.total_bytes
-
-    # 5. 归一化（只吃有界 head）
-    lang = req.lang if req.lang != "auto" else normalizers.infer_lang(req.cmd)
-    norm = normalizers.normalize(
-        lang, head_out, head_err, proc.returncode, req.cmd, truncated=truncated
-    )
-
-    # 6. 外置（仅当超限且有 store）
+    # 4–6. 脱敏 / 归一化 / 外置 —— try/finally 保证 spill 临时文件在异常路径也清理
     stdout_ref: str | None = None
     stderr_ref: str | None = None
+    stdout_ref_meta: dict[str, Any] | None = None
+    stderr_ref_meta: dict[str, Any] | None = None
     externalized = False
     artifact_error: str | None = None
-    if req.artifact_store is not None and truncated:
-        asink = ArtifactSink(req.artifact_store)
-        if sink_out.spilled > 0 or sink_out.dropped > 0:
-            put = asink.put_stream(
-                head_out, spill_out_text,
-                reproducible=False,
-                regen_cmd=req.cmd,
-            )
-            if put.ok:
-                stdout_ref = put.ref
-                externalized = True
-            else:
-                artifact_error = put.error
-        if sink_err.spilled > 0 or sink_err.dropped > 0:
-            put = asink.put_stream(
-                head_err, spill_err_text,
-                reproducible=False,
-                regen_cmd=req.cmd,
-            )
-            if put.ok:
-                stderr_ref = put.ref
-                externalized = True
-            else:
-                artifact_error = put.error or artifact_error
+    try:
+        redact_out = redact_output(sink_out.head_text(), env)
+        redact_err = redact_output(sink_err.head_text(), env)
+        redactions = redact_out.redactions + redact_err.redactions
+        head_out = redact_out.text
+        head_err = redact_err.text
+        # spill 内容脱敏（有界读取：最多 max_spill_redact_bytes，避免全文读入内存违反有界原则）
+        _MAX_SPILL_REDACT = 2_000_000  # 2MB 上限，超出部分不脱敏（外置时携带原始 spill）
+        spill_out_text = None
+        spill_err_text = None
+        if sink_out.spill_path:
+            raw = sink_out.spill_content(max_bytes=_MAX_SPILL_REDACT)
+            if raw:
+                r = redact_output(raw, env)
+                redactions += r.redactions
+                spill_out_text = r.text
+        if sink_err.spill_path:
+            raw = sink_err.spill_content(max_bytes=_MAX_SPILL_REDACT)
+            if raw:
+                r = redact_output(raw, env)
+                redactions += r.redactions
+                spill_err_text = r.text
 
-    # 清理 sink spill 临时文件
-    sink_out.close()
-    sink_err.close()
+        truncated = sink_out.truncated or sink_err.truncated
+        dropped_bytes = sink_out.dropped + sink_err.dropped
+        total_out_bytes = sink_out.total_bytes
+        total_err_bytes = sink_err.total_bytes
+
+        # 5. 归一化（只吃有界 head）
+        lang = req.lang if req.lang != "auto" else normalizers.infer_lang(req.cmd)
+        norm = normalizers.normalize(
+            lang, head_out, head_err, proc.returncode, req.cmd, truncated=truncated
+        )
+
+        # 6. 外置（仅当超限且有 store）
+        if req.artifact_store is not None and truncated:
+            asink = ArtifactSink(req.artifact_store)
+            if sink_out.spilled > 0 or sink_out.dropped > 0:
+                put = asink.put_stream(
+                    head_out, spill_out_text,
+                    reproducible=req.pin_output,
+                    regen_cmd=req.cmd,
+                )
+                if put.ok:
+                    stdout_ref = put.ref
+                    stdout_ref_meta = put.to_ref_dict()
+                    externalized = True
+                else:
+                    artifact_error = put.error
+            if sink_err.spilled > 0 or sink_err.dropped > 0:
+                put = asink.put_stream(
+                    head_err, spill_err_text,
+                    reproducible=req.pin_output,
+                    regen_cmd=req.cmd,
+                )
+                if put.ok:
+                    stderr_ref = put.ref
+                    stderr_ref_meta = put.to_ref_dict()
+                    externalized = True
+                else:
+                    artifact_error = put.error or artifact_error
+    finally:
+        sink_out.close()
+        sink_err.close()
 
     # 7. 码判定
     ok = (proc.returncode == 0) and not cancelled
@@ -373,6 +387,12 @@ def run(req: ExecRequest) -> ExecResult:
         vc_code = vc_codes.OUTPUT_LIMIT
         nxt = "减小输出或修复 artifact 目录后重试"
         fingerprint = _compute_fp(req, proc.returncode, norm, head_err) if not ok else ""
+    elif truncated:
+        # TS-01 修复：truncated 但无外置/无丢弃（artifact_store=None 或 spill 未超限）时
+        # 仍须设 OUTPUT_LIMIT，否则数据静默丢失却不报告
+        vc_code = vc_codes.OUTPUT_LIMIT
+        nxt = "输出已截断；增大 max_output_bytes 或启用 --externalize"
+        fingerprint = _compute_fp(req, proc.returncode, norm, head_err) if not ok else ""
     elif not ok:
         vc_code = ""
         nxt = ""
@@ -389,6 +409,8 @@ def run(req: ExecRequest) -> ExecResult:
         duration_ms=duration_ms,
         stdout_ref=stdout_ref,
         stderr_ref=stderr_ref,
+        stdout_ref_meta=stdout_ref_meta,
+        stderr_ref_meta=stderr_ref_meta,
         stdout_head=head_out,
         stderr_head=head_err,
         stdout_bytes=total_out_bytes,
@@ -402,7 +424,7 @@ def run(req: ExecRequest) -> ExecResult:
         vc_code=vc_code,
         next=nxt,
         env_redactions=redactions,
-        tree_leaked=kill_result.tree_leaked if (timed_out or cancelled) else False,
+        tree_leaked=kill_result.tree_leaked,
         stage=req.stage,
     )
 
@@ -413,36 +435,3 @@ def _compute_fp(
     """计算指纹。环境类失败不进指纹（调用方已保证）。"""
     return compute_fingerprint(req.cmd, exit_code, norm, stderr_head=stderr_head, cwd=req.cwd)
 
-
-# Core ExecResult 延迟导入避免循环
-def _get_core_exec_result():
-    from runtime.core.core import ExecResult as CoreER
-    return CoreER
-
-
-# 为 to_core_result 提供类型名（实际类型在调用时导入）
-CoreExecResult = type("_CoreExecResultStub", (), {})  # 占位；实际用 runtime.core.core.ExecResult
-
-
-def _patch_core_exec_result() -> None:
-    """让 ExecResult.to_core_result 返回真正的 Core.ExecResult。"""
-    from runtime.core.core import ExecResult as CoreER
-
-    def to_core_result(self: ExecResult) -> CoreER:
-        return CoreER(
-            exec_id=self.exec_id,
-            ok=self.ok,
-            exit_code=self.exit_code,
-            fingerprint=self.fingerprint,
-            files_modified=list(self.files_modified),
-            errors=list(self.errors) or (
-                [self.normalized.stats_raw] if self.normalized and not self.ok else []
-            ),
-            plan_files=list(self.plan_files) if self.plan_files is not None else None,
-            vc_violation=self.vc_code if self.vc_code == vc_codes.SCOPE_DENIED else "",
-        )
-
-    ExecResult.to_core_result = to_core_result  # type: ignore[method-assign]
-
-
-_patch_core_exec_result()

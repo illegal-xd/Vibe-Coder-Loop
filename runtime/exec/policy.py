@@ -172,9 +172,8 @@ def check_policy(
             return PolicyDecision(True, high_risk=True)
         if sub in GIT_READONLY_SUBCMDS:
             return PolicyDecision(True)
-        # 其他 git 子命令（如 fetch/pull）：按 allowlist 允许但不标记只读
-        if "git" in allowlist:
-            return PolicyDecision(True)
+        # 其他 git 子命令（如 fetch/pull/clone/stash）：默认拒绝（fail-closed）
+        # git pull 可执行 hooks 并修改工作区，git clone 可下载任意代码
         return PolicyDecision(
             False, code="SCOPE_DENIED", reason=f"git 子命令 {sub} 未在只读白名单", next="改用只读 git 子命令"
         )

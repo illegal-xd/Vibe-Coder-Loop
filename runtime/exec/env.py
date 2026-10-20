@@ -90,15 +90,6 @@ def collect_secret_values(env: Mapping[str, str]) -> list[str]:
     return values
 
 
-def _looks_high_entropy(s: str) -> bool:
-    """高熵长串启发式：≥32 字符、字母数字混合、命中已知前缀。"""
-    if len(s) < 32:
-        return False
-    if any(s.startswith(p) for p in _HIGH_ENTROPY_PREFIXES):
-        return True
-    return False
-
-
 def extract_redaction_targets(env: Mapping[str, str]) -> list[str]:
     """合并：密钥变量实际值 + 高熵前缀串。未命中不猜。"""
     targets = collect_secret_values(env)

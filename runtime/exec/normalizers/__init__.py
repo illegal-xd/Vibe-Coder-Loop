@@ -71,7 +71,7 @@ def infer_lang(cmd: list[str]) -> str:
         return "generic"
     binary = cmd[0]
     base = binary.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    if base == "pytest" or base == "python" and any("pytest" in a for a in cmd[1:]):
+    if base == "pytest" or (base in ("python", "python3", "py") and any("pytest" in a for a in cmd[1:])):
         return "pytest"
     if base == "vitest" or (base in ("npm", "pnpm", "yarn") and "vitest" in cmd[1:]):
         return "vitest"
@@ -87,6 +87,13 @@ def infer_lang(cmd: list[str]) -> str:
         return "git_diff"
     if base == "ruff" or base == "flake8" or base == "pylint" or base == "mypy":
         return base
+    if base in ("python", "python3", "py") and any("mypy" in a for a in cmd[1:]):
+        return "mypy"
+    if base == "npx":
+        if "jest" in cmd[1:]:
+            return "jest"
+        if "vitest" in cmd[1:]:
+            return "vitest"
     return "generic"
 
 
@@ -142,10 +149,7 @@ def _norm_pytest(head_out: str, head_err: str, exit_code: int, truncated: bool) 
         if exit_code == 0:
             return NormalizedResult(kind="test", pass_count=0, fail_count=0, stats_raw="ok")
         return None
-    fails = [line.strip().split("::")[0] if "::" not in line else line.strip()
-             for line in _PYTEST_FAILED_RE.findall(head_out)]
-    fails = _PYTEST_FAILED_RE.findall(head_out)
-    fails = [f.strip() for f in fails[:10]]
+    fails = [f.strip() for f in _PYTEST_FAILED_RE.findall(head_out)[:10]]
     return NormalizedResult(
         kind="test",
         pass_count=passed,

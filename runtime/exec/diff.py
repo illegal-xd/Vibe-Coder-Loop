@@ -14,11 +14,9 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import json
 import os
 import subprocess
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,11 +104,13 @@ class PlanDrift:
 
 
 # 高风险域关键词（文件路径命中即标记）
+# DL-13 修复："key" 过宽会匹配 keyboard/keymap/monkey 等，改为更精确的复合词
 HIGH_RISK_PATH_KEYWORDS: tuple[str, ...] = (
     "auth", "login", "password", "credential", "session", "token",
     "payment", "billing", "invoice", "amount", "price",
     "migration", "deploy", "schema", "encrypt", "transaction",
-    "secret", "key", "cert", "permission", "rbac", "acl",
+    "secret", "api_key", "private_key", "public_key", "secret_key",
+    "cert", "permission", "rbac", "acl", "crypto",
 )
 
 
@@ -146,13 +146,15 @@ def _git(args: list[str], cwd: str) -> str:
         return ""
 
 
-def _parse_porcelain_v2(status_out: str) -> dict[str, str]:
-    """解析 ``git status --porcelain=v2 -z`` 输出为 {path: xy_status}。
+def _parse_porcelain_v2(status_out: str) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """解析 ``git status --porcelain=v2 -z`` 输出。
 
-    返回：path → 状态码（如 "M.", "??" 等）。
+    返回 (entries, rename_pairs)：
+    - entries: {path: xy_status}
+    - rename_pairs: [(old_path, new_path)] — rename/copy 对
     """
     entries: dict[str, str] = {}
-    # -z 用 \0 分隔；但 subprocess text=True 时 NUL 仍在
+    renames: list[tuple[str, str]] = []
     parts = status_out.split("\0") if "\0" in status_out else status_out.splitlines()
     i = 0
     while i < len(parts):
@@ -160,12 +162,6 @@ def _parse_porcelain_v2(status_out: str) -> dict[str, str]:
         if not line:
             i += 1
             continue
-        # porcelain v2 行：
-        #   "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>"
-        #   "2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>\0<origPath>"
-        #   "u <XY> ..." (unmerged)
-        #   "? <path>" (untracked)
-        #   "! <path>" (ignored)
         tokens = line.split(" ")
         if not tokens:
             i += 1
@@ -177,50 +173,105 @@ def _parse_porcelain_v2(status_out: str) -> dict[str, str]:
                 path = " ".join(tokens[8:])
                 entries[path] = xy
         elif kind == "2":
-            # rename：下一个 \0 段是 origPath
+            # rename/copy：path 在 tokens[8:]，origPath 在下一个 \0 段
             if len(tokens) >= 9:
                 xy = tokens[1]
                 path = " ".join(tokens[8:])
                 i += 1
                 orig = parts[i] if i < len(parts) else ""
-                entries[path] = "R"  # 标记 rename 目标
-                if orig:
-                    entries[orig] = "R0"  # rename 源（删除侧）
+                if xy[0] == "R":
+                    entries[path] = "R"
+                    if orig:
+                        entries[orig] = "R0"
+                        renames.append((orig, path))
+                elif xy[0] == "C":
+                    entries[path] = "C"
+                    if orig:
+                        entries[orig] = "C0"
+                        renames.append((orig, path))
+                else:
+                    entries[path] = xy
         elif kind == "u":
             if len(tokens) >= 11:
                 xy = tokens[1]
                 path = " ".join(tokens[10:])
-                entries[path] = xy  # 冲突态
+                entries[path] = xy
         elif kind == "?":
-            # untracked
             path = " ".join(tokens[1:])
             entries[path] = "??"
         i += 1
-    return entries
+    return entries, renames
 
 
-def _parse_name_status(diff_out: str) -> list[tuple[str, str]]:
-    """解析 ``git diff --name-status -z`` 输出为 [(status, path), ...]。"""
-    results: list[tuple[str, str]] = []
-    parts = diff_out.split("\0") if "\0" in diff_out else diff_out.splitlines()
-    i = 0
-    while i < len(parts):
-        line = parts[i]
-        if not line:
+def _parse_name_status(diff_out: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """解析 ``git diff --name-status -z`` 输出。
+
+    返回 (entries, renames)：
+    - entries: [(status, path)] — M/A/D/T 等普通改动
+    - renames: [(old_path, new_path)] — R/C 重命名/复制对
+    """
+    entries: list[tuple[str, str]] = []
+    renames: list[tuple[str, str]] = []
+
+    if "\0" in diff_out:
+        # -z 格式：status\0path\0status\0path\0... rename 时 status\0old\0new\0
+        parts = diff_out.split("\0")
+        i = 0
+        while i < len(parts):
+            status = parts[i]
+            if not status:
+                i += 1
+                continue
             i += 1
-            continue
-        tokens = line.split("\t") if "\t" in line else line.split(" ")
-        if len(tokens) >= 2:
-            status = tokens[0]
-            path = tokens[1] if len(tokens) == 2 else "\t".join(tokens[1:])
-            results.append((status, path))
-        i += 1
-    return results
+            if i >= len(parts):
+                break
+            path = parts[i]
+            i += 1
+            if status.startswith("R") or status.startswith("C"):
+                # rename/copy：还需读 old_path
+                if i < len(parts):
+                    old_path = parts[i]
+                    i += 1
+                    renames.append((old_path, path))
+                else:
+                    renames.append(("", path))
+            else:
+                entries.append((status, path))
+    else:
+        # 非 -z 格式：每行 "status\tpath" 或 "R<score>\told\tnew"
+        for line in diff_out.splitlines():
+            if not line.strip():
+                continue
+            t = line.split("\t")
+            if len(t) >= 3 and (t[0].startswith("R") or t[0].startswith("C")):
+                renames.append((t[1], t[2]))
+            elif len(t) >= 2:
+                entries.append((t[0], t[1]))
+    return entries, renames
 
 
 def _parse_numstat(numstat_out: str) -> tuple[int, int]:
     """解析 ``git diff --numstat`` 为 (insertions, deletions)。"""
     ins = dels = 0
+    if "\0" in numstat_out:
+        # -z 格式：stat\0path\0stat\0path\0... stat = "added\tdeleted"
+        parts = numstat_out.split("\0")
+        i = 0
+        while i < len(parts):
+            stat = parts[i]
+            i += 1
+            if i < len(parts):
+                i += 1  # consume path
+            if "\t" not in stat:
+                continue
+            nums = stat.split("\t")
+            if len(nums) >= 2:
+                try:
+                    ins += int(nums[0]) if nums[0] != "-" else 0
+                    dels += int(nums[1]) if nums[1] != "-" else 0
+                except ValueError:
+                    pass
+        return ins, dels
     for line in numstat_out.splitlines():
         if not line.strip():
             continue
@@ -238,7 +289,6 @@ def _parse_numstat(numstat_out: str) -> tuple[int, int]:
 
 def _collect_git(cwd: str, base: str) -> DiffSummary | None:
     """Git 路径：一次拿全六类改动。"""
-    # 检查是否 git 仓库
     toplevel = _git(["rev-parse", "--show-toplevel"], cwd)
     if not toplevel.strip():
         return None
@@ -248,9 +298,9 @@ def _collect_git(cwd: str, base: str) -> DiffSummary | None:
     worktree_out = _git(["diff", "--name-status", "-z", "--find-renames", base], cwd)
     numstat_out = _git(["diff", "--numstat", "-z", base], cwd)
 
-    porcelain = _parse_porcelain_v2(status_out)
-    staged = _parse_name_status(staged_out)
-    worktree = _parse_name_status(worktree_out)
+    porcelain, porcelain_renames = _parse_porcelain_v2(status_out)
+    staged_entries, staged_renames = _parse_name_status(staged_out)
+    worktree_entries, worktree_renames = _parse_name_status(worktree_out)
     ins, dels = _parse_numstat(numstat_out)
 
     root_real = os.path.realpath(cwd)
@@ -266,23 +316,30 @@ def _collect_git(cwd: str, base: str) -> DiffSummary | None:
             seen_keys.add(entry.key)
             category.append(entry)
 
+    # 收集 rename 对（porcelain + staged + worktree 三路合并去重）
+    rename_seen: set[str] = set()
+    for old, new in porcelain_renames + staged_renames + worktree_renames:
+        old_e = _make_entry(old, root_real)
+        new_e = _make_entry(new, root_real)
+        if old_e and new_e and new_e.key not in rename_seen:
+            rename_seen.add(new_e.key)
+            renamed.append((old_e, new_e))
+
     # 处理 porcelain（含 untracked + 冲突态）
     for path, xy in porcelain.items():
         if xy == "??":
             entry = _make_entry(path, root_real)
             if entry:
                 _add(entry, untracked)
-        elif xy.startswith("R"):
-            # rename：porcelain v2 的 "2" 行已处理；这里跳过 R0（源）
-            pass
+        elif xy.startswith("R") or xy.startswith("C"):
+            pass  # rename 已在上面处理
         elif xy in ("AA", "UU", "DU", "UD", "AU", "UA"):
             entry = _make_entry(path, root_real)
             if entry:
                 _add(entry, modified)
-        elif xy[0] in ("M", "A", "D", "T", "C") or xy[1] in ("M", "A", "D", "T", "C"):
+        elif len(xy) >= 2 and (xy[0] in ("M", "A", "D", "T", "C") or xy[1] in ("M", "A", "D", "T", "C")):
             entry = _make_entry(path, root_real)
             if entry:
-                # M/A/D 综合：按首个非空字符判
                 first = xy[0] if xy[0] != "." else xy[1]
                 if first == "A":
                     _add(entry, added)
@@ -292,32 +349,27 @@ def _collect_git(cwd: str, base: str) -> DiffSummary | None:
                     _add(entry, modified)
 
     # 处理 staged diff（已暂存 vs 基线）
-    for status, path in staged:
+    for status, path in staged_entries:
         entry = _make_entry(path, root_real)
         if not entry:
-            continue
-        if status.startswith("R"):
-            # rename：--name-status 给 "R<score>\tpath\tpath2"，但 -z 分隔已处理
             continue
         if status == "A":
             _add(entry, added)
         elif status == "D":
             _add(entry, deleted)
-        elif status == "M":
+        elif status in ("M", "T"):
             _add(entry, modified)
 
     # 处理 worktree diff（未暂存 vs 基线）
-    for status, path in worktree:
+    for status, path in worktree_entries:
         entry = _make_entry(path, root_real)
         if not entry:
-            continue
-        if status.startswith("R"):
             continue
         if status == "A":
             _add(entry, added)
         elif status == "D":
             _add(entry, deleted)
-        elif status == "M":
+        elif status in ("M", "T"):
             _add(entry, modified)
 
     # 高风险文件
@@ -333,7 +385,7 @@ def _collect_git(cwd: str, base: str) -> DiffSummary | None:
         high_risk_files=high_risk,
         total_insertions=ins,
         total_deletions=dels,
-        plan_drift=None,  # 由调用方注入
+        plan_drift=None,
         baseline=f"git:{base}",
         degraded=False,
         degraded_reason=None,
@@ -360,7 +412,6 @@ def _create_snapshot(cwd: str) -> dict[str, Any] | None:
     root = os.path.realpath(cwd)
     entries: dict[str, dict[str, Any]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        # 剪枝
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
         for fname in filenames:
             if any(fname.endswith(suf) for suf in IGNORE_SUFFIXES):
@@ -466,19 +517,22 @@ def _collect_snapshot(cwd: str) -> DiffSummary:
     high_risk = [e for e in added + modified + deleted if _is_high_risk(e.path)]
     ts = baseline.get("created_at", "")
 
+    is_git = _git(["rev-parse", "--is-inside-work-tree"], cwd).strip()
+    reason = "not_a_repo" if is_git != "true" else "no_commits"
+
     return DiffSummary(
         added=added,
         modified=modified,
         deleted=deleted,
         renamed=[],
-        untracked=[],  # 快照模式无 untracked 概念（全是 added）
+        untracked=[],
         high_risk_files=high_risk,
-        total_insertions=0,  # 非 git 无行级统计
+        total_insertions=0,
         total_deletions=0,
         plan_drift=None,
         baseline=f"snapshot:{ts}",
         degraded=True,
-        degraded_reason="not_a_repo" if not _git(["rev-parse", "--is-inside-work-tree"], cwd).strip() else "no_commits",
+        degraded_reason=reason,
     )
 
 
@@ -508,7 +562,6 @@ def compute_drift(
         e for e in plan_entries
         if not any(c in e.path for c in "*?[") and e.key not in actual_keys
     ]
-    # rename 目标若不在计划里
     renamed_unplanned = [
         (f, t) for f, t in renamed_pairs if not declared(t.key)
     ]
@@ -532,7 +585,6 @@ def summarize_diff(
     """汇总工作区改动。``base`` 缺省 HEAD。"""
     base = base or "HEAD"
 
-    # 尝试 git 路径
     is_git = _git(["rev-parse", "--is-inside-work-tree"], cwd).strip()
     has_commits = bool(_git(["rev-parse", "--verify", base], cwd).strip())
 
@@ -544,17 +596,18 @@ def summarize_diff(
         summary = _collect_snapshot(cwd)
 
     # 注入 plan_drift
+    # DL-12 修复：first_run / no_baseline 时 plan_drift = None（无法判定）
     if plan_files is not None and not summary.degraded:
         all_actual = summary.added + summary.modified + summary.deleted + summary.untracked
         summary.plan_drift = compute_drift(
             all_actual, summary.renamed, plan_files, cwd
         )
-        # untracked 也参与 drift（已在 all_actual）
-    elif summary.degraded and summary.degraded_reason == "no_baseline":
-        summary.plan_drift = None  # 明确"无法判定"
     elif plan_files is not None and summary.degraded:
-        # 快照模式有基线 → 仍可算 drift
-        all_actual = summary.added + summary.modified + summary.deleted
-        summary.plan_drift = compute_drift(all_actual, summary.renamed, plan_files, cwd)
+        if summary.degraded_reason in ("first_run", "no_baseline"):
+            summary.plan_drift = None  # 无法判定
+        else:
+            # 快照模式有基线 → 仍可算 drift
+            all_actual = summary.added + summary.modified + summary.deleted
+            summary.plan_drift = compute_drift(all_actual, summary.renamed, plan_files, cwd)
 
     return summary
