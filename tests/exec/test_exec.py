@@ -107,7 +107,7 @@ class TestE3OutputBound(ExecTest):
         )
         self.assertTrue(r.truncated)
         self.assertEqual(r.vc_code, "OUTPUT_LIMIT")
-        self.assertLessEqual(len(r.stdout_head.encode("utf-8")), 200)
+        self.assertLessEqual(len(r.stdout_head.encode("utf-8")), 100)
         self.assertEqual(r.stdout_bytes, 200001)
         # TS-10 强化断言
         self.assertTrue(r.externalized)
@@ -145,6 +145,7 @@ class TestE3OutputBound(ExecTest):
         # 严格断言：head 编码字节 ≤ max_output_bytes
         self.assertLessEqual(len(r.stdout_head.encode("utf-8")), 50_000)
         self.assertEqual(r.stdout_bytes, 10_000_000)
+        self.assertGreater(r.dropped_bytes, 0)
 
     def test_e3c_spill_overflow_dropped(self) -> None:
         r = run(
@@ -158,6 +159,7 @@ class TestE3OutputBound(ExecTest):
         )
         self.assertTrue(r.truncated)
         self.assertGreater(r.dropped_bytes, 0)
+        self.assertEqual(r.vc_code, "OUTPUT_LIMIT")
         self.assertIsNone(r.stdout_ref)
 
 
@@ -282,6 +284,33 @@ class TestE6FingerprintStability(ExecTest):
         self.assertTrue(fr2.no_progress)
         self.assertEqual(fr2.consecutive_count, 2)
 
+    def test_e6d_aba_no_progress(self) -> None:
+        """E6d：A→B→A 三次失败 → 不触发 NO_PROGRESS（连续 ≠ 集合包含）。"""
+        from runtime.core import WorkflowCore
+
+        os.environ["HOME"] = self.tmp
+        core = WorkflowCore(self.tmp)
+        core.transition("S1", reason="start")
+        core.transition("S8", loop=1)
+
+        # fp:A → count=1
+        r_a = run(_req(["python3", "-c", "import sys; sys.exit(2)"], self.tmp, timeout_ms=10000))
+        fr_a = core.feed_exec(r_a.to_core_result())
+        self.assertFalse(fr_a.no_progress)
+        self.assertEqual(fr_a.consecutive_count, 1)
+
+        # fp:B → count=1（重置）
+        r_b = run(_req(["python3", "-c", "import sys; sys.exit(3)"], self.tmp, timeout_ms=10000))
+        fr_b = core.feed_exec(r_b.to_core_result())
+        self.assertFalse(fr_b.no_progress)
+        self.assertEqual(fr_b.consecutive_count, 1)
+
+        # fp:A again → count=1（不等于3，不触发 NO_PROGRESS）
+        r_a2 = run(_req(["python3", "-c", "import sys; sys.exit(2)"], self.tmp, timeout_ms=10000))
+        fr_a2 = core.feed_exec(r_a2.to_core_result())
+        self.assertFalse(fr_a2.no_progress)
+        self.assertEqual(fr_a2.consecutive_count, 1)
+
 
 class TestE7bCrossStageSameFp(unittest.TestCase):
     """E7b: 同错跨 S8/S9 同指纹。"""
@@ -304,17 +333,26 @@ class TestE8DiffSixClasses(ExecTest):
         self.init_git_repo()
         with open(os.path.join(self.tmp, "a.py"), "w") as f:
             f.write("a=1\n")
+        with open(os.path.join(self.tmp, "a_orig.py"), "w") as f:
+            f.write("orig=1\n")
         self._git("add", ".")
         self._git("commit", "-qm", "init")
 
-    def test_e8_modified_untracked(self) -> None:
+    def test_e8_modified_untracked_deleted(self) -> None:
+        """E8 必测项：三类 git diff 改动（modified + untracked + deleted）。"""
         with open(os.path.join(self.tmp, "a.py"), "w") as f:
             f.write("a=2\n")
         with open(os.path.join(self.tmp, "b.py"), "w") as f:
             f.write("b=1\n")
+        os.remove(os.path.join(self.tmp, "a_orig.py"))
         s = summarize_diff(self.tmp)
         self.assertIn("a.py", [e.path for e in s.modified])
         self.assertIn("b.py", [e.path for e in s.untracked])
+        # E8 缺 deleted 补全：删除的文件应出现在 deleted
+        deleted_paths = [e.path for e in s.deleted]
+        self.assertTrue(len(deleted_paths) > 0, f"expected deleted files, got {deleted_paths}")
+        self.assertTrue(any("a_orig" in p for p in deleted_paths),
+                        f"expected a_orig.py in deleted, got {deleted_paths}")
 
     def test_e8b_staged_in_added(self) -> None:
         """TS-19 强化：staged 新增应出现在 added（修复 -z 解析后）。"""
@@ -569,6 +607,106 @@ class TestFingerprint(unittest.TestCase):
         # 正常退出 0 + no norm → 仍可算（非环境类）
         fp = compute_fingerprint(["cmd"], 0, None, stderr_head="", cwd="/tmp")
         self.assertTrue(fp.startswith("fp:"))
+
+
+class TestE12Eslint(unittest.TestCase):
+    """E12: eslint 0 error → ok=True, kind=lint；truncated → None。"""
+
+    def test_e12_eslint_zero_errors(self) -> None:
+        """E12 设计场景：eslint 0 error → ok=True。"""
+        norm = normalize("eslint", "0 problems", "", 0, ["eslint"])
+        self.assertIsNotNone(norm)
+        self.assertEqual(norm.kind, "lint")
+        self.assertEqual(norm.fail_count, 0)
+
+    def test_e12_eslint_with_errors(self) -> None:
+        out = (
+            "\n  1:5  error  Expected \'foo\'  no-undef\n\n"
+            "✖ 1 problem (1 error, 0 warnings)\n"
+        )
+        norm = normalize("eslint", out, "", 1, ["eslint"])
+        self.assertIsNotNone(norm)
+        self.assertEqual(norm.kind, "lint")
+        self.assertEqual(norm.fail_count, 1)
+
+    def test_e12_truncated_no_false_zero(self) -> None:
+        norm = normalize("pytest", "no stats here", "", 1, ["pytest"], truncated=True)
+        self.assertIsNone(norm)
+
+
+class TestE13ArtifactPaging(ExecTest):
+    """E13/E13b: artifact 分页读取 + put 失败处理。"""
+
+    def test_e13_artifact_page(self) -> None:
+        """E13: artifact page 分页取 stdout。"""
+        from runtime.core.artifacts import ArtifactStore
+        from runtime.core.checkpoint import StateResolver
+        from runtime.exec.artifact_io import ArtifactSink
+
+        resolver = StateResolver({"VIBE_KERNEL_SKILL_DIR": ""})
+        resolved = resolver.resolve(self.tmp)
+        store = ArtifactStore(resolved.artifacts_dir)
+        asink = ArtifactSink(store)
+
+        data = b"line1\nline2\nline3\nline4\nline5\n"
+        put = asink.put_stream(data.decode(), None, reproducible=False, regen_cmd=["test"])
+        self.assertTrue(put.ok)
+        self.assertIsNotNone(put.ref)
+
+        # 分页读取
+        page_result = asink.page(put.ref, offset=6, limit=10)
+        self.assertIsNotNone(page_result)
+        self.assertIn("line2", page_result)
+
+    def test_e13b_put_failure(self) -> None:
+        """E13b: artifact put 失败 → ref=None + artifact_error。"""
+        from runtime.core.artifacts import ArtifactStore
+        from runtime.core.checkpoint import StateResolver
+
+        resolver = StateResolver({"VIBE_KERNEL_SKILL_DIR": ""})
+        resolved = resolver.resolve(self.tmp)
+        # 用一个文件路径作为 artifact dir（不是目录）→ put 失败
+        bad_path = os.path.join(self.tmp, "not_a_dir")
+        with open(bad_path, "w") as f:
+            f.write("block")
+        store = ArtifactStore(bad_path)
+        r = run(
+            _req(
+                ["python3", "-c", "import sys; sys.stdout.write('x'*200000)"],
+                self.tmp,
+                timeout_ms=15000,
+                max_output_bytes=100,
+                max_spill_bytes=52_428_800,
+                artifact_store=store,
+            )
+        )
+        self.assertTrue(r.truncated)
+        self.assertEqual(r.vc_code, "OUTPUT_LIMIT")
+        # put 失败 → ref=None, artifact_error != None
+        self.assertIsNone(r.stdout_ref)
+        self.assertIsNotNone(r.artifact_error)
+
+
+class TestSinkExceptionCleanup(unittest.TestCase):
+    """TS-06: spill 临时文件在异常路径也被清理。"""
+
+    def test_sink_close_deletes_spill(self) -> None:
+        """Sink.close() 删除 spill 临时文件。"""
+        sink = Sink(cap=50, max_spill=1000)
+        sink.write(b"x" * 500)
+        self.assertIsNotNone(sink.spill_path)
+        self.assertTrue(os.path.exists(sink.spill_path))
+        spill_path = sink.spill_path
+        sink.close()
+        self.assertFalse(os.path.exists(spill_path))
+
+    def test_sink_del_fallback(self) -> None:
+        """Sink.__del__ 作为 fd 清理回退。"""
+        sink = Sink(cap=50, max_spill=1000)
+        sink.write(b"x" * 500)
+        spill_path = sink.spill_path
+        del sink  # 触发 __del__
+        self.assertFalse(os.path.exists(spill_path))
 
 
 class TestNormalizers(unittest.TestCase):
