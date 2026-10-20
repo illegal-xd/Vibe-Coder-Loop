@@ -89,7 +89,11 @@ S13 Complete
 
 任何状态
   → 检测到异常条件 → S14 Safe Mode
-  → 用户发送"停止循环"或"接受当前代码" → S13 Complete
+
+S14 Safe Mode
+  → 用户「继续」 → 恢复原 phase（`_resume_from`）且**维持原 Loop N**（`kernel.md` §1）
+  → 用户「停止循环」或「接受当前代码」 → S13 Complete
+  → 无用户响应 → 停在 S14（SAFE MODE 是暂停，不是终止）
 ```
 
 ## 异常路径收敛表（4 类）
@@ -185,11 +189,30 @@ S13 Complete
 ## Workflow Checkpoint（`.state.md`）
 
 > **性质**：**Checkpoint ≠ Memory ≠ Context Manager**。它是 📌 TASK 区（字段定义见上「压缩后状态延续契约」表）的**落盘形式**，唯一用途是**跨会话恢复**。**不保存长期经验**（经验归 delx-memory，走 S11/S12），**不承担压缩**（压缩归 Runtime），**不参与规则仲裁**。
-> **文件**：运行实例 = `<skill>/.state.md`（单文件单实例，新循环覆盖上一循环；已 gitignore，禁止提交）。首次使用或实例缺失时，从 `<skill>/.state.template.md` 复制创建；模板只含字段骨架与注释，不含个人任务数据。
+> **文件**：运行实例 = `<project_root>/.vibe-kernel/.state.md`（单文件单实例，新循环覆盖上一循环；整个 `.vibe-kernel/` 须 gitignore，禁止提交）。**运行时状态不落 Skill 安装目录**——安装目录是只读代码资产，放进那里会让多个项目互相覆盖同一份状态。
+> **位置解析**：① `--state-dir` 显式参数 → ② `VIBE_KERNEL_STATE_DIR` → ③ `<project_root>/.vibe-kernel/config.json` 的 `state_path` → ④ 缺省 `<project_root>/.vibe-kernel/.state.md`。`project_root` = 显式 `--cwd`，或从 cwd 向上首个含项目标记（`.git` / `.vibe-kernel` / `pyproject.toml` / `package.json` / `go.mod`）的目录。**解析结果落在 Skill 安装目录内 → 拒绝写入**（fail-closed）。
+> **隔离**：每个项目、每个 git worktree 各自一份（worktree 优先于子目录）；路径一律 `realpath` 归一——软链接指向同一目录即视为**同一项目**（这是期望行为），指向不同目录则各自隔离。
+> **创建**：首次使用或实例缺失时，从 `<skill>/.state.template.md` 复制创建；模板只含字段骨架与注释，不含个人任务数据。
 
 **字段（13 项，防漂移）**：`status` `phase` `loop` `level` `goal` `current_step` `completed` `pending` `decisions` `review` `user_decisions` `resume` `updated_at`。其中 **`updated_at`** 为 freshness 字段（最后写入时刻，**须到分钟**）——恢复协议第 1 条据它识别「同日陈旧」；不承载状态语义（必需字段集的机械判定见 smoke-check 6b）。其中 **`status` 为新增**；TASK 区 ⑨「上一阶段输出指针（S2 环境结论 / S5 需求复述 / S6 模块划分）」由 **`resume`** 承载，⑩「上轮失败原因 + Review 判定 A·B·C」由 **`review.last_review（最近一轮审查结论）/ review.last_failure（最近一次未通过的原因）`** 承载，其余项直接对应——故本机制不引入第二套状态语义。模板与字段注释见 `.state.template.md`（此处不复述）。
 
+**保留键（机器端；不计入 13 项，Agent 可忽略）**：
+
+| 键 | 含义 | 缺失时 |
+|---|---|---|
+| `_schema` | 协议版本（整数） | 按 `1` 处理 |
+| `_rev` | 单调版本号，供并发写校验（乐观锁） | 按 `0` 处理 |
+| `_project_id` | 项目身份 = `sha256(realpath(project_root))` 前 16 位 | 不做归属校验 |
+| `_resume_from` | 仅 S14 期间写入：进入 Safe Mode 前的 `phase`，用户「继续」时据此恢复 | 缺失 → 只能经「停止/接受」走 S13，不能 RESUME |
+| `review.failure_state`（子键） | 连续失败计数与指纹（`last_fingerprint` / `consecutive_count` / `last_ok_at` / `round_started_at` / `history`），供 `NO_PROGRESS` 机械判定 | 按空初始化 |
+
+**兼容规则（三条硬约束）**：① **未知键必须原样保留**——写入方不得丢弃不认识的键（防「Skill 先加字段、工具后升级」互相破坏）；② `_schema` 高于读取方支持版本 → 降级为「仅参考」，**只读不写**；③ 保留键缺失不构成损坏，按上表缺省处理。
+
+**语法（机器读取口径）**：顶部单个 `---` 开始的 **YAML 子集**——块映射、块序列（`- item`，空写 `[]`）、单/双引号标量、块字面量 `|`（`resume` 用）、行注释 `#`。**不支持**锚点/别名、流式集合、多文档、标签。写端须给字符串标量**一律加引号**（防列表项以 `**`/`*` 开头被当别名）。解析失败 → 先降级为「仅扁平标量」（`status`/`phase`/`loop`/`level`/`updated_at`）→ 仍失败判 `corrupt`（备份 `.state.corrupt-<ts>` 后全新开始，不静默丢弃）。
+
 **写入纪律（避免"写了文件但没写状态"）**：**仅当字段发生变化时写入**——`phase` / `loop` / `current_step` / `completed` / `pending` 任一项变化 → 在**该阶段出口**写入（追加式）。无变化的阶段不写（省去"未变化也记一行"的仪式，避免恒定写放大）。
+
+**写入方式（机器端）**：同目录临时文件 → `flush` + `fsync` → `os.replace` 原子替换；写入全程持有跨平台文件锁（POSIX `fcntl.flock` / Windows `msvcrt.locking`）；带 `expected_rev` 的写入在 `_rev` 不匹配时返回冲突、**不覆盖**（锁只保证串行，版本号才防「基于旧状态覆盖」）。Agent 手写本文件后须自检：已安装 Core 时用 `core state check`；未安装时按上述语法人工核对（单个 `---` 开头、无流式集合/锚点、字符串已加引号、无第二个 `---`）。
 
 **例外（必写）**：轮次收尾（S13）无论是否有变化都必须写一次 `status` + `resume`（含 pending 未落地项，防幽灵待办）。
 
@@ -208,7 +231,7 @@ S13 Complete
 2. **字段完整性校验**：**YAML 可解析 + 12 项齐全** → 可恢复；任一不满足 → 降级为「仅参考」，以用户输入 + 当前会话 TASK 区为准（**注意**：列表项以 `**`/`*` 开头会被 YAML 解析为别名而报错——写 markdown 强调时须加引号）
 3. **不覆盖 TASK / ACTIVE**：`.state.md` 仅在本次会话 TASK 区为空时供给；与本次用户输入冲突时 **以用户输入为准**
 4. **续跑**：`phase` + `current_step` 决定入口阶段；`completed` 项**不重做**；`status: paused`（含 SAFE MODE 触发态）→ 先输出恢复确认再继续
-5. **pending 逐项核验（防幽灵待办）**：对每个 `pending` 项用**最低成本命令**确认是否已落地（文件是否存在 / 版本号 / `git status`）；已落地 → 移入 `completed` 后再续跑。**未核验不得直接执行 `pending[0]`**
+5. **pending 逐项核验（防幽灵待办）**：对每个 `pending` 项用**最低成本命令**收集证据（文件是否存在 / 版本号 / `git status` / 声明的验证命令），结果分**三态**：**verified**（有强证据：内容哈希一致 / 本轮起点之后有新提交 / 声明的验证命令已跑通）→ 移入 `completed`；**unverified**（仅"文件存在"或"mtime 较新"这类**弱证据**）→ **不得**移入 `completed`，附证据交 Agent 判断；**still_pending**（无证据或无可解析线索）→ 保留并标注待人工确认。**未核验不得直接执行 `pending[0]`**。口径：**文件存在 ≠ 任务完成**——文件可能早已存在，或被无关操作更新了时间戳。
 
 **与压缩的衔接**：Runtime Compaction 后 TASK 区不可重建时，**优先读 `.state.md`**（本机制即「防跳过规则」契约外兜底的可执行解）；仍不可用 → 按 `kernel.md` §1「引用对象不可重建」暂停。
 

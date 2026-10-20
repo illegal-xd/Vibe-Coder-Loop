@@ -11,6 +11,37 @@ status: active
 
 本文件定义各阶段的具体转移条件、出口检查清单、防跳过回退规则。
 
+## 机器可读转移表（程序化镜像的事实源）
+
+下面这个块是**本文件各节「转移」行的等价机器副本**，供 `runtime/core` 的 `core check-protocol` 逐边双向比对（缺边、多边都报；该校验器随 Phase 1 交付）。**人读正文仍是事实源**；改转移必须同时改块与代码表，否则门禁红。
+
+```text
+<!-- vc:transitions v1
+# 语法：<from> -> <to>[, <to>]*        ;  "| pause" = 暂停等用户输入（不是状态，不落 phase）
+# 修饰：(+1)=Loop+1   (loop=0)=Loop 归 0   (loop=1)=Loop 初始化   (resume)=维持原 Loop
+#       (a/b)=该边允许多种 Loop 结果，调用方须显式指定（缺失 → INVALID_ARGUMENT）
+# 自环：S8->S8（同轮自检修复）合法且 Loop 不变，不列为边
+S0  -> S1
+S1  -> S2 | pause
+S2  -> S3, S4
+S3  -> S4 | pause
+S4  -> S5, S8(loop=1)
+S5  -> S6
+S6  -> S7
+S7  -> S8, S10
+S8  -> S9, S13
+S9  -> S10, S8(+1)
+S10 -> S11, S8(+1), S6(+1), S13
+S10 -> S7(+1/loop=0)                 # Investigation：A 补充调查 = +1 / B 重新调查 = 归 0
+S11 -> S12
+S12 -> S13
+S13 -> S0, S1(loop=0)
+S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户「继续」→ 恢复原 phase，Loop 不变
+-->
+```
+
+**与状态转移图的关系**：`engine/state-machine.md`「状态转移图」中的「任何状态 → 检测到异常条件 → S14 Safe Mode」即上表 `ALL -> S14` 的**升级入口**（须用户可感知的风险报告，且从 S14 只能经「停止」或「继续」离开，不能自由跳转）。`S10 -> S6(+1)` 的递增**只发生一次**：随后 `S6→S7→S8` 继承同一 `N+1`，不二次递增。
+
 ## S1 Intent → S2 Preflight
 
 > **Checkpoint（循环开始，强制）**：先读 `.state.md`——不存在 → 从 `.state.template.md` 复制创建；存在 → 做 freshness + 12 字段校验，通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新 `.state.md`；轮次收尾（S13）必写一次 `status` + `resume`。**
@@ -232,6 +263,23 @@ status: active
 **Tool 层运维码（补充登记）**：`memory_tool.py` / `smoke-check-core.sh` 另输出以下运维码，同守「不带 `[next]` 不构成错误码」铁律，属维护域（不进上表的工作流判定）：
 
 `ARTIFACT_SOURCE_MISSING`（源文件缺失→核对路径）/ `ARTIFACT_NAME_INVALID`（`--name` 含路径分隔符→改纯文件名）/ `ARTIFACT_REF_INVALID`（ref 形态或边界非法→核验 index 是否被篡改）/ `INVALID_ARGUMENT`（参数非正→修正后重试）/ `DB_NOT_FOUND`（库路径缺失→--db 或 DELX_MEMORY_DB）/ `KEYS_CHECK_INPUT_MISSING`（key 清单为空→stdin 或 --files 传入）；smoke-check 侧：`RESIDUAL_HIT` / `MAP_INCONSISTENT` / `STRUCTURAL_INCONSISTENT` / `LOAD_PLAN_PATH_MISSING` / `LOAD_PLAN_UNDOCUMENTED` / `DEAD_POINTER_CANDIDATE`（唯一保留人工裁决）/ `BUDGET_EXCEEDED`（棘轮，只降不升）。
+
+**运行时扩展码（确定性代码层登记）**：以下码由 `runtime/core`（状态/Checkpoint）与 `runtime/exec`（执行/产物）产生，**不属于工作流判定**——输出时必须带 **`[runtime]` 前缀**以示区分，且同样遵守「不带 `[next]` 不构成错误码」与 fail-closed 铁律。**登记在此仅为防混淆，不改变上表任何码的语义**。
+
+| 码 | 触发 | `[next]` | fail-closed |
+|---|---|---|---|
+| `[runtime] STATE_ILLEGAL_TRANSITION` | 目标状态不在合法后继表（且不满足 S14 升级弧） | 回退执行当前阶段出口清单 | 是（不落盘） |
+| `[runtime] STATE_REV_CONFLICT` | 并发写：`_rev` 与期望值不符 | 重新读取状态后重放本次转换 | 是（不落盘） |
+| `[runtime] EXIT_CHECKLIST_INCOMPLETE` | 出口清单缺必填项，或引用无法机械解析 | 补齐缺项后重试 | 是（不落盘） |
+| `[runtime] CHECKPOINT_LOCATION_UNRESOLVED` | 无法确定项目根，或解析结果落在 Skill 安装目录内 | 显式传 `--cwd` 或设 `VIBE_KERNEL_STATE_DIR` | 是 |
+| `[runtime] CHECKPOINT_FOREIGN` | `_project_id` 与当前项目不符 | 备份该文件，按全新任务开始 | 否（降级） |
+| `[runtime] CHECKPOINT_STALE` | freshness 不通过 | 核验 pending 后续跑；冲突以用户为准 | 否（降级） |
+| `[runtime] CHECKPOINT_DEGRADED` | 仅扁平标量可解析 | 按 phase/loop 续跑，列表字段重新核验 | 否（降级） |
+| `[runtime] CHECKPOINT_CORRUPT` | 严格与降级解析均失败 | 备份后全新开始 | 否（降级） |
+| `[runtime] CHECKPOINT_SCHEMA_AHEAD` | `_schema` 高于支持版本 | 按新版协议手动恢复 | 否（只读） |
+| `[runtime] CHECKPOINT_WRITE_FAILED` | 写入/加锁失败 | 检查权限或磁盘后重试；可手动维护 | 否（降级） |
+| `[runtime] PROTOCOL_DRIFT` | 代码表与本文件机器可读块不一致 | 同步代码表或修正本文件 | 是（CI 门禁） |
+| `[runtime] PHASE_TRANSITION_MISSING` | 连续多轮无 `vc_transition`（宿主适配层检测） | 若已出口则调用 `vc_transition` 并传 exit_checklist | 否（提醒） |
 
 **fail-closed 语义（硬约束）**：标 **是** 的码**不得降级继续** —— 停止并输出恢复建议，**禁止**"用残缺规则 / 陈旧摘要继续推断"。标否的码按 `[next]` 执行后继续，不消耗 Loop 计数（属同一轮内修正）。
 

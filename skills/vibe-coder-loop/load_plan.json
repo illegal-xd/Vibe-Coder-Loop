@@ -7,7 +7,7 @@
     "engine/state-machine.md",
     "engine/transition.md"
   ],
-  "_core_note": ".state.md 不在加载计划内——它由 S1 恢复协议单独读取（engine/state-machine.md「Workflow Checkpoint」），且属实例文件不计入规则成本口径",
+  "_core_note": "<project_root>/.vibe-kernel/.state.md 不在加载计划内——它由 S1 恢复协议单独读取（engine/state-machine.md「Workflow Checkpoint」），且属实例文件不计入规则成本口径（位置在项目本地，不在 Skill 安装目录）",
   "always_whole": [
     "kernel.md"
   ],

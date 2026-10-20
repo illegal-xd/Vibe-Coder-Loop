@@ -85,41 +85,44 @@
 
 ```text
 [OpenCode 会话启动]
-  └─ Adapter: session.created → Core.loadCheckpoint(.state.md)
-       ├─ fresh + 字段完整 → 恢复 {phase, current_step, completed}
-       └─ 不满足 → Core 返回「全新开始」，Adapter 不注入历史
+  └─ Adapter: event("session.created") → Core.load_checkpoint(项目本地状态文件)
+       ├─ resume / resume_degraded → 置「待注入恢复」标记
+       ├─ stale / corrupt / foreign → 标记降级原因（不注入历史）
+       └─ 注入发生在下一次 LLM 请求：chat.system.transform(output.system.push TASK 区)
+            → 第 3 档验证：LLM 首条输出复述 phase/current_step 并续跑
 
-[用户输入] → Adapter 注入 STATIC 区（kernel/policy/rules，宿主 systemPrompt）
+[用户输入]（STATIC 区由 Skill 机制加载，Adapter 不重复注入）
   └─ LLM S1 Intent → 输出目标三元组 + 任务分类
-       └─ Adapter: turn_end → Core.transition(S1→S2) [校验出口清单 + 写 .state.md]
+       └─ LLM 调 vc_transition(S1→S2) + exit_checklist [Core 校验 + 原子写 + rev+1]
 
 [LLM S2 Preflight] memory_list/get（经 memory_tool.py preflight）
-  └─ Adapter: turn_end → Core.transition(S2→S4) [Complexity Gate 输出 Level]
+  └─ LLM 调 vc_transition(S2→S4) [Complexity Gate 输出 Level]
 
 [LLM S6 Design → S7 Plan → S8 Code]
-  └─ 每个 turn_end → Core 写 .state.md（phase/loop/current_step/completed 追加）
+  └─ 每个阶段出口 → vc_transition 写 phase/loop/current_step/completed（追加式）
 
-[S8 Code 产出] LLM 调 Exec.run({cmd: "pytest", cwd, timeout})
-  └─ Exec: 执行 → 归一化结果 {exit, stats, errors[], digest, bytes}
-       └─ 超限 → Exec 外置到 artifact（reuse memory_tool.py artifact put）→ 返回 ref
-  └─ Adapter: tool.execute.after → Exec.captureResult → Core.feedExec(result)
+[S8 Code 产出] LLM 调 vc_exec({cmd, cwd, timeout})
+  └─ Exec: Popen 流式采集（内存有界）→ 归一化 {exit, stats, errors[], digest}
+       └─ 超限 → 落盘 + artifact put + **回读校验** → 返回 ref（失败则不返回 ref）
+  └─ Adapter: tool.execute.after（独立 Hook）→ Core.feed_exec(记账 + 指纹素材)
+  └─ LLM 精度需要时重跑：vc_exec（精确结果）
 
 [S9 Test]
   └─ Exec 结果 → LLM 判定通过/失败
-  └─ 失败 → Exec.fingerprint(result) → Core.repeatCheck(fp)
-       ├─ 首次失败 → Core 返回 [PASS_NEW_FAILURE]，LLM 走 S8[N+1]
-       ├─ 连续无变化 ≥2 → Core 返回 [NO_PROGRESS]（VC 码）→ 触发 Safe Mode
-       └─ Loop>3 → Core 返回 [LOOP_BUDGET_EXHAUSTED] → 停止
+  └─ 失败 → fingerprint(sha256, 规范 JSON) → Core.repeat_check(fp)
+       ├─ 首次失败 → LLM 走 S8[N+1]
+       ├─ 连续 2 次同指纹（计数持久化在状态文件）→ [NO_PROGRESS] → S14
+       └─ loop > loop_max(level) → [LOOP_BUDGET_EXHAUSTED] → 停止
 
 [Compaction 发生]（宿主触发，非 Core）
-  └─ Adapter: experimental.session.compacting → Core.snapshotTASKZone()
-       └─ Core 返回 📌 TASK 区 13 字段 → Adapter push 进 compaction context
-       └─ 保证压缩后 LLM 能从注入字段恢复（而非从历史对话回溯）
+  └─ Adapter: experimental.session.compacting → snapshot_task_zone() → output.context.push
+       + experimental.compaction.autocontinue(enabled=true) → 压缩后自动续跑
+       └─ 保证压缩后 LLM 按 TASK 区继续（第 2 档验证：首条输出仍带 [Phase][Loop]）
 
 [中断 → 新会话恢复]
-  └─ Adapter: session.created → Core.loadCheckpoint()
-       ├─ status=active + fresh → 恢复 phase/current_step，completed 不重做
-       ├─ pending 逐项核验（Exec.exists(file)/git status）→ 已落地移 completed
+  └─ load_checkpoint: active+fresh → 恢复 phase/current_step，completed 不重做
+       ├─ pending 三态核验（verified / unverified / still_pending）→ 仅 verified 移 completed
+       ├─ artifact 引用校验（失效不阻断，附 regen 提示）
        └─ 与用户输入冲突 → 以用户输入为准（Core 不覆盖 TASK/ACTIVE）
 ```
 
@@ -127,12 +130,14 @@
 
 | 失败类型 | 责任方 | 状态传递 |
 |---|---|---|
-| 命令执行失败（exit≠0） | Exec 归一化 + 指纹 | result → LLM 判定 → Core 记 review.last_failure |
-| 环境错误（命令不存在/超时） | Exec 分类为 env_error | LLM 不消耗 Loop（同轮修正，VC `OUTPUT_LIMIT`/超时 `[next]`） |
-| 状态非法跳转 | Core 拒绝转换 | 返回 VC `RULE_NOT_LOADED`/防跳过码 → LLM 回退 |
-| Checkpoint 损坏 | Core 降级为「仅参考」 | 返回 stale → 以当前会话 + 用户输入为准 |
-| 重复失败无进展 | Exec 指纹 + Core 计数 | 返回 `NO_PROGRESS` → LLM 进 Safe Mode |
-| Adapter 加载失败 | Adapter 降级 | 回退到「LLM 手动驱动协议」（现有工作流，保持可用） |
+| 命令执行失败（exit≠0） | Exec 归一化 + 指纹 | result → LLM 判定 → Core 记 `review.last_failure` |
+| 环境错误（命令不存在/超时/取消） | Exec 分类，**不进指纹计数** | 不消耗 Loop（同轮修正） |
+| 状态非法跳转 | Core 拒绝转换 | `STATE_ILLEGAL_TRANSITION` → LLM 回退 |
+| 并发写冲突 | Core 版本校验 | `STATE_REV_CONFLICT` → 重读后重放 |
+| Checkpoint 损坏/降级 | Core 降级为「仅参考」 | `CHECKPOINT_CORRUPT`/`CHECKPOINT_DEGRADED` → 以用户输入为准 |
+| 重复失败无进展 | Exec 指纹 + Core 持久化计数 | `NO_PROGRESS` → S14 |
+| Adapter 能力不可用 | Adapter 分层降级 | L2/L3 可见提示 + 本地日志；Skill 照常可用 |
+| 阶段转换被遗漏 | Adapter 检测（不自动转） | `PHASE_TRANSITION_MISSING` 提醒 |
 
 ---
 
@@ -177,17 +182,28 @@ MVP-2 Execution & Verification
 
 | 维度 | 选型 | 依据 |
 |---|---|---|
-| 语言 | **Python**（Core/Exec）+ **TypeScript**（Adapter） | Core/Exec 复用现有 memory_tool.py（Python 标准库，零依赖）；Adapter 必须用宿主插件语言（OpenCode=TS，Pi=TS） |
-| 依赖 | Core/Exec **零第三方依赖**（仅标准库）；Adapter 仅 `@opencode-ai/plugin` | 现有 memory_tool.py 即零依赖标准库；不引入 DB/队列/常驻服务 |
-| 存储 | **YAML 单文件 `.state.md`**（沿用）+ 复用 memory_tool.py artifact 目录 | 现有协议即 YAML 单文件；不引入 SQLite（评估见 MVP-1 §存储） |
-| 运行 | 本地进程内（Core/Exec 作为 CLI 或被宿主插件 import）；无常驻服务 | 轻量、可调试、可回滚 |
-| 测试 | Python `unittest`（沿用 test_memory_tool.py 风格）+ Adapter 用小场景脚本 | 现有测试范式 |
+| 语言 | **Python**（Core/Exec）+ **TypeScript**（Adapter） | Core/Exec 复用现有 memory_tool.py（Python 标准库，零依赖）；Adapter 必须用宿主插件语言 |
+| 依赖 | Core/Exec **零第三方依赖**（仅标准库）；Adapter 需 `@opencode-ai/plugin`（**运行时**，含 `tool()`） | YAML 用**受限子集自研解析器**而非 pyyaml（保持零依赖）；Adapter 依赖由宿主 bun 安装 |
+| 存储 | **状态**：`<project_root>/.vibe-kernel/.state.md`（YAML 子集，项目本地）+ **产物**：`ephemeral`(memory_tool artifact, 24h) / `pinned`(`.vibe-kernel/artifacts/`) | 状态是**项目私有数据**，不放 Skill 安装目录；产物按恢复周期分层 |
+| 运行 | 本地进程内（Core/Exec 作为 CLI 被 Adapter 调用）；无常驻服务 | 轻量、可调试、可回滚 |
+| 并发 | 文件锁 + **乐观版本号**（`_rev` + `expected_rev`） | 锁只保证串行，版本号才防"基于旧状态覆盖" |
+| 测试 | Python `unittest` + **协议一致性测试**（代码表 ↔ Skill 事实源）+ Adapter Hook 契约测试 | 副本必须被机械校验，不只被信任 |
 
 ### 三个不（明确排除）
 
-1. **不把 Core/Exec 包装为 MCP**：它们是确定性本地能力，CLI/import 即可；MCP 用于跨进程外部资源（delx-memory 是 MCP 因为它有独立服务进程）。
-2. **不引入数据库**：`.state.md` YAML 单文件 + artifact 目录足以承载任务状态；任务状态是单实例、低频写、低并发。
-3. **不在 Core 依赖宿主类型**：Core 不 import OpenCode/Pi 的任何类型；Adapter 消化宿主差异。
+1. **不把 Core/Exec 包装为 MCP**：它们是确定性本地能力，CLI 即可；MCP 用于跨进程外部资源。
+2. **不引入数据库**：YAML 子集 + 目录足以承载任务状态与产物。
+3. **不在 Core 依赖宿主类型**：Core 不 import OpenCode 任何类型；Adapter 消化宿主差异。
+
+### 版本与向后兼容（统一规则）
+
+| 项 | 规则 |
+|---|---|
+| 状态文件协议版本 | 顶层真实键 `_schema: 1`（**不是注释**）；高版本 → Core 只读不写 + `CHECKPOINT_SCHEMA_AHEAD` |
+| 13 字段 | 语义字段集固定；保留键 `_schema`/`_rev`/`_project_id` 与保留子键 `review.failure_state` **不计入** |
+| 未知字段 | 读写往返**必须原样保留**（Skill 先增字段、Core 后升级不互相破坏） |
+| 错误码 | 两族分离：**协议码**（`transition.md` 已有，语义不改） vs **运行时扩展码**（`STATE_*`/`CHECKPOINT_*`，输出带 `[runtime]` 标识） |
+| CLI 契约 | 单行 JSON + exit code 语义（0/3/4）；大入参走 `--*-file` |
 
 ---
 
@@ -196,23 +212,49 @@ MVP-2 Execution & Verification
 ```text
 Phase 0（现状）: LLM 驱动协议，memory_tool.py 提供记忆工具
    │
-Phase 1（MVP-1）: Core 可执行化 —— 状态机/Checkpoint/恢复代码化
-   │   退出条件: 状态转换/恢复协议 100% 单元测试覆盖；LLM 可经 CLI 调用 Core
-   │   Skill 仍可独立使用（LLM 不调 Core 时按协议手动跑，不破坏）
+Phase 0.5（设计收敛, 前置门禁）: 不写业务代码，只把契约钉死
+   │   退出条件（六项全绿，缺一不进 Phase 1）:
+   │   ① 状态文件位置与隔离规则（项目本地 + project_id + 锁/版本）
+   │   ② 状态文件语法与解析方案（受限 YAML 子集 + 三层降级 + 渲染幂等）
+   │   ③ 跨平台原子写与并发冲突处理（锁 + expected_rev + 合并策略）
+   │   ④ 状态转换表/Loop 规则/复杂度表的单一事实源与校验机制
+   │   ⑤ Exec 结果结构（流式 + 有界 + 整树终止 + 指纹规范化输入）
+   │   ⑥ OpenCode Hook 最小验证（用本机 typings 跑通 tool.execute.after /
+   │      session.compacting / chat.system.transform 三个钩子，确认入参出参）
    ▼
-Phase 2（MVP-2）: Exec 可执行化 —— 执行/归一化/Diff/指纹代码化
-   │   退出条件: 场景测试覆盖（通过/失败/超时/命令不存在/输出过大/重复失败）
-   │   Exec 可独立 CLI 调用（LLM 经 bash 调 exec run/summarize-diff）
+Phase 1（MVP-1）: Core 可执行化 —— 只做最小闭环
+   │   范围: StateResolver + 原子写/rev + 合法转换 + Loop 守卫 + 恢复(三态 pending) + 最小码集
+   │   明确不做: Safe Mode 统计型触发、schema 自动迁移、多任务
+   │   退出条件: V1–V29 全绿 + check-protocol 进 CI + 真实任务中断 3 天后恢复成功
    ▼
-Phase 3（MVP-3）: OpenCode Adapter —— 宿主事件桥接
-   │   退出条件: 基线 vs 实验数据对比（中断恢复成功率/重复测试数/无效调用/token）
-   │   Adapter 可降级（插件加载失败 → 回退 Phase 1/2 的 LLM 手动驱动）
+Phase 2（MVP-2）: Exec 可执行化 —— 先执行器，后归一化
+   │   顺序: 流式执行/整树终止/输出有界 → 指纹 → 归一化 → Diff → artifact 生命周期
+   │   退出条件: E1–E16 全绿（E3b/E5/E5c/E14b 必测）+ 大输出内存不增长
+   ▼
+Phase 3（MVP-3）: OpenCode Adapter —— 先验证链路，后补功能
+   │   顺序: 最小插件验证三类钩子 → 新会话恢复(A1–A3) → 压缩恢复(B1–B3)
+   │         → 工具集 → 降级分层 → 基线对比
+   │   退出条件: A1–A22 全绿（A3/A12/A14/A17/A19 必测）
    ▼
 Phase 4（未来）: Pi Adapter —— 复用 Core/Exec + 统一协议
-       按实际 Pi 使用验证后补，不在本设计预抽象
+        按实际 Pi 使用验证后补，不在本设计预抽象
 ```
 
-**每个阶段保持「Skill 可独立使用」**：Core/Exec/Adapter 都是**叠加层**，不修改 Skill 的协议文件语义；LLM 即使完全不调用它们，仍可按现有 `transition.md`/`state-machine.md` 手动驱动工作流。这是降级与回退的根本保障。
+**每个阶段保持「Skill 可独立使用」**：Core/Exec/Adapter 都是**叠加层**，不修改 Skill 的协议语义；LLM 即使完全不调用它们，仍可按现有 `transition.md`/`state-machine.md` 手动驱动工作流。这是降级与回退的根本保障。
+
+### Phase 0.5 的协议侧交付项（已落地，与代码同步）
+
+设计收敛不只是改这份设计文档，还包括三处 **Skill 侧最小增补**（不改变方法论，只补机器可读性）。**本轮已完成**：
+
+| 项 | 文件 | 已增补内容 |
+|---|---|---|
+| 保留键 + 位置 + 语法 | `engine/state-machine.md`「Workflow Checkpoint」 | 状态文件改 `<project_root>/.vibe-kernel/.state.md` + 解析顺序 + 隔离规则；保留键 `_schema`/`_rev`/`_project_id`/`_resume_from` + 保留子键 `review.failure_state`；未知键透传；YAML 子集语法与三层降级；原子写与 `expected_rev`；pending 三态核验 |
+| 机器可读转换块 | `engine/transition.md`「机器可读转移表」 | `<!-- vc:transitions v1 -->` 块（含 `(+1)`/`(loop=0)`/`(loop=1)`/`(resume)` 修饰符），供 `check-protocol` 逐边 + 修饰符比对 |
+| 运行时码登记 | `engine/transition.md`「VC 错误码族」 | 登记 12 个 `[runtime]` 扩展码，明确「不属于工作流判定、不改上表语义」 |
+| 模板 | `.state.template.md` | 新增 `_schema: 1`；注释说明项目本地路径、保留键、字符串引号纪律 |
+| 其他 | `SKILL.md` 加载时机索引 / `load_plan.json` `_core_note` | 指向项目本地路径，避免回到 Skill 目录的旧口径 |
+
+> **不算完成的**：`check-protocol` 与 `core state check` 尚未实现，因此当前只是「契约已就位、门禁未上线」。Phase 1 必须把校验器写出来并接入 CI，否则机器块仍会漂移。
 
 ---
 
@@ -222,7 +264,7 @@ Phase 4（未来）: Pi Adapter —— 复用 Core/Exec + 统一协议
 |---|---|
 | 真实复用现有 Skill | ✅ Core 直接取 `transition.md` 转换表 + `.state.md` 13 字段；不发明新工作流 |
 | Core 与 OpenCode 解耦 | ✅ Core 零宿主依赖；Adapter 单向依赖 Core 协议端口 |
-| 为 Pi 留最小接口 | ✅ host-agnostic port 5 方法；Pi Adapter 只需实现同 5 方法，事件映射在 Adapter 内消化 |
+| 为 Pi 留最小接口 | ✅ host-agnostic port 6 方法；Pi Adapter 只需实现同 6 方法，事件映射在 Adapter 内消化 |
 | 控制依赖/进程/内存/token | ✅ 零第三方依赖、无常驻服务、artifact 外置控 token、Exec 输出有界 |
 | 可测试验证 | ✅ 状态转换/Checkpoint/恢复 = 单元测试；执行场景 = 集成测试；Adapter = 基线对比 |
 | 不重复宿主能力 | ✅ Compaction 归宿主，Core 只注入 TASK 区；不实现对话压缩 |
@@ -233,31 +275,65 @@ Phase 4（未来）: Pi Adapter —— 复用 Core/Exec + 统一协议
 
 ## 八、已确认的关键设计决策
 
-1. **Core 只管状态，不管判断**：架构/审查/下一步动作归 LLM；Core 不自行决定 review 结论（`transition.md` S10 判定表是 LLM 读的协议，Core 只强制「判定后才能转」）。
-2. **沿用 `.state.md` 13 字段，不新造数据结构**：Task/Stage/Checkpoint 概念直接映射现有字段；新增字段需协议变更（走 skill-iteration 流程）。
-3. **状态机转换表取自 `transition.md`，不改语义**：Core 的合法转换表是该文件的程序化镜像，冲突时以文件为准（同 `manifest.yaml` 的 `levels.stages` 关系）。
-4. **Exec 复用 memory_tool.py artifact 子系统**：`artifact put/page` 已验证输出外置 + 分页取用 + 投影过滤 + 字节上限；Exec 的大结果走它，不另造。
-5. **Compaction 归宿主，Core 只提供 TASK 快照**：严守 `state-machine.md`「压缩归 Runtime」边界；Adapter 在 `experimental.session.compacting` 钩子注入 Core 返回的 TASK 区。
-6. **Adapter 降级路径 = 现有 LLM 手动驱动协议**：插件失败/配置缺失 → 回退 Phase 0，Skill 照常可用。
+1. **Core 只管状态，不管判断**：架构/审查/下一步动作归 LLM；Core 不自行决定 review 结论。
+2. **沿用 13 字段语义，不新造数据结构**；保留键（`_schema`/`_rev`/`_project_id`）与保留子键（`review.failure_state`）不计入 13 字段，未知键必须透传。
+3. **状态机转换表取自 `transition.md`，且必须被校验**：副本不许裸信——`check-protocol` 逐边比对进 CI 门禁（这是对"镜像必漂移"的唯一有效对策）。
+4. **状态文件放项目本地，不放 Skill 安装目录**：`<project_root>/.vibe-kernel/.state.md` + 项目身份校验 + 锁 + 乐观版本号；落在 Skill 目录内直接拒绝（fail-closed）。
+5. **YAML 只支持受限子集**：零依赖自研解析器 + 三层降级（严格 / 仅扁平标量 / 损坏）+ 规范渲染幂等；不用 pyyaml，也不假装标准库能解析 YAML。
+6. **Exec 的输出限制发生在读取过程中**：Popen + 有界 Sink + 落盘；不用 `capture_output=True` 事后限流；超时/取消走**整进程树**终止。
+7. **失败指纹必须是稳定摘要 + 持久化连续计数**：`sha256` 规范 JSON（不含 `stage`）；`last_fingerprint + consecutive_count` 存入状态文件；集合包含判断不能表达"连续"。
+8. **复用 memory_tool.py artifact，但分两层生命周期**：`ephemeral`（24h 缓存，允许过期）/ `pinned`（项目内，Checkpoint 引用期间不删）；GC 永不删被引用的产物。
+9. **阶段转换由 LLM 显式驱动，Adapter 只自动捕获运行事实**：`exit_checklist` 无法从事件推导；漏调时给 `PHASE_TRANSITION_MISSING` 提醒，**不替 LLM 转阶段**。
+10. **新会话恢复与压缩恢复是两条链路**：前者靠 `chat.system.transform`，后者靠 `session.compacting` + `autocontinue`；两者的验收档位都是"LLM 行为"，不是"Core 读了文件"。
+11. **Adapter 降级分层且可见**：L1–L4 逐级；L3 仍保留 `tool.execute.before` 安全拦截；诊断日志不依赖 Core。
 
 ---
 
-## 九、未决问题与风险（需用户决策）
+## 九、未决问题与风险（按是否阻塞实现分诊）
 
-| # | 问题 | 选项 | 当前倾向 |
+### 9.1 阻塞实现（Phase 0.5 前必须定）
+
+| # | 问题 | 结论 | 状态 |
 |---|---|---|---|
-| U1 | Core 与 Skill 的版本耦合：Core 读 `.state.md` 13 字段，若 Skill 协议演进增字段，Core 如何同步？ | A. Core 声明 schema 版本号，字段缺失即降级；B. Core 与 manifest.yaml 版本绑定 | A（容错优先，与 memory_tool.py `check_keys` 的 fail-closed 哲学一致） |
-| U2 | Core 是否暴露为 OpenCode 自定义工具（LLM 主动调）还是纯事件驱动（LLM 无感）？ | A. 事件驱动为主 + 工具兜底；B. 纯工具（LLM 显式调）；C. 纯事件 | A（事件驱动保证「LLM 漂移也不漏写 checkpoint」；工具兜底供 LLM 主动查询状态） |
-| U3 | `.state.md` 当前是单实例单文件；多任务/多 worktree 如何承载？ | A. 维持单任务，多任务各自独立 `.state.md`（按 cwd/worktree 隔离）；B. 引入 task_id 多文件 | A（现有协议即单实例；多任务留 Phase 4） |
-| U4 | Exec 的 Diff 汇总是否依赖 git？非 git 项目如何处理？ | A. git 优先，非 git 降级为「文件存在性 + mtime 对比」；B. 强依赖 git | A（与 `state-machine.md` pending 核验的「最低成本命令」一致） |
-| U5 | MVP-3 基线数据如何采集？当前无 instrumentation | A. 先加日志埋点（memory_tool.py metrics 已有 dashboard 框架，可复用）；B. 人工统计 | A（复用现有 dashboard） |
+| U1 | Core 与 Skill 的版本耦合 | **已定案**：`_schema` 真实键 + 未知键透传 + 高版本只读降级 | ✅ 关闭 |
+| U2 | Core 暴露为工具还是纯事件驱动 | **已定案**：事件/Hook 捕获运行事实；**转换必须 LLM 显式调工具**（混合，且明确边界） | ✅ 关闭 |
+| U3 | 单实例状态文件 / 多 worktree | **已定案**：按项目根隔离 + `_project_id`；worktree 优先 `ctx.worktree`；多任务并行留 Phase 4 | ✅ 关闭 |
+| U6 | `loop_max` 是否按 Level 区分 | **已定案**：L0/L1=1，L2+=3（`kernel.md` §7），manifest 仅 L2+ 缺省 | ✅ 关闭 |
+
+### 9.2 可暂缓（有明确缺省，不阻塞开工）
+
+| # | 问题 | 缺省 | 何时再定 |
+|---|---|---|---|
+| U4 | Diff 是否依赖 git | git 优先，非 git 走**显式基线快照** | Phase 2 实现时按真实项目验证 |
+| U5 | 基线数据采集方式 | 先落本地日志，可汇总时进 metrics | Phase 3 开工前 |
+| U7 | `exit_checklist` 结构化格式 | `{stage, referenced_outputs[], checked_items[]}` | Phase 1 实现时微调 |
+| U8 | 只读状态查询 | 加 `get_state()` | 已随接口确定 |
+| U9 | 指纹历史存哪 | `review.failure_state` | 已定案 |
+| U10 | artifact 调用方式 | subprocess CLI | 已定案 |
+| U11 | 归一化器可配置 | 不做配置层，`unknown` 降级 | 有第二例需求再说 |
+| U12 | Diff `base` | 缺省 `HEAD`，可覆盖 | 已定案 |
+| U13–U15 | idle 语义 / STATIC 注入 / after-hook 输出 | 均已用类型定义定案 | 已关闭 |
+| U17 | CLI 输出格式 | 单行 JSON + exit code 语义 | 已定案 |
+| U21–U23 | 高危清单归属 / 脱敏误伤 / pin 策略 | 见 MVP-2 §十 | Phase 2 实现前 |
+| U25 | 注入频率 | 首次 full + 常态 pointer | Phase 3 实测 token 后 |
+
+### 9.3 仅实验/待真机（不阻塞设计，但阻塞"宣称成功"）
+
+| # | 问题 | 为何不能靠设计解决 |
+|---|---|---|
+| U16 | 与 advisor 插件的 handler 顺序 | 取决于宿主实现，必须实测（A22） |
+| U24 | `experimental.*` API 稳定性 | 无稳定性承诺 → 只能能力探测 + 回归测试 |
+| U26 | 同项目多会话并行 | 真实使用模式未知；当前 `_rev` 冲突显式失败是可接受的下限 |
+| E2/E3 | 会话内压缩恢复是否真生效 | 协议自述"未经真机观测"；**必须由 A3/B2 冒烟证明**，否则只能写成"注入可用、行为未验证" |
 
 ---
 
 ## 十、现有架构问题与迁移风险
 
-1. **历史路径描述陈旧**（迁移遗留）：旧文档中的历史路径指针已统一指向 `kernel/Vibe Coder.md`。本次设计文档**不改 Skill 内容**，留待后续 skill-iteration 统一更新。
-2. **`<pi-agent-config>/AGENTS.md` 未统一**（迁移遗留）：Pi 全局 Prompt 是常规文件，与 `Vibe Coder.md` 内容不同；其「本仓库源」措辞陈旧。Phase 4 Pi Adapter 时需一并决策是否统一进项目。
-3. **会话内压缩契约 E2/E3 未真机观测**：`state-machine.md` 自述该维度「未经真机观测」。MVP-3 Adapter 的 compaction 注入恰好**提供首次真机验证机会**——注入后观测 LLM 能否恢复 TASK 区，据实补 E4 证据（呼应 `references/e4-matrix.md` D-3 现场采集卡）。
-4. **memory_tool.py 位于 `backup/` 目录**：命名 `backup/` 但实为确定性工具层（`manifest.yaml` `architecture.tools` 已正名）。Core/Exec 复用它时不引入新路径，沿用 `$HOME/.agents/skills/vibe-coder-loop/backup/memory_tool.py`（经重指软链解析到本项目）。
-5. **单文件 `.state.md` 无并发保护**：当前 LLM 串行写无问题；Core 化后若 Adapter 事件 + LLM 工具并发写需原子化（`.state.md.tmp` + rename），MVP-1 §存储会处理。
+1. **历史路径描述陈旧**（迁移遗留）：旧文档中的历史路径指针已统一指向 `kernel/Vibe Coder.md`。本设计**不改 Skill 内容**，留待 Phase 0.5 的三项最小增补（§六末）。
+2. **`<pi-agent-config>/AGENTS.md` 未统一**（迁移遗留）：Phase 4 Pi Adapter 时一并决策。
+3. **会话内压缩契约 E2/E3 未真机观测**：MVP-3 提供首次真机验证机会，**但结论以 A3/B2 为准**；失败则如实降级结论，不宣称闭环。
+4. **memory_tool.py 位于 `backup/` 目录**：命名 `backup/` 但实为确定性工具层。Core/Exec 复用它时**不硬编码路径**，按 `VIBE_KERNEL_HOME` → 项目相对 → `$HOME/.agents/skills/...` 顺序解析。
+5. **并发写入**：状态文件从"LLM 串行写"变为"Adapter 事件 + LLM 工具并发" → 文件锁 + `expected_rev` 双保险（MVP-1 §4.2）。锁只解决串行，版本号才防覆盖。
+6. **运行时状态误入 Skill 目录**（本次修正）：原设计把状态放 `$SKILL_DIR`，与"多项目隔离"直接冲突；改为项目本地并加"落在 Skill 目录内即拒绝"的对称校验。
+7. **协议与代码双源漂移**（本次修正）：`LEGAL_TRANSITIONS`/`manifest.complexity` 是副本 → 必须有 `check-protocol` 门禁，否则"测试全绿、行为全错"。

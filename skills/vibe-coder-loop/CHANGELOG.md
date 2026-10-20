@@ -4,6 +4,56 @@
 > 规则：技能文件正文禁止日期/版本备注；变更记录一律追加到本文件（格式 `## vX.Y — 标题`）。
 > 版本策略（用户指令）：**未提交 git 期间版本号保持不变**——同版本内可含多个批次，改动多少次都不迭代；提交后才递增下一版本。
 
+## v1.22.1 — 设计收敛补丁（`.state.md` 迁出 + 机器可读契约）
+
+> **同版本第二批**（未提交 git，版本不迭代）。**触发**：对 `docs/design/` 三份 MVP 设计做 P0 级评审，发现 6 项会导致实现跑偏的硬缺陷；其中两项**必须改协议文件**才能闭环，故本批次落 Skill 侧最小增补。核心判别：**运行时状态不属于 Skill 安装目录**，**副本必须被机械校验**。
+
+### 一、状态文件迁出 Skill 目录（原设计自相矛盾）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 1 | 运行实例位置 `<skill>/.state.md` → `<project_root>/.vibe-kernel/.state.md`；**文件名不变**，减少数十处引用的改名面 | `engine/state-machine.md`「Workflow Checkpoint」 |
+| 2 | 补**位置解析顺序**（`--state-dir` → `VIBE_KERNEL_STATE_DIR` → 项目 config → 缺省）与 `project_root` 判定（显式 cwd，或向上首个含 `.git`/`.vibe-kernel`/`pyproject.toml`/`package.json`/`go.mod` 的目录） | 同上 |
+| 3 | 补**隔离规则**：每项目 / 每 worktree 各一份；`realpath` 归一（软链同目录 = 同项目）；解析结果落在 Skill 安装目录内 → **拒绝写入**（fail-closed，防多项目互相覆盖） | 同上 |
+| 4 | `SKILL.md` 加载时机索引与 `load_plan.json` `_core_note` 指向新位置（防旧口径回流） | `SKILL.md` / `load_plan.json` |
+
+### 二、机器可读契约（防「协议更新、代码用旧表」）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 5 | 新增「机器可读转移表」节：`<!-- vc:transitions v1 -->` 块，含 28 条边 + Loop 修饰符（`(+1)` / `(loop=0)` / `(loop=1)` / `(resume)` / `(a/b)` 允许集），供 `check-protocol` 逐边 + 修饰符比对 | `engine/transition.md` |
+| 6 | 块内修正两处与状态转移图不一致的边：**`S14 → S13 \| RESUME`**（原设计误写 `S14 → S0/S1`；`kernel.md` §1 明确「维持原 Loop N 继续」）；**补 `S10 → S7`**（Investigation 分支「情况 A 回 S7[N+1] / 情况 B 回 S7[0]」） | 同上 |
+| 7 | 明确 `S10 → S6(+1)` 的递增**只发生一次**，`S6→S7→S8` 继承同一 `N+1`（消除"重设计后回 S8 同轮"的歧义） | 同上 |
+| 8 | 新增「保留键」表：`_schema`（真实键，非顶部注释）/ `_rev` / `_project_id` / `_resume_from` + 子键 `review.failure_state`；**不计入 13 字段**；`_schema` 超前 → 只读降级 | `engine/state-machine.md` |
+| 9 | 新增三条兼容硬约束：**未知键必须原样保留** / 高版本只读 / 保留键缺失按缺省（不判损坏） | 同上 |
+| 10 | 新增「语法（机器读取口径）」：受限 YAML 子集（块映射/块序列/引号标量/`\|`/`#`），**不支持**锚点别名·流式集合·多文档；写端字符串标量一律加引号；三层降级（严格 → 仅扁平标量 → `corrupt` 备份） | 同上 |
+| 11 | 新增「写入方式（机器端）」：临时文件 + `fsync` + `os.replace`；跨平台锁；`expected_rev` 不匹配即冲突**不覆盖**（锁只保证串行，版本号才防「基于旧状态覆盖」） | 同上 |
+
+### 三、pending 核验改三态（修「文件存在 = 完成」误判）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 12 | 恢复协议第 5 步：`verified`（强证据：内容哈希 / 本轮起点后有新提交 / 声明的验证命令跑通）→ 移 `completed`；`unverified`（仅"存在"或"mtime 较新"这类**弱证据**）→ **不得**移；`still_pending` → 保留待人工确认。口径明写「**文件存在 ≠ 任务完成**」 | `engine/state-machine.md` 恢复协议 |
+
+### 四、运行时扩展码登记（防与工作流码混淆）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 13 | 「VC 错误码族」新增**运行时扩展码**表（12 个），一律带 `[runtime]` 前缀、同守「不带 `[next]` 不构成错误码」与 fail-closed 铁律；**声明不改变既有码语义** | `engine/transition.md` |
+| 14 | 其中 `STATE_ILLEGAL_TRANSITION` 明确**不复用** `RULE_NOT_LOADED`——后者语义是「阶段必读文件未加载」，借用会把 LLM 的 `[next]` 动作引错（去加载文件而不是回退阶段） | 同上 |
+| 15 | 登记 `CHECKPOINT_LOCATION_UNRESOLVED` / `_FOREIGN` / `_STALE` / `_DEGRADED` / `_CORRUPT` / `_SCHEMA_AHEAD` / `_WRITE_FAILED` / `PROTOCOL_DRIFT` / `PHASE_TRANSITION_MISSING` / `STATE_REV_CONFLICT` / `EXIT_CHECKLIST_INCOMPLETE` | 同上 |
+
+### 五、模板与配套
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 16 | 模板新增 `_schema: 1`；注释改为项目本地路径 + 保留键清单 + 字符串引号纪律 | `.state.template.md` |
+| 17 | 设计文档同步（6 项 P0 + 专项）：状态机单一事实源校验、Loop 按 Level 分档（L0/L1=1，L2+=3）、Safe Mode 收窄为确定性触发、Exec 流式有界 + 整树终止、指纹 sha256 规范化 + 连续计数持久化、artifact 分 `ephemeral`/`pinned`、Hook 事实按 `@opencode-ai/plugin@1.15.4` 类型定义修正、新会话恢复走 `chat.system.transform` | `docs/design/` 五份 |
+
+**验证**：`transition.md` 机器块与设计文档 `LEGAL_TRANSITIONS` 交叉比对 **28 边 / 28 边，修饰符 7 条，CONSISTENT**；`.state.template.md` 经 `yaml.safe_load` 解析为单文档 14 键（13 语义 + `_schema`）；`load_plan.json` JSON 合法；全仓代码围栏配平。
+
+**未验证（不宣称）**：`check-protocol` 与 `core state check` 尚未实现，当前只有契约没有门禁；OpenCode 三条 Hook 仅在类型定义层确认，真机行为待 Phase 3 冒烟（A3/B2）。
+
 ## v1.22.1 — 加载计划按阶段裁剪（preflight 瘦身 + stage→section 映射）
 
 > 提交 v1.22.0（4300e81）后递增。**触发**：对 v1.22.0 做收益评估，实测发现**保守档反而净增 7~8%** —— `preflight` 自身输出 L1 5,301 / L2 6,760 字符（章节索引占其约六成），超过它带来的节省；且"机械可定位"只覆盖 1 个文件（`engine/transition.md`，因只有它的 H2 标题自带阶段号）。本轮按评估结论实施两项：**① 输出瘦身 ② stage→section 映射**。

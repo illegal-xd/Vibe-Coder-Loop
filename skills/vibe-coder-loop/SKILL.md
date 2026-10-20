@@ -83,7 +83,7 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 | **Review 格式参考** | `references/example.md` | 按需参考 |
 | **调试模式触发** | `references/debug-mode.md`（完整内容 `skill:references/debug-mode`） | 按需参考 |
 | **E4 真机验证** | `references/e4-matrix.md` | 按需参考（Test A–F 证据采集） |
-| **循环状态恢复** | `.state.md`（协议见 `engine/state-machine.md`「Workflow Checkpoint」） | 循环开始必读；阶段出口必写 |
+| **循环状态恢复** | `<project_root>/.vibe-kernel/.state.md`（位置解析与隔离规则见 `engine/state-machine.md`「Workflow Checkpoint」；协议同节） | 循环开始必读；阶段出口必写 |
 
 ## 骨架 ↔ 规则条目映射（骨架化治理）
 
