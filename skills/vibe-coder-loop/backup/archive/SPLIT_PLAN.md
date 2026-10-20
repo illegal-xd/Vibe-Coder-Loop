@@ -32,7 +32,7 @@
 - profiles/skill-maintenance.md：Required/Optional 指向 `skill-authoring` 协议源
 
 ### D. 注册
-两新 skill 已软链：`~/.agents/skills/<name>` → obsidian 源；`~/.config/opencode/skills/<name>` → `~/.agents/skills/<name>`。
+两新 skill 已软链：`~/.agents/skills/<name>` → 本仓库；`~/.config/opencode/skills/<name>` → `~/.agents/skills/<name>`。
 
 ## 边界明确（防误用）
 

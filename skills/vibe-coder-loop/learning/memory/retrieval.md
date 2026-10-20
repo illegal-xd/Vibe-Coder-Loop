@@ -27,7 +27,7 @@ status: active
 
 | 任务类型 | 判定特征 | 强制召回清单 | 检索动作 |
 |---------|---------|-------------|---------|
-| 技能/文档维护 | 修改 vibe-coder-loop skill 文件、Vibe Coder Kernel、obsidian raw/ai/ 文档 | `rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue` + `project:obsidian-vault-structure` | `memory_get` 精确 key（已知） |
+| 技能/文档维护 | 修改 vibe-coder-loop skill 文件、Vibe Coder Kernel、本仓库文档 | `rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue` | `memory_get` 精确 key（已知） |
 | 记忆/回写/指标 | 任务涉及 access_count、仪表盘、Metrics、记忆协议 | `pattern:memory-writeback-integrity` + `reference:memory-access-tracking` + `lesson:memory-metadata-overwrite` | `memory_get` 精确 key |
 | 编码/调试 | 功能开发、bug 修复（vue/antd/通用） | `memory_search "lesson:{技术栈}"` + `memory_search "reflection:{领域}"` + 项目网络入口 | `memory_search`（≤2 次，取前 5） |
 | 架构/重构 | 模块拆分、接口变更 | `codegraph_impact` + 项目网络 p_high + `memory_list(prefix="pattern:")` | codegraph + memory 组合 |

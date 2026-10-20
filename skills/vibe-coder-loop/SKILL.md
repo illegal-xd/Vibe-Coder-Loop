@@ -45,7 +45,7 @@ description: Vibe Coder Loop 工程循环 Skill。承载完整工程流程：Int
 | 结构调整/模块拆分/架构级代码变更 | `profiles/refactoring.md` | C/D |
 | 大需求/设计先行/多 subagent 编排 | `profiles/planning.md` | D/混合 |
 | 调研/审查/分析/文档产出（不产代码） | `profiles/review.md` | E |
-| 修改 skill 文件/Vibe Coder/raw/ai 文档 | `profiles/skill-maintenance.md` | 技能维护 |
+| 修改 skill 文件/Vibe Coder Kernel/本仓库文档 | `profiles/skill-maintenance.md` | 技能维护 |
 
 **使用方式**：S1 判定任务类型 → 读对应 profile（约 40 行）→ 按 profile 的 Required 清单加载模块 → 执行中逐阶段出口检查仍以「加载时机索引」+ engine 文件为准。
 

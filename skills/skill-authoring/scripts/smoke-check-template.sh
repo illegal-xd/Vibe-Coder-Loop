@@ -3,7 +3,7 @@
 #
 # 实例化方式：复制本文件到目标 Skill 的 `scripts/smoke-check.sh`，只改下面「配置」区的值。
 # **不要复制检查逻辑** —— 逻辑唯一事实源 = `smoke-check-core.sh`（同目录）；
-# 复制逻辑即产生 duplicate guide，两份会各自漂移（对齐 dsh-ops「单一来源 + 生成」）。
+# 复制逻辑即产生 duplicate guide，两份会各自漂移（单一来源 + 生成）。
 #
 # 参考实例：
 #   - skill-authoring/scripts/smoke-check.sh   （本协议 Skill 自身）

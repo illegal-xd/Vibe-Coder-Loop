@@ -30,9 +30,9 @@ status: active
 
 ```text
 S2 Preflight → `memory_list(prefix="pattern:")`（全局 namespace）
-  → 命中 pattern:async-state-race（jtkl-frontend 3次, delx-memory-web 1次）
+  → 命中 pattern:async-state-race（项目 A 3 次，项目 B 1 次）
   → 🌐 跨项目模式提醒：
-    项目 jtkl-frontend + delx-memory-web 均遇到 pattern:async-state-race
+    项目 A + 项目 B 均遇到 pattern:async-state-race
     建议在本项目中重点关注异步状态完整性
 ```
 

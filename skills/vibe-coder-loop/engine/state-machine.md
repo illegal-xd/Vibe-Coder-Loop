@@ -136,7 +136,7 @@ S13 Complete
 > **触发核对（出现任一即采集）**：① 压缩后无法确定 Phase / Loop N / 下一步；② context overflow 或 TASK 字段缺失（如 S10 情况 B 引用不到 S6 模块划分）；③ 用户反馈进度信息丢失。
 > **采集动作**：当场填 `references/e4-matrix.md`「D-3 现场采集卡」→ 列入「📋 待用户决策清单」，**不暂停循环**（除非同时命中 `kernel.md` §1，此时以暂停优先）→ 据实补 E4 证据，被证伪则改本条契约并同步 CHANGELOG。详见 `lesson:compaction-e4-unverified-reminder`。
 
-**执行者边界（架构事实）**：**Context 管理属 Agent Runtime 职责**——Context Window、工具输出限制、Conversation History 压缩、摘要重建、压缩阈值与判定，均由宿主（Pi / OpenCode 等）自主承担，且**不同 Runtime 机制不同**（本机校准见项目记忆 `project:opencode-model-limits`）。**本 Skill 不实现 Conversation History Compression、不维护压缩阈值、不计算 token 预算，也不假设 Runtime 提供任何特定压缩命令**。Agent 侧承担三件事：**压缩后继续 Workflow** + **遵循信息获取规范** + **E4 未验证期的提醒义务**（见上）。
+**执行者边界（架构事实）**：**Context 管理属 Agent Runtime 职责**——Context Window、工具输出限制、Conversation History 压缩、摘要重建、压缩阈值与判定，均由宿主（Pi / OpenCode 等）自主承担，且**不同 Runtime 机制不同**（具体校准因宿主与环境而异）。**本 Skill 不实现 Conversation History Compression、不维护压缩阈值、不计算 token 预算，也不假设 Runtime 提供任何特定压缩命令**。Agent 侧承担三件事：**压缩后继续 Workflow** + **遵循信息获取规范** + **E4 未验证期的提醒义务**（见上）。
 
 ### 压缩后状态延续契约（Context Zone）
 
@@ -185,9 +185,9 @@ S13 Complete
 ## Workflow Checkpoint（`.state.md`）
 
 > **性质**：**Checkpoint ≠ Memory ≠ Context Manager**。它是 📌 TASK 区（字段定义见上「压缩后状态延续契约」表）的**落盘形式**，唯一用途是**跨会话恢复**。**不保存长期经验**（经验归 delx-memory，走 S11/S12），**不承担压缩**（压缩归 Runtime），**不参与规则仲裁**。
-> **文件**：`<skill>/.state.md`——模板与实例同一文件（YAML 注释自解释），单文件单实例，新循环覆盖上一循环。
+> **文件**：运行实例 = `<skill>/.state.md`（单文件单实例，新循环覆盖上一循环；已 gitignore，禁止提交）。首次使用或实例缺失时，从 `<skill>/.state.template.md` 复制创建；模板只含字段骨架与注释，不含个人任务数据。
 
-**字段（13 项，防漂移）**：`status` `phase` `loop` `level` `goal` `current_step` `completed` `pending` `decisions` `review` `user_decisions` `resume` `updated_at`。其中 **`updated_at`** 为 freshness 字段（最后写入时刻，**须到分钟**）——恢复协议第 1 条据它识别「同日陈旧」；不承载状态语义（必需字段集的机械判定见 smoke-check 6b）。其中 **`status` 为新增**；TASK 区 ⑨「上一阶段输出指针（S2 环境结论 / S5 需求复述 / S6 模块划分）」由 **`resume`** 承载，⑩「上轮失败原因 + Review 判定 A·B·C」由 **`review.last_review（最近一轮审查结论）/ review.last_failure（最近一次未通过的原因）`** 承载，其余项直接对应——故本机制不引入第二套状态语义。模板与字段注释见 `.state.md`（此处不复述）。
+**字段（13 项，防漂移）**：`status` `phase` `loop` `level` `goal` `current_step` `completed` `pending` `decisions` `review` `user_decisions` `resume` `updated_at`。其中 **`updated_at`** 为 freshness 字段（最后写入时刻，**须到分钟**）——恢复协议第 1 条据它识别「同日陈旧」；不承载状态语义（必需字段集的机械判定见 smoke-check 6b）。其中 **`status` 为新增**；TASK 区 ⑨「上一阶段输出指针（S2 环境结论 / S5 需求复述 / S6 模块划分）」由 **`resume`** 承载，⑩「上轮失败原因 + Review 判定 A·B·C」由 **`review.last_review（最近一轮审查结论）/ review.last_failure（最近一次未通过的原因）`** 承载，其余项直接对应——故本机制不引入第二套状态语义。模板与字段注释见 `.state.template.md`（此处不复述）。
 
 **写入纪律（避免"写了文件但没写状态"）**：**仅当字段发生变化时写入**——`phase` / `loop` / `current_step` / `completed` / `pending` 任一项变化 → 在**该阶段出口**写入（追加式）。无变化的阶段不写（省去"未变化也记一行"的仪式，避免恒定写放大）。
 
@@ -197,7 +197,7 @@ S13 Complete
 
 | 时机 | 动作 |
 |---|---|
-| 循环开始（S1） | 读 `.state.md`；不存在 → 按模板创建 |
+| 循环开始（S1） | 读 `.state.md`；不存在 → 从 `.state.template.md` 复制创建（模板本身不改写） |
 | 每个阶段出口 | 更新 `phase` / `loop` / `current_step` / `completed` / `pending`（**追加式**，不重写已确认项） |
 | 关键决策点（S3 仲裁 / S10 判定 / SAFE MODE） | 追加 `decisions` / `review` / `status` |
 | 循环结束（S13） | `status: complete` + 输出最终摘要（文件保留，留待下一循环覆盖） |

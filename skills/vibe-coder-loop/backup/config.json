@@ -1,4 +1,4 @@
 {
-  "db_path": "/Users/allen/.delx-memory/db.sqlite",
-  "note": "delx-memory 数据库路径。可手动修改，或让 agent 按目标机器调整（跨机器迁移时改这里即可）。留空（\"\"）则自动探测：macOS/Linux 默认 ~/.delx-memory/db.sqlite，Windows 默认 %USERPROFILE%\\.delx-memory\\db.sqlite。优先级：--db 参数 > DELX_MEMORY_DB 环境变量 > 本文件 > 自动探测。"
+  "db_path": "",
+  "note": "delx-memory 数据库路径。留空（\"\"）则自动探测：macOS/Linux 默认 ~/.delx-memory/db.sqlite，Windows 默认 %USERPROFILE%\\.delx-memory\\db.sqlite。优先级：--db 参数 > DELX_MEMORY_DB 环境变量 > 本文件 > 自动探测。"
 }

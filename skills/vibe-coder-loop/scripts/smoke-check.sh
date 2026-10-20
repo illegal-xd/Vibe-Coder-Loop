@@ -3,8 +3,7 @@
 #
 # 检查逻辑唯一事实源 = `skill-authoring/scripts/smoke-check-core.sh`。
 # 本文件只做配置 + core 定位，**不复制检查逻辑** —— 历史上 template 与两个实例
-# 曾各持一份近乎相同的逻辑、需三处同步；改为单一来源 + 生成（对齐 dsh-ops
-# 「host generates declarations from the same schemas; no duplicate guide」）。
+# 曾各持一份近乎相同的逻辑、需三处同步；改为单一来源 + 生成（host generates declarations from the same schemas; no duplicate guide）。
 #
 # 检查覆盖：日期/版本残留（HARD）· 死指针候选（需裁决）· governance 映射一致性（HARD）
 #           · memory_tool 自测（HARD）· 加载计划一致性（HARD）· 行数预算（退出码 2）

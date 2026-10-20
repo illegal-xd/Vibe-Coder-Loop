@@ -121,8 +121,6 @@ SKILL_LINKED_KEYS = [
     "reference:memory-navigation",
     "reference:memory-access-tracking",
     "reference:skill-context-cost-baseline",
-    "project:opencode-model-limits",
-    "preference:user:memory-autonomy",
 ]
 
 SKILL_PREFIX = "skill:"
@@ -1112,7 +1110,7 @@ def cmd_check_keys(args, db):
 # runtime: preflight —— 加载计划（一次调用替代 N 次导航读取）
 # ============================================================================
 #
-# 设计要点（对齐 dsh-ops 的「渐进式披露 + 动态渲染」）：
+# 设计要点（渐进式披露 + 动态渲染）：
 #   1. 章节索引在**运行时扫描生成**，不写死行号 —— 行号漂移不会造成死指针
 #   2. 输出有界：章节数、key 数均有上限，超出显式标注（不静默截断）
 #   3. **只回 key 名与计数，不回 value** —— 遵守 engine/state-machine.md
@@ -1652,7 +1650,7 @@ def cmd_preflight(args, db):
 # runtime: artifact —— 结果外置（大产出落盘，上下文只留 Ref + 投影视图）
 # ============================================================================
 #
-# 对齐 dsh-ops 的 ops_result（put / page / release）：
+# 对齐 put / page / release 的结果契约：
 #   - 大产出（全量测试日志 / 逐项 Review 结果 / 状态矩阵）写盘，不进上下文
 #   - 回流只带 Ref + 投影视图（--fields / --grep / --equals / --limit / --max-bytes）
 #   - --count 等价 outputMode:count（先摸规模再决定是否取内容）
@@ -1721,7 +1719,7 @@ def _artifact_prune(base, index):
     """回收过期产物（24h TTL）。返回 (回收的 ref, 跳过的非法 ref)。
 
     ref 一律先过 `_artifact_safe_dir` 边界校验 —— index.json 只是普通本地文件，
-    不是可信来源（对齐 dsh-ops："references are not capability tokens"）；
+    不是可信来源（references are not capability tokens）；
     未校验即拼路径 rmtree = 越界删除用户目录的敞口。
     """
     now = time.time()
@@ -1746,7 +1744,7 @@ ARTIFACT_REF_RE = re.compile(r"a[0-9a-f]{10}\Z")
 def _artifact_safe_dir(base, ref):
     """ref 的唯一合法形态 = `a` + 10 位十六进制；目录必须解析在 base 之下。
 
-    防 index.json 被篡改 / CLI 传入 `../../x` 后越界 rmtree；对齐 dsh-ops 的
+    防 index.json 被篡改 / CLI 传入 `../../x` 后越界 rmtree；对齐通用安全边界：
    capability 边界（capability-relative handles 防目录逃逸）。"""
     if not ARTIFACT_REF_RE.fullmatch(str(ref)):
         raise ValueError(f"非法 ref 形态: {ref!r}")

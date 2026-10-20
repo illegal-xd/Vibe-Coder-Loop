@@ -1,6 +1,6 @@
 # backup — 技能相关记忆 备份/更新 工具
 
-备份与更新 **vibe-coder-loop 技能相关联的数据记忆**（delx-memory 数据库中的 `skill:*` 规则条目 + 直接关联的 rule/lesson/pattern/reference/agent 条目）。**不备份其他项目记忆**（jtkl/vue-ui 等不受影响）。
+备份与更新 **vibe-coder-loop 技能相关联的数据记忆**（delx-memory 数据库中的 `skill:*` 规则条目 + 直接关联的 rule/lesson/pattern/reference/agent 条目）。**不备份其他项目记忆**（其他项目的数据不受影响）。
 
 ## 快速开始
 
@@ -34,7 +34,7 @@ python3 memory_tool.py preflight --files kernel.md,rules/code.md   # 绕过 load
 #   退出码：0 正常；3 = 计划缺失或清单内文件缺失（[RULE_STORE_MISSING] / [RULE_NOT_FOUND]，fail closed）
 
 # 结果外置：>100 行的产出落盘，上下文只留 ref + 投影视图
-python3 memory_tool.py artifact put --file /tmp/test.log --name test.log --kind text --loop 2
+python3 memory_tool.py artifact put --file "${TMPDIR:-/tmp}/test.log" --name test.log --kind text --loop 2
 python3 memory_tool.py artifact page --ref a1234567890 --count                    # 先摸规模
 python3 memory_tool.py artifact page --ref a1234567890 --grep '^FAIL' --limit 20  # 过滤 + 分页
 python3 memory_tool.py artifact page --ref a1234567890 --equals state=failed --fields file,line  # jsonl 投影（kind 由 put 时声明）
@@ -80,22 +80,21 @@ python3 memory_tool.py metrics --conflict 1 --retrieval 3 --budget-hit 3 --memor
 
 ## 跨机器迁移流程
 
-1. **源机器**：运行 `python3 memory_tool.py backup` → 生成 `snapshots/skill_memory_latest.json`（建议提交 git）
-2. **目标机器**（如 Windows）：clone 仓库 → 修改 `backup/config.json` 的 `db_path` 指向本机 delx-memory 库 → 运行 `python3 memory_tool.py restore snapshots/skill_memory_latest.json`
+1. **源机器**：运行 `python3 memory_tool.py backup` → 生成 `snapshots/skill_memory_latest.json`（仅本机/受控迁移使用，不要提交）
+2. **目标机器**（如 Windows）：clone 仓库 → 设置 `DELX_MEMORY_DB`（或使用 `--db`）指向本机 delx-memory 库，不要把个人路径写进受跟踪的 `config.json` → 运行 `python3 memory_tool.py restore snapshots/skill_memory_latest.json`
 3. 运行 `python3 memory_tool.py verify ...` 确认一致
 
 ## Windows 说明
 
 - 需要 Python 3（python.org 安装，勾选 Add to PATH）
 - 命令：`python memory_tool.py backup`（Windows 下可能是 `python` 而非 `python3`）
-- 路径含反斜杠时注意 JSON 转义：`"db_path": "C:\\Users\\<user>\\.delx-memory\\db.sqlite"`
+- 路径含反斜杠时注意 JSON 转义：`"db_path": "<your-home>\\.delx-memory\\db.sqlite"`
 - SQLite 文件被 delx-memory 进程占用时，脚本带 busy_timeout 重试；仍失败则先停止占用进程
 
 ## 备份范围
 
 - 前缀 `skill:*`：全部技能规则条目（rules/learning/policy/metrics 等；计数以 `memory_list(prefix="skill:")` 实时核对，不硬编码）
-- 显式关联（16 条，与 `memory_tool.py` 的 `SKILL_LINKED_KEYS` 常量一致）：
-  `rule:skill-iteration-manifest`、`lesson:skill-edit-date-residue`、`lesson:access-writeback-trigger-gap`、`lesson:memory-metadata-overwrite`、`lesson:runtime-message-timing`、`lesson:hard-constraint-bypass`、`lesson:checkpoint-instance-growth`、`lesson:fail-closed-over-silent-degradation`、`lesson:context-cost-lever-is-tool-surface`、`pattern:memory-writeback-integrity`、`agent:vc_constraints`、`reference:memory-navigation`、`reference:memory-access-tracking`、`reference:skill-context-cost-baseline`、`project:opencode-model-limits`、`preference:user:memory-autonomy`（记忆操作常驻授权记录）
+- 显式关联：见 `memory_tool.py` 的 `SKILL_LINKED_KEYS` 常量（当前 14 条；新增/删除时同步本说明，不在文档中重复枚举实例 key）
 
 > 调整范围：修改 `memory_tool.py` 顶部 `SKILL_LINKED_KEYS` 列表即可（不涉及数据库 schema）；快照含 `skill_version` + `changelog_top` 溯源字段（读取 manifest.yaml / CHANGELOG.md，用于溯源备份对应的技能版本）。
 
@@ -106,7 +105,7 @@ python3 memory_tool.py metrics --conflict 1 --retrieval 3 --budget-hit 3 --memor
 - **幂等判断**：扩展名即"是否已压缩"标记——已存在 `.json.gz` 的跳过；restore/verify 均支持 `.json.gz` 输入
 - **写前快照**：`restore` 实际写入前，先把当前库状态落为 `skill_memory_prerestore_<时间戳>_<毫秒>.json`，本次写入可据此回退（带毫秒，同秒连续 restore 不互相覆盖）；最多保留 **2 份**（超出删最旧），**不参与**按天去重与历史压缩（需保持可直接读取）；`backup` 收尾同样执行该有界保留（旧份在同一命令内清理）
 - 典型结果：`snapshots/` = 每天 1 个 `skill_memory_YYYYMMDD_HHMMSS.json.gz` + `skill_memory_latest.json`（+ 偶发 `skill_memory_prerestore_*`）
-- **版本库边界**：`snapshots/.gitignore` 忽略 `skill_memory_*.json` 与 `skill_memory_*.json.gz`，仅 `skill_memory_latest.json` 进 git（快照 payload 含本机绝对路径，不适合版本化；历史快照由 `backup` 自动重建）
+- **版本库边界**：`snapshots/` 默认全部忽略（含 `skill_memory_latest.json` 与历史压缩快照）。快照可能含本机路径/个人记忆，仅用于本机或受控迁移；不要把快照提交到公开仓库。
 
 ## 维护约定（技能迭代时必守）
 
@@ -127,4 +126,4 @@ python3 memory_tool.py metrics --conflict 1 --retrieval 3 --budget-hit 3 --memor
   - **软提示**（退出码 0）：`access_count`·`cache_hit_count` 漂移、仪表盘 `value`、`updated_at` —— 均为 runtime 回写（`touch`/`metrics`）的正常结果
   - **注意**：`restore` 按备份值**精确**写入，会把软提示部分回退到快照时刻 → 回滚前先 `--dry-run` 确认影响范围
 - FTS 全文索引由数据库触发器自动维护，无需手动同步
-- `skill_memory_latest.json` 始终为最新（跨机器同步用，进 git）；历史快照与写前快照由 `.gitignore` 忽略
+- `skill_memory_latest.json` 始终为最新（仅本机/受控迁移使用）；所有快照与写前快照均由 `.gitignore` 忽略，不要提交

@@ -128,7 +128,7 @@ value: {
 
 ### 跨项目失效传播
 
-触发条件 = 修改了**跨项目共享文件**（如 jtkl console↔management 共享的 hooks.js）；4 步流程（检索引用 → 打 `stale` tag → 提示 → 下个项目 Preflight 验证）见 `advanced.md`（按需加载，本处不重述）。
+触发条件 = 修改了**跨项目共享文件**（如多个项目共享的 hooks.js）；4 步流程（检索引用 → 打 `stale` tag → 提示 → 下个项目 Preflight 验证）见 `advanced.md`（按需加载，本处不重述）。
 
 ## Test→Lesson 学习闭环
 

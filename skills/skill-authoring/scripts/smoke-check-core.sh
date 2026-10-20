@@ -2,7 +2,7 @@
 # smoke-check-core.sh — 通用 Skill 一致性自检引擎（skill-authoring 协议 · 唯一事实源）
 #
 # 性质：**被 source 的库**，不单独执行。三个消费者共用本文件，消除"同一份检查逻辑
-# 复制三遍"的重复（对齐 dsh-ops「单一来源 + 生成，不做 duplicate guide」）：
+# 复制三遍"的重复（单一来源 + 生成，不做 duplicate guide）：
 #   1. skill-authoring/scripts/smoke-check.sh            （skill-authoring 自身实例）
 #   2. skill-authoring/scripts/smoke-check-template.sh   （供外部 Skill 实例化的模板）
 #   3. vibe-coder-loop/scripts/smoke-check.sh            （宿主 Skill 实例）
@@ -202,7 +202,10 @@ if [ -n "${KEYS_CHECK_CMD:-}" ] && [ -n "${GOV_FILE:-}" ] && [ -f "$GOV_FILE" ];
   # key 抽取。两种模式：
   #   MAP_TABLE_MODE=1 → 解析 Markdown 映射表行，输出 `<key>\t<canonical 类型>`（类型可校验 TTL 不变量）
   #   否则             → 抽取行内代码 span 中的完整 key（通用回退；防 prose 占位符被误抓）
-  KEYS_TMP="$(mktemp -t smokekeys.XXXXXX)"
+  KEYS_TMP="$(mktemp "${TMPDIR:-/tmp}/smokekeys.XXXXXX")" || KEYS_TMP=""
+  if [ -z "$KEYS_TMP" ]; then
+    smoke_hit STRUCTURAL_INCONSISTENT "$GOV_FILE" 0 "无法创建临时文件（检查 TMPDIR）"
+  else
   python3 - "${KEYS_PREFIX:-skill:}" "$GOV_FILE" "${MAP_TABLE_MODE:-0}" > "$KEYS_TMP" <<'PY'
 import re, sys
 
@@ -257,15 +260,20 @@ PY
     fi
   fi
   rm -f "$KEYS_TMP"
+  fi
 fi
 
 # ---------- 5. 自测命令（HARD） ----------
 smoke_section "5. 自测"
+SMOKE_SELFTEST_LOG=""
 if [ -n "${SELFTEST_CMD:-}" ] && command -v python3 >/dev/null 2>&1; then
-  if eval "$SELFTEST_CMD" >/tmp/smoke_selftest.log 2>&1; then
+  SMOKE_SELFTEST_LOG="$(mktemp "${TMPDIR:-/tmp}/smoke_selftest.XXXXXX")" || SMOKE_SELFTEST_LOG=""
+  if [ -z "$SMOKE_SELFTEST_LOG" ]; then
+    smoke_hit STRUCTURAL_INCONSISTENT "$SELFTEST_CMD" 0 "无法创建自测临时文件（检查 TMPDIR）"
+  elif eval "$SELFTEST_CMD" >"$SMOKE_SELFTEST_LOG" 2>&1; then
     [ "$SMOKE_QUIET" -eq 1 ] || echo "  ✓ SELFTEST_CMD PASS"
   else
-    smoke_hit STRUCTURAL_INCONSISTENT "$SELFTEST_CMD" 0 "自测 FAIL（见 /tmp/smoke_selftest.log）"
+    smoke_hit STRUCTURAL_INCONSISTENT "$SELFTEST_CMD" 0 "自测 FAIL（见 $SMOKE_SELFTEST_LOG）"
   fi
 else
   echo "  ⚠ 跳过（未配置 SELFTEST_CMD 或 python3 不可用）"
@@ -500,6 +508,8 @@ echo "  [DEAD_POINTER_CANDIDATE] 计数: $ptr_cands"
   echo "  规则文件合计: $total_lines 行"
   echo "  [BUDGET_EXCEEDED] 计数: $budget_violations"
 }
+[ -n "${SMOKE_SELFTEST_LOG:-}" ] && rm -f "$SMOKE_SELFTEST_LOG"
+
 if [ "$hard" -gt 0 ]; then
   echo "  → [next] 修复上述 HARD 项后重跑；不得带残留收尾"
   exit 1

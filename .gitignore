@@ -1,13 +1,58 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# macOS
+# macOS / Windows / editor metadata
 .DS_Store
-
-# Editor
+Thumbs.db
+desktop.ini
 .vscode/
 .idea/
+*.swp
+*~
 
-# Runtime state (workflow checkpoint — instance data, not canonical)
-# .state.md is tracked (skill runtime state); uncomment to ignore if desired
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.netrc
+.npmrc
+.pypirc
+credentials.json
+
+# Logs / temporary / build output
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+
+# Local tool indexes
+.codegraph/
+
+# Runtime state (personal instance data; never publish)
+skills/vibe-coder-loop/.state.md
+skills/vibe-coder-loop/backup/snapshots/*
+!skills/vibe-coder-loop/backup/snapshots/.gitignore
+
+# Local audit outputs that may contain unredacted or environment-specific evidence
+docs/audits/scan-report.local.*
+docs/audits/*.local.tsv
+docs/audits/*.local.jsonl

@@ -13,7 +13,7 @@ status: active
 
 ## S1 Intent → S2 Preflight
 
-> **Checkpoint（循环开始，强制）**：先读 `.state.md`——不存在 → 按模板创建；存在 → 做 freshness + 12 字段校验，通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新 `.state.md`；轮次收尾（S13）必写一次 `status` + `resume`。**
+> **Checkpoint（循环开始，强制）**：先读 `.state.md`——不存在 → 从 `.state.template.md` 复制创建；存在 → 做 freshness + 12 字段校验，通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（.state.md）」。**阶段出口仅在有字段变化时更新 `.state.md`；轮次收尾（S13）必写一次 `status` + `resume`。**
 
 **出口条件**：
 - [ ] 目标三元组已输出（显式意图 + 隐含约束 + 风险标签）
@@ -194,7 +194,7 @@ status: active
 - [ ] **消费回写残留检查已执行**（覆盖「读取了记忆但未走到回写出口」的反复故障模式，见 `lesson:memory-metadata-overwrite`）→ 命令、输出格式与降级一律见 `learning/memory/lifecycle.md`「回写契约」
 - [ ] **系统仪表盘更新已执行**（**每轮必更，0 事件也执行**；命令、字段与降级一律见 `learning/skill-metrics.md`「系统状态仪表盘」）→ 输出 `📊 系统仪表盘：<简表>`
 - [ ] **Checkpoint 收尾已执行**：`.state.md` → `status: complete` + `resume` 写下一步（协议见 `engine/state-machine.md`「Workflow Checkpoint」）
-- [ ] **技能/文档维护类任务：残留验证已执行（强制）**：本轮若改过技能文件（`vibe-coder-loop/*`、Vibe Coder Kernel、`raw/ai/` 文档）或 `skill:`/`rule:` 条目 → 执行 ① 日期/版本残留 grep + ② 死指针候选词 grep（**验证模式、合法例外与回退要求见 `rule:skill-iteration-manifest`**）；残留 > 0 → 回退修复后再收尾（教训 `lesson:skill-edit-date-residue`）
+- [ ] **技能/文档维护类任务：残留验证已执行（强制）**：本轮若改过技能文件（`vibe-coder-loop/*`、Vibe Coder Kernel、`kernel/` 文档）或 `skill:`/`rule:` 条目 → 执行 ① 日期/版本残留 grep + ② 死指针候选词 grep（**验证模式、合法例外与回退要求见 `rule:skill-iteration-manifest`**）；残留 > 0 → 回退修复后再收尾（教训 `lesson:skill-edit-date-residue`）
 - [ ] **follow-up 队列检查**：队列非空 → 注入 → `>>> 回到 S1 Intent` 并 **Loop 归 0**（follow-up = 新目标，享独立重试预算；语义见 `kernel.md` §1）；队列为空 → 正常结束。**turn 间到达的追加消息落在下一 turn** → 按 `.state.md` 恢复协议处理（先核验 `pending`），不算本 turn 遗漏
 - [ ] 输出最终结果
 - [ ] 「📋 待用户决策清单」（若有）
@@ -204,7 +204,7 @@ status: active
 
 ## VC 错误码族（结构化自纠信号）
 
-> **目的**：把"出口检查不通过"从**方向性指令**（如"回退重新执行"）升级为**可判定、可自纠的结构化信号** —— 读到码即知下一步，不再重新推理失败原因。对齐 `dsh-ops` 的 `ACCESS_DENIED` / `POLICY_DENIED` / `OUTPUT_LIMIT` 设计。
+> **目的**：把"出口检查不通过"从**方向性指令**（如"回退重新执行"）升级为**可判定、可自纠的结构化信号** —— 读到码即知下一步，不再重新推理失败原因。采用可判定的结构化错误码（如 `ACCESS_DENIED` / `POLICY_DENIED` / `OUTPUT_LIMIT`）。
 
 **格式契约（强制）**：
 
