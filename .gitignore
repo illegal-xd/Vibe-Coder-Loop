@@ -56,3 +56,6 @@ skills/vibe-coder-loop/backup/snapshots/*
 docs/audits/scan-report.local.*
 docs/audits/*.local.tsv
 docs/audits/*.local.jsonl
+
+# External tool artifacts (Aspire Code etc.)
+.aspirecode/

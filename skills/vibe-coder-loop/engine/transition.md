@@ -280,6 +280,9 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 | `[runtime] CHECKPOINT_WRITE_FAILED` | 写入/加锁失败 | 检查权限或磁盘后重试；可手动维护 | 否（降级） |
 | `[runtime] PROTOCOL_DRIFT` | 代码表与本文件机器可读块不一致 | 同步代码表或修正本文件 | 是（CI 门禁） |
 | `[runtime] PHASE_TRANSITION_MISSING` | 连续多轮无 `vc_transition`（宿主适配层检测） | 若已出口则调用 `vc_transition` 并传 exit_checklist | 否（提醒） |
+| `[runtime] ENV_ERROR` | Exec 层：命令不存在 / Python 解释器不可用 / 环境不可用 | 修正命令/PATH 后重试（不消耗 Loop） | 否 |
+| `[runtime] TIMEOUT` | Exec 层：命令超时，整进程树已终止 | 缩小范围或提高 timeout 后重试（不消耗 Loop） | 否 |
+| `[runtime] CANCELLED` | Exec 层：执行被取消（用户中断 / Adapter Esc），整树已终止 | 确认是否继续该步骤 | 否 |
 
 **fail-closed 语义（硬约束）**：标 **是** 的码**不得降级继续** —— 停止并输出恢复建议，**禁止**"用残缺规则 / 陈旧摘要继续推断"。标否的码按 `[next]` 执行后继续，不消耗 Loop 计数（属同一轮内修正）。
 

@@ -54,6 +54,11 @@ PHASE_TRANSITION_MISSING = "PHASE_TRANSITION_MISSING"
 # 运行期警告（非 fail-closed，未登记为正式 VC 码）
 STATE_TRACKED_BY_GIT = "STATE_TRACKED_BY_GIT"
 
+# Exec 层运行时码（runtime/exec 产生；非工作流判定，不消耗 Loop）
+ENV_ERROR = "ENV_ERROR"
+TIMEOUT = "TIMEOUT"
+CANCELLED = "CANCELLED"
+
 PROTOCOL_CODES = frozenset(
     {
         RULE_NOT_LOADED,
@@ -85,6 +90,9 @@ RUNTIME_CODES = frozenset(
         PROTOCOL_DRIFT,
         PHASE_TRANSITION_MISSING,
         STATE_TRACKED_BY_GIT,
+        ENV_ERROR,
+        TIMEOUT,
+        CANCELLED,
     }
 )
 
@@ -142,6 +150,9 @@ NEXT_ACTIONS: dict[str, str] = {
     PROTOCOL_DRIFT: "同步代码表或修正事实源，再跑 check-protocol",
     PHASE_TRANSITION_MISSING: "若已出口则调用 vc_transition 并传 exit_checklist",
     STATE_TRACKED_BY_GIT: "git rm --cached 该状态文件（Core 不执行 git 写操作）",
+    ENV_ERROR: "命令不存在或环境不可用；修正命令/PATH 后重试（不消耗 Loop）",
+    TIMEOUT: "命令超时，整进程树已终止；缩小范围或提高 timeout 后重试（不消耗 Loop）",
+    CANCELLED: "执行被取消（用户中断/Adapter Esc），整树已终止；确认是否继续该步骤",
 }
 
 
