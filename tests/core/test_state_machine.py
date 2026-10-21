@@ -200,5 +200,39 @@ class TransitionTests(CoreTest):
         self.assertEqual(result.code, "SCOPE_DENIED")
 
 
+class FlowPathTests(CoreTest):
+    """流程级断言：逐边断言会漏掉"叙述层声明的主流程缺边"（R6-D1 的根因）。"""
+
+    def _walk(self, steps: list[str]) -> list[str]:
+        reached: list[str] = []
+        for step in steps:
+            kwargs = {"level": 2} if step == "S4" else {}
+            result = self.t(step, **kwargs)
+            self.assertTrue(result.ok, f"{result.from_state} -> {step} 失败: {result.message}")
+            reached.append(step)
+        return reached
+
+    def test_quick_loop_path(self) -> None:
+        self.assertEqual(self._walk(["S1", "S2", "S4", "S8", "S13"]), ["S1", "S2", "S4", "S8", "S13"])
+        self.assertEqual(self.core.get_state().loop, 1)
+
+    def test_standard_loop_path(self) -> None:
+        steps = ["S1", "S2", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13"]
+        self.assertEqual(self._walk(steps), steps)
+        self.assertEqual(self.core.get_state().loop, 1)
+
+    def test_investigation_path(self) -> None:
+        """router.md / profiles/review.md 声明的 E 类主流程必须可执行（跳过 S5/S6/S8/S9）。"""
+        steps = ["S1", "S2", "S4", "S7", "S10", "S11", "S12", "S13"]
+        self.assertEqual(self._walk(steps), steps)
+        self.assertEqual(self.core.get_state().loop, 0)
+
+    def test_investigation_entry_resets_loop(self) -> None:
+        self.seed_code("S4", loop=2, level=2)
+        result = self.t("S7", loop=0)
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(result.loop, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

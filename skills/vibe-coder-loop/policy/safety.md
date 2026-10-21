@@ -125,12 +125,15 @@ Signal = **Review Signal**，不是 Violation：
 
 | 语言场景 | 格式 |
 |---------|------|
-| JS / TS / CSS / JSONC 等 | `// @Iteration: [v{版本号}] {归档原因}` |
-| HTML / Vue template / JSX 文本节点 | `<!-- @Iteration: [v{版本号}] {归档原因} -->` |
+| `//` 行注释（JS / TS / CSS / JSONC / Java / Go / C 系） | `// @Iteration: [v{版本号}] {归档原因} \| 替代者: {替代者}` |
+| `#` 行注释（Python / Shell / Ruby / YAML / TOML） | `# @Iteration: [v{版本号}] {归档原因} \| 替代者: {替代者}` |
+| `--` 行注释（SQL / Lua） | `-- @Iteration: [v{版本号}] {归档原因} \| 替代者: {替代者}` |
+| HTML / Vue template / JSX 文本节点 | `<!-- @Iteration: [v{版本号}] {归档原因} \| 替代者: {替代者} -->` |
 
+- 格式 = **注释符随语言，正文格式统一**（缺 `{替代者}` 视同格式不合规）
 - `{版本号}`：本轮需求改动版本号，与 Plan 阶段 Step 编号对应
 - `{归档原因}`：一句话说明为何归档
-- `{替代者}`：新引入的组件/函数/文件名
+- `{替代者}`：新引入的组件/函数/文件名；确无替代者写 `无`
 - 归档注释**计入文件行数阈值**约束
 
 ## 5. 子 agent 首步加载包（统一协议）
@@ -146,12 +149,12 @@ Signal = **Review Signal**，不是 Violation：
 
 **双通道兜底**：若 read 不可用 → `delx-memory_memory_get` key=`agent:vc_constraints`（完整兜底版，含约束10项+归档格式+三红线摘要）。
 
-**Level 0 文档修改约束子集**：纯文档 / 配置修改（无代码逻辑）时，仅以下约束适用（#1/#2/#3 Signal 项不检查）：
-- 不删除 / 不无备份覆盖用户内容（#6）
-- 路径 / 引用断言必须 E2 验证（修改前 glob/read 确认，禁止凭语义推断）
-- 修改后验证落盘（read 确认）
-- **多轮编辑**：每轮 edit 后重跑**结构指纹**（章节清单 + 行数突变 + 区块闭合），不能只在首次写入时校验一次（见 `skill:rules/review:doc-structure-recheck`）
-- 存在不确定判断时标注 Confidence + Evidence（#10 的 3 类场景）
+**Level 0 文档修改约束子集（5 项；条目数 = 本清单行数，引用方须写「5 项」）**：纯文档 / 配置修改（无代码逻辑）时，仅以下约束适用（#1/#2/#3 Signal 项不检查）：
+1. 不删除 / 不无备份覆盖用户内容（#6）
+2. 路径 / 引用断言必须 E2 验证（修改前 glob/read 确认，禁止凭语义推断）
+3. 修改后验证落盘（read 确认）
+4. **多轮编辑**：每轮 edit 后重跑**结构指纹**（章节清单 + 行数突变 + 区块闭合），不能只在首次写入时校验一次（见 `skill:rules/review:doc-structure-recheck`）
+5. 存在不确定判断时标注 Confidence + Evidence（#10 的 3 类场景）
 
 > **Level 0 文档任务完整流程定义**（含格式校对型 vs 内容写作型 Level 0-Doc 细分、S2 轻量记忆召回、S8 出口三维审查）唯一事实源 = `engine/complexity-gate.md`「Level 0 细分」；该型细则见 `engine/router.md`「Quick Loop 细则（L0 / L0-Doc / L1）」。本子集仅定义安全约束层面，不定义流程。
 

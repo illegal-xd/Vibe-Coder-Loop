@@ -778,6 +778,7 @@ class PreflightAndArtifactCase(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         block = self.block_of(out, "references/longidx.md")
         self.assertIn("[OUTPUT_LIMIT] 章节标题超长已截断", block)
+        self.assertIn("[next] read", block, "错误码必须携带 [next]（R6-D5）")
 
     def test_preflight_l0_stage10_loads_doc_constraint_subset(self):
         """回归（审查 P0）：L0 阶段集含 S10 且 S10 映射命中 §5 容器节——
@@ -1100,6 +1101,7 @@ class PreflightAndArtifactCase(unittest.TestCase):
         )
         self.assertEqual(rc, 0, out)
         self.assertIn("OUTPUT_LIMIT", out, "达字节上限必须显式报告，不得静默截断")
+        self.assertIn("[next] artifact page", out, "错误码必须携带 [next]（R6-D5）")
 
     def test_artifact_put_rejects_missing_source(self):
         rc, out = self.run_tool("artifact", "put", "--file", str(self.root / "nope.txt"))
@@ -1145,6 +1147,7 @@ class PreflightAndArtifactCase(unittest.TestCase):
         rc, out = self.run_tool("artifact", "page", "--ref", ref, "--limit", "1000000")
         self.assertEqual(rc, 0, out)
         self.assertIn("OUTPUT_LIMIT", out, "超上限 clamp 必须显式报告，不得静默")
+        self.assertIn("[next] 接受 clamp", out, "错误码必须携带 [next]（R6-D5）")
 
     # ---------- check-keys ----------
     def test_check_keys_detects_missing_and_ttl_violation(self):
@@ -1165,6 +1168,60 @@ class PreflightAndArtifactCase(unittest.TestCase):
         keys.write_text("skill:data:with-ttl\t数据\n", encoding="utf-8")
         rc, out = self.run_tool("check-keys", "--files", keys)
         self.assertEqual(rc, 0, out)
+
+    # ---- 文档一致性（R6-D2 / R6-D4 / R6-D6）---------------------------
+
+    def test_doc_backtick_paths_resolve(self):
+        """反引号里带目录分隔符的路径必须可解析（R6-D4：27 处 `memory/*.md` 曾指向不存在路径）。
+
+        smoke 的死指针检查是词表驱动，查不到「路径存在性」；load_plan 校验只覆盖计划内文件。
+        """
+        root = TOOL_SRC.resolve().parent.parent          # 技能根
+        repo = root.parent.parent                        # 仓库根
+        bases = [root, root.parent, repo]
+        pattern = re.compile(r"`([A-Za-z0-9_\-./]+/[A-Za-z0-9_\-.]+\.(?:md|json|yaml|py|sh))`")
+        unresolved = []
+        for path in sorted(root.rglob("*.md")):
+            rel = path.relative_to(root)
+            if rel.as_posix() == "CHANGELOG.md" or any(part in ("backup", "__pycache__") for part in rel.parts):
+                continue
+            for match in pattern.finditer(path.read_text(encoding="utf-8")):
+                target = match.group(1)
+                if target.startswith(("skill:", "rule:", "lesson:", "project:", "agent:")):
+                    continue
+                candidates = [path.parent / target] + [base / target for base in bases]
+                if not any(c.exists() for c in candidates):
+                    unresolved.append(f"{rel}: {target}")
+        self.assertEqual(unresolved, [], "文档引用了不存在的路径：\n" + "\n".join(unresolved))
+
+    def test_level0_subset_item_count_matches_references(self):
+        """Level 0「文档修改约束子集」条目数 = 引用方声明的 N 项（R6-D2）。"""
+        root = TOOL_SRC.resolve().parent.parent
+        safety = (root / "policy" / "safety.md").read_text(encoding="utf-8")
+        block = safety.split("Level 0 文档修改约束子集", 1)[1].split("\n\n", 1)[0]
+        items = [line for line in block.splitlines() if re.match(r"^\d+\. ", line.strip())]
+        self.assertGreaterEqual(len(items), 1, "子集未使用编号列表，无法机械计数")
+        for extra in re.findall(r"^- ", block, flags=re.M):
+            self.fail(f"子集混入未编号条目（{extra}）：引用方按编号计数，混排会导致漏项")
+        declared = len(items)
+        offenders = []
+        for name in ("engine/complexity-gate.md", "engine/transition.md", "engine/router.md"):
+            text = (root / name).read_text(encoding="utf-8")
+            for chunk in re.finditer(r"文档子集\s*(\d+)\s*项|子集」\s*(\d+)\s*项|(\d+)\s*项检查定义见", text):
+                num = int(next(g for g in chunk.groups() if g))
+                if num != declared:
+                    offenders.append(f"{name}: 声明 {num} 项，实际 {declared} 项")
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_changelog_batch_order_is_monotonic(self):
+        """同版本内「第N批」必须按编号单调（R6-D6：第四批曾在文首、第六批在第五批之上）。"""
+        text = (TOOL_SRC.resolve().parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
+        cn = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        numbers = [cn[ch] for ch in re.findall(r"^> \*\*同版本第([一二三四五六七八九十])批\*\*", text, flags=re.M)]
+        self.assertEqual(len(numbers), len(set(numbers)), f"批次号重复：{numbers}")
+        self.assertEqual(numbers, sorted(numbers, reverse=True),
+                         f"CHANGELOG 批次顺序应为新→旧单调递减，实际 {numbers}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

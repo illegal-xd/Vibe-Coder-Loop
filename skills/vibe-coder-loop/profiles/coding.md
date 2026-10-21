@@ -16,7 +16,7 @@ status: active
 - 性能/可读性优化（B. Optimization，不改变外部行为）
 - 单点修复（A. Direct Action，规模小、不涉结构重排）
 
-**任务分类**：A. Direct Action / B. Optimization（`rules/intent.md` 目标三元组对齐）；记忆路由行 = 「编码/调试」（`memory/retrieval.md` 路由表）
+**任务分类**：A. Direct Action / B. Optimization（`rules/intent.md` 目标三元组对齐）；记忆路由行 = 「编码/调试」（`learning/memory/retrieval.md` 路由表）
 
 **执行路径**（按 Level，细则见对应 engine 文件）：
 - Level 0（文字/单点修改）：S1 → S2(轻量) → S4 → S8（出口内联审查 + 消费回写）
@@ -42,4 +42,4 @@ Optional:
 **出口纪律**：
 - L0/L1 在 S8/S10 出口内联硬约束审查 + 消费回写（Tool），违反回退修复（Quick Loop 上限 1 轮）
 - Code 完成版本功能/API 变更 → 标注 `[待 Memory Evolution]`
-- 产生可复用约束 → 记忆保存路径 B/C（`memory/lifecycle.md`）
+- 产生可复用约束 → 记忆保存路径 B/C（`learning/memory/lifecycle.md`）

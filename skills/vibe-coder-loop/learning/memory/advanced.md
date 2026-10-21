@@ -10,7 +10,7 @@ status: active
 # Learning: Memory/Advanced — 触发式与周期式协议（按需加载）
 
 > **Canonical 分治声明**：本文件的**通用协议**（跨项目模式迁移 / Relevance 评分 / 事实时序 supersession / Memory Consolidation / 跨项目失效传播）canonical home = `delx-memory-protocol/protocol.md`；本文件 = **实例触发条件 + 执行绑定 + 指针**（通用概念已裁指针，非第二 canonical，非 fallback 副本）。修改通用概念以 `delx-memory-protocol` 为准。
-> **本文件是按需分片**，不属于 S12 默认加载路径。默认路径为 `memory/promotion.md`（S12 主体）与 `memory/lifecycle.md`（写入与计数）。导航 = `../memory.md`。
+> **本文件是按需分片**，不属于 S12 默认加载路径。默认路径为 `learning/memory/promotion.md`（S12 主体）与 `learning/memory/lifecycle.md`（写入与计数）。导航 = `../memory.md`。
 
 **触发条件（命中才读本文件）**：
 

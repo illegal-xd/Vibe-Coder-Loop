@@ -126,9 +126,9 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 
 | 模式 | rules/ 必读 | policy/ 必读 | learning/ 必读 |
 |---|---|---|---|
-| Quick Loop（Level 0/1） | `intent.md`（S1 激活时读，目标三元组格式）+ `code.md`（Level 1 加 `test.md`+`review.md`） | `safety.md` + `confidence.md`（涉及资产归档时加 `lifecycle.md`） | `memory/lifecycle.md`「记忆生命周期管理」节（内含「记忆访问计数与元数据协议」回写契约，Quick Loop 出口必用）+ `memory/retrieval.md`「任务类型 → 规则/经验路由表」节（Level 0 轻量 S2 Step 0-1 最小召回）；出口内联走 lifecycle「Quick Loop 记忆闭环」节，仪表盘读 `skill-metrics.md`「系统状态仪表盘」节 |
-| Standard Loop（Level 2） | 激活阶段的全部 rules/（intent/design/plan/code/test/review） | 全部 policy/ | S12 时 `memory/promotion.md` + `memory/lifecycle.md` + skill-metrics.md；概念/路由按需 `memory/architecture.md` / `memory/retrieval.md`；**触发式 `memory/advanced.md` 命中才读** |
-| Full Loop（Level 3/4） | 全部 rules/（含 orchestration.md 编排决策时） | 全部 policy/ | 全部 learning/（`memory/advanced.md` **为纯触发式**——不在加载清单内，命中其触发条件才读；S11 `reflection.md` 仍按门控读） |
+| Quick Loop（Level 0/1） | `intent.md`（S1 激活时读，目标三元组格式）+ `code.md`（Level 1 加 `test.md`+`review.md`） | `safety.md` + `confidence.md`（涉及资产归档时加 `lifecycle.md`） | `learning/memory/lifecycle.md`「记忆生命周期管理」节（内含「记忆访问计数与元数据协议」回写契约，Quick Loop 出口必用）+ `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节（Level 0 轻量 S2 Step 0-1 最小召回）；出口内联走 lifecycle「Quick Loop 记忆闭环」节，仪表盘读 `skill-metrics.md`「系统状态仪表盘」节 |
+| Standard Loop（Level 2） | 激活阶段的全部 rules/（intent/design/plan/code/test/review） | 全部 policy/ | S12 时 `learning/memory/promotion.md` + `learning/memory/lifecycle.md` + skill-metrics.md；概念/路由按需 `learning/memory/architecture.md` / `learning/memory/retrieval.md`；**触发式 `learning/memory/advanced.md` 命中才读** |
+| Full Loop（Level 3/4） | 全部 rules/（含 orchestration.md 编排决策时） | 全部 policy/ | 全部 learning/（`learning/memory/advanced.md` **为纯触发式**——不在加载清单内，命中其触发条件才读；S11 `reflection.md` 仍按门控读） |
 
 - Level 0-Doc（内容写作型）：rules/ 仅 S1 引用 `rules/intent.md` 目标三元组格式，其余不读（S8 出口三维审查定义在 `engine/router.md`）
 - 防跳过规则仍适用：进入某阶段但未加载对应文件 → 回退；**本表与「加载时机索引」冲突时按加载范围取并集**（本表为下限，索引为上限；仅指文件加载范围，与记忆召回无关——召回取最小充分，见 `learning/memory/retrieval.md`）

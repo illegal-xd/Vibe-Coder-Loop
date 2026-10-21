@@ -17,7 +17,7 @@ status: active
 - 多 subagent 派发 / 混合编排（主 agent + subagent 分工）
 - S5 Clarify / S6 Design 高权重任务（需求模糊、多约束、跨页面/模块镜像）
 
-**任务分类**：D. Architecture（设计产出）/ A-E 混合多模块；记忆路由行 = 「架构/重构」或「技能/文档维护」视内容（`memory/retrieval.md` 路由表）
+**任务分类**：D. Architecture（设计产出）/ A-E 混合多模块；记忆路由行 = 「架构/重构」或「技能/文档维护」视内容（`learning/memory/retrieval.md` 路由表）
 
 **执行路径**：S1–S7（Standard/Full 的设计与计划段）；S8 起编码类转 `coding.md`，审查类转 `review.md`（本 profile 不直接承担 S8–S13）。
 

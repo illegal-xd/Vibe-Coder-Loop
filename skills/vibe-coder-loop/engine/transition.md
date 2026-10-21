@@ -26,6 +26,7 @@ S1  -> S2 | pause
 S2  -> S3, S4
 S3  -> S4 | pause
 S4  -> S5, S8(loop=1)
+S4  -> S7(loop=0)                     # Investigation 分支（E 类只读）：跳过 S5/S6/S8/S9，loop 恒 0
 S5  -> S6
 S6  -> S7
 S7  -> S8(loop=init), S10
@@ -96,6 +97,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 **转移**：
 - Quick Loop（Level 0 / 0-Doc / 1）→ `>>> 进入 Code[1]`（各 Level 的激活阶段与跳过清单见 `engine/complexity-gate.md`「Loop Depth」）
 - Standard Loop Level 2 / Full Loop Level 3/4 → `>>> 进入 Clarify`
+- **Investigation 分支（E 类只读，Router 判定后）→ `>>> 进入 S7 调查计划`**（跳过 S5/S6/S8/S9；标注 `[Investigation Mode]`；边 = `S4→S7(loop=0)`）
 
 ## S5 Clarify → S6 Design
 
@@ -142,7 +144,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 ## S8 Code → S9 Test / 直接结束（Level 0）
 
-**Level 0 特殊路径**：S8 Code 出口执行内联硬约束检查（**文档/配置类按 `policy/safety.md`「Level 0 文档修改约束子集」4 项**）+ **消费回写**（见 `learning/memory/lifecycle.md`「回写契约」），通过 → 直接输出结果结束（S9 Test / S11 Reflection / S12 Memory Evolution 跳过；S10 以文档子集 4 项内联执行，见 `engine/complexity-gate.md`「Loop Depth」矩阵）；违反 → 回退修复（1 轮上限）。
+**Level 0 特殊路径**：S8 Code 出口执行内联硬约束检查（**文档/配置类按 `policy/safety.md`「Level 0 文档修改约束子集」5 项**）+ **消费回写**（见 `learning/memory/lifecycle.md`「回写契约」），通过 → 直接输出结果结束（S9 Test / S11 Reflection / S12 Memory Evolution 跳过；S10 以文档子集 5 项内联执行，见 `engine/complexity-gate.md`「Loop Depth」矩阵）；违反 → 回退修复（1 轮上限）。
 
 **Level 1/2/3/4 标准路径**：
 
@@ -169,7 +171,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 - 重试耗尽 → 暂停，输出 `⚠️ LLM 调用持续失败（已重试 2 次）`，等用户决策（切换模型/检查网络/继续）
 - 不可重试错误（400/401/认证失败）→ 不重试，直接暂停输出追问清单
 
-**Level 0 文档类修改出口检查**（纯文档/配置单行修改，不涉及代码时替代代码出口）：4 项检查定义见 `policy/safety.md` 第 5 节「Level 0 文档修改约束子集」（**单一事实源**），此处不重述。
+**Level 0 文档类修改出口检查**（纯文档/配置单行修改，不涉及代码时替代代码出口）：5 项检查定义见 `policy/safety.md` 第 5 节「Level 0 文档修改约束子集」（**单一事实源**），此处不重述。
 
 ## S9 Test → S10 Review / S8 Code[N+1]
 

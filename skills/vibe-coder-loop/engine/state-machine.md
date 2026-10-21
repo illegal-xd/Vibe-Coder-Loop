@@ -117,7 +117,7 @@ S14 Safe Mode
 | 递增条件 | S9 Test 失败 或 S10 Review 判定情况 A/B → 回退 S8 Code 时 Loop + 1 |
 | 不递增条件 | S6/S7 回退属同一轮内修正，Loop 不变 |
 | 上限 | Loop 3 仍未通过 → 停止并输出警告 |
-| 重置 | **仅两条边归 0**：`S13→S1`（follow-up / 新任务）与 `S10→S7`（Investigation 情况 B 重新调查）。**不存在"继续循环即重置"路径**——SAFE MODE「继续」与契约外兜底暂停的恢复**均维持原 Loop N**（机器块 `(loop=0)` 只标注这两条边） |
+| 重置 | **仅三条边归 0**：`S13→S1`（follow-up / 新任务）、`S10→S7`（Investigation 情况 B 重新调查）、`S4→S7`（Investigation 入口，pre-code 恒 0）。**不存在"继续循环即重置"路径**——SAFE MODE「继续」与契约外兜底暂停的恢复**均维持原 Loop N**（机器块 `(loop=0)` 只标注这三条边） |
 
 > **Case B 记号**：`Design[0]` 中的 `0` 是设计阶段**重入序号**，不是 `loop` 字段；`S10→S6` 时 checkpoint `loop` 已为 `N+1`，`S6→S7→S8` 继承该值（机器块见 `engine/transition.md` `S10 -> S6(+1)`）。**输出标签一律用计数器值 `[Loop: N+1]`**——`Design[0]` 只出现在文档/表格的记号位置，不得作为 `[Loop: …]` 标签输出（`kernel.md` §6 标签契约）。
 

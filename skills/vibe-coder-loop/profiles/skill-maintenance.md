@@ -16,7 +16,7 @@ status: active
 - 修改 Vibe Coder Kernel（`kernel/Vibe Coder.md`）或本仓库文档
 - 维护 `skill:` / `rule:` 记忆条目、backup 工具与快照
 
-**任务分类**：E. Investigation（技能维护变体，常 Level 0-Doc 或 Standard）；记忆路由行 = 「技能/文档维护」强制召回（`memory/retrieval.md` 路由表：`rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue`，`memory_get` 精确 key）
+**任务分类**：E. Investigation（技能维护变体，常 Level 0-Doc 或 Standard）；记忆路由行 = 「技能/文档维护」强制召回（`learning/memory/retrieval.md` 路由表：`rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue`，`memory_get` 精确 key）
 
 **执行路径**：随改动规模走 Level 0-Doc（单文件文档修改）/ Standard（跨文件结构变更，本类任务多属后者）；规则内容修改时 S13 出口残留验证强制
 

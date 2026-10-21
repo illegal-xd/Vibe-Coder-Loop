@@ -16,7 +16,7 @@ status: active
 - 架构级变化：新增模块/系统、跨组件解耦（D. Architecture，随代码落地）
 - 行为保持类改动（需测试护栏 + 资产生命周期管理）
 
-**任务分类**：C. Refactoring / D. Architecture（随代码落地时）；记忆路由行 = 「架构/重构」（`memory/retrieval.md` 路由表：codegraph 影响分析 + pattern 召回）
+**任务分类**：C. Refactoring / D. Architecture（随代码落地时）；记忆路由行 = 「架构/重构」（`learning/memory/retrieval.md` 路由表：codegraph 影响分析 + pattern 召回）
 
 **执行路径**：
 - Level 2（单模块重构）：全阶段 S1-S13（Standard）

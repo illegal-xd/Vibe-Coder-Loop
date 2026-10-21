@@ -56,7 +56,7 @@ status: active
 **示例**：
 
 ```typescript
-// @Iteration: [v1] 旧支付逻辑被 PaymentService 替代，废弃
+// @Iteration: [v1] 旧支付逻辑被 PaymentService 替代，废弃 | 替代者: PaymentService
 function oldProcessPayment(amount) {
   // ... 原实现保留 ...
 }

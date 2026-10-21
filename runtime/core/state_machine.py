@@ -52,7 +52,7 @@ LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "S1": {"S2", PAUSE},
     "S2": {"S3", "S4"},
     "S3": {"S4", PAUSE},
-    "S4": {"S5", "S8"},
+    "S4": {"S5", "S8", "S7"},  # S4→S7 = Investigation 分支（E 类只读，跳过 S5/S6/S8/S9）
     "S5": {"S6"},
     "S6": {"S7"},
     "S7": {"S8", "S10"},
@@ -72,6 +72,7 @@ ESCALATION_EDGES: dict[str, set[str]] = {"*": {"S14"}}
 # 值为 set 表示该边允许多种 Loop 结果，调用方必须显式指定
 LOOP_RULES: dict[tuple[str, str], str | frozenset[str]] = {
     ("S4", "S8"): "init1",
+    ("S4", "S7"): "reset0",  # Investigation 入口：pre-code 阶段，loop 恒 0
     ("S7", "S8"): "init_if_zero",
     ("S9", "S8"): "inc",
     ("S10", "S8"): "inc",

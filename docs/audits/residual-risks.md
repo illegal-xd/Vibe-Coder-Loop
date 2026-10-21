@@ -33,7 +33,7 @@
 | Pi/OpenCode 引用边界 | 文档已声明 OpenCode 优先、其他宿主需等价发现机制；H002 仍为 info | 非 OpenCode 用户可能误认为开箱即用 | 保持兼容矩阵与安装文档的“可选/需适配”措辞；发布说明中重复声明 |
 | Skill 是协议，不是强制代码 | 状态机、恢复、出口清单仍由 LLM 遵循 Markdown；`memory_tool.py` 是确定性代码之一 | 不同模型/宿主行为可能漂移 | 不宣称“自动保证”；**Core（`runtime/core`）与 Exec（`runtime/exec`）已实现并有测试**；宿主 Adapter 尚未实现 |
 | 设计文档 `docs/design/*` | 已跟踪的规划稿，引用内部任务/调研日期；已做占位化 | 读者可能把规划当已交付功能 | 已加“设计稿”定位；如公开仍建议复核内容 |
-| 记忆工具 key 变更 | `SKILL_LINKED_KEYS` 由 16 减为 14，移除了两个项目专属 key | 已存在的本地记忆可能出现“孤立 key” | 备份/迁移时保留旧库；如需要，先导出再升级；不影响现有 51 项测试 |
+| 记忆工具 key 变更 | `SKILL_LINKED_KEYS` 由 16 减为 14，移除了两个项目专属 key | 已存在的本地记忆可能出现“孤立 key” | 备份/迁移时保留旧库；如需要，先导出再升级；不影响记忆工具现有测试（项数以该脚本末行 `OK` 为准） |
 | 快照含个人数据 | 快照仍在本机 `backup/snapshots/`，已忽略但未删除 | 误提交/误打包会泄露 | 不执行 `git add -f`；迁移只走私有通道；发布前检查 `git ls-files` |
 
 ## 四、审计工具自身限制
@@ -51,7 +51,7 @@
 
 ## 五、已验证的边界
 
-- macOS Darwin 25、Bash 3.2.57、Python 3.13.3 实跑通过。
+- macOS 26（Darwin 26.6.2）、Bash 3.2.57、Python 3.13.3 实跑通过。
 - `scan --min-severity=high` 与 `check --min-severity=high` 均为 rc=0；只剩 H002 info（Pi 提及）。
 - `test-audit.sh`、`test_memory_tool.py`（计数以输出为准）、两个 smoke-check、`verify-symlinks.sh --host` 全部通过。
 - “未发现凭证”只代表当前规则/当前工作区；不等于绝对安全。

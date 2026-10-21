@@ -17,7 +17,7 @@ status: active
 - 内容写作型（Level 0-Doc）：文档产出 > 30 行或含整理/总结/研究语义
 - Skill 自身规则审查（Review 角色 + Critic 视角）
 
-**任务分类**：E. Investigation（Level 0-Doc = E 类产出型变体）；记忆路由行 = 「调研/审查」（`memory/retrieval.md` 路由表）
+**任务分类**：E. Investigation（Level 0-Doc = E 类产出型变体）；记忆路由行 = 「调研/审查」（`learning/memory/retrieval.md` 路由表）
 
 **执行路径**（分支选择见 `engine/router.md`「判定优先级」）：
 - Investigation 分支（纯结论/报告产出）：S1 → S2 → S4 → S7（调查步骤清单）→ S10（三维审查）→ S11 → S12 → S13（收尾）

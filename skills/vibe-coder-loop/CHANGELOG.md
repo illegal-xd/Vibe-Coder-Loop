@@ -4,26 +4,22 @@
 > 规则：技能文件正文禁止日期/版本备注；变更记录一律追加到本文件（格式 `## vX.Y — 标题`）。
 > 版本策略（用户指令）：**未提交 git 期间版本号保持不变**——同版本内可含多个批次，改动多少次都不迭代；提交后才递增下一版本。
 
-## v1.22.1 — 第二轮评审修复（D1–D9，同版本第四批）
+## v1.22.1 — 第六轮评审修复（R6-D1–D7，同版本第七批）
 
-> **同版本第四批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-20-r2.md` 第二轮独立复评发现的 D1–D9。本批修复了 D1（标准 Loop 起点与预算）、D2（空规则库 fail-open）、D3–D8（规则一致性、profile、README、记忆路由、6b 文案、文档漂移）、D9.1–D9.2（协议门禁与 smoke 4b 输出）。D9.3（遗留 `skills/vibe-coder-loop/.state.md` 本地实例）按资产生命周期不物理删除，保持 gitignore + 不引用；D9.4 预算若超限则上调并记明理由（见末尾验证）。
+> **同版本第七批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-21-r6.md` 独立复评（只读轮）发现的 R6-D1–R6-D7；核心 = **叙述层主流程不受任何机器校验**（D1 门禁盲区）。
 
 | # | 缺陷 | 修复 | 落点 |
 |---|---|---|---|
-| 1 | D1 标准 Loop 从 0 开始、实际 4 轮 | 新增 `S7→S8: init_if_zero`（首次进 Code=1，Case B 保持 N+1）；机器块加 `(loop=init)`；`check-protocol` 增加 S7→S8 初始化校验；新增 3 个回归测试 | `runtime/core/state_machine.py`、`runtime/core/protocol.py`、`engine/transition.md`、`tests/core/` |
-| 2 | D2 空规则库 preflight rc0 fail-open | `preflight` 在 `skill:rules/*` 为 0 且非 `--files` 时输出 `[RULE_STORE_MISSING]` + rc3；`--files` 应急路径仍允许 | `backup/memory_tool.py`、`backup/test_memory_tool.py` |
-| 3 | D2 11 处“检索失败降级”与 fail-closed 冲突 | 类型 C 骨架文件改为 fail-closed 措辞；`retrieval.md`（文件 canonical）澄清“不存在摘要降级” | `references/*.md`、`rules/*.md`、`learning/*.md` |
-| 4 | D3 Quick Loop 重试三方矛盾 | `kernel.md` §7 改为“S9 失败不回退 Code，建议升级”，与 `rules/test.md` 与 `loop_max=1` 一致 | `kernel.md` |
-| 5 | D4 README 快速开始命令不可执行 | `verify <快照路径>`；key 校验改用 `smoke-check.sh --table`（4b）；“加密快照”改为 gzip/JSON（未加密） | `README.md` |
-| 6 | D5 profile 必读清单缺口 | review/debugging/coding/planning/refactoring/skill-maintenance 补齐 S1/S8/S10/S12 必读 | `profiles/*.md` |
-| 7 | D6 记忆路由精确 key vs memory_search 矛盾 | 散文改为“已知 key 用 memory_get，经验域用 memory_search，均最小充分” | `learning/memory/retrieval.md`、`engine/transition.md` |
-| 8 | D7 smoke 6b 虚假 freshness 声明 | 文案改为“含 updated_at 字段；freshness 由 load-checkpoint 判定”；Case B 记号澄清 | `smoke-check-core.sh`、`engine/transition.md`、`engine/state-machine.md` |
-| 9 | D8 文档漂移（Core/Exec 未实现、未跟踪、加密） | residual-risks / change-list / README 修正现状；2026-10-19 报告加历史快照说明 | `docs/audits/*`、`README.md` |
-| 10 | D9.1 协议门禁盲区 | `check-protocol` 增加 S7→S8 初始化校验 + 回归测试 | `runtime/core/protocol.py`、`tests/core/` |
-| 11 | D9.2 smoke 4b `MISSING\t` 前缀 | 解析 `MISSING`/`NOT_PERMANENT` 前缀，输出分类原因 | `skill-authoring/scripts/smoke-check-core.sh` |
-| 12 | D9.5 exec 非权限沙箱未声明 | README 安全与隐私补一句“exec 是防手滑，不是权限沙箱” | `README.md` |
+| 1 | R6-D1 Investigation 主路径 `S4→S7` 无机器可读边，runtime fail-closed | 机器块加 `S4 -> S7(loop=0)`；`LEGAL_TRANSITIONS["S4"]` 加 S7、`LOOP_RULES[("S4","S7")]="reset0"`；S4 出口补 Investigation 转移行；计数器「重置」边集 2→3；新增 `FlowPathTests`（Quick / Standard / Investigation 三条**有序路径**断言） | `engine/transition.md`、`engine/state-machine.md`、`runtime/core/state_machine.py`、`tests/core/test_state_machine.py` |
+| 2 | R6-D2 子集称 4 项实为 5 项 | 事实源改编号列表（5 项，声明条目数=清单行数）；5 处引用改 5 项；新增计数一致性用例 | `policy/safety.md`、`engine/complexity-gate.md`、`engine/transition.md`、`backup/test_memory_tool.py` |
+| 3 | R6-D3 归档格式无 `{替代者}` 位、不覆盖非 JS/前端语言 | §4 改「注释符随语言、正文格式统一」，四类行注释符全覆盖 + `替代者` 字段；lifecycle 示例同步；`skill:references/output-format` 示例对齐 | `policy/safety.md`、`policy/lifecycle.md`、记忆条目 |
+| 4 | R6-D4 27 处 `memory/*.md` 短路径不可解析 | 全部改 `learning/memory/*.md`（SKILL 8 + profiles 7 + governance 10 + advanced 2）；新增「反引号路径存在性」用例 | `SKILL.md`、`profiles/*`、`references/governance.md`、`learning/memory/advanced.md`、`backup/test_memory_tool.py` |
+| 5 | R6-D5 6 处 `[OUTPUT_LIMIT]` 缺 `[next]` | 6 处补齐单一动作；3 条既有用例加 `[next]` 断言 | `backup/memory_tool.py`、`backup/test_memory_tool.py` |
+| 6 | R6-D6 CHANGELOG 批次顺序非单调（4,6,5,2,3） | 重排为 7→1 递减；补「第一批」标记；新增单调性用例 | `CHANGELOG.md`、`backup/test_memory_tool.py` |
+| 7 | R6-D7 活文档残留过期计数/环境值 | 测试计数改「以输出为准」；Darwin 版本更新为实测值 | `docs/audits/residual-risks.md` |
+| 8 | R6-D8（执行中新发现）`skill:vibe-coder-loop:metrics` 值被双重 JSON 编码且 metadata 为 NULL → `metrics` 拒绝写入，S13 仪表盘义务不可执行 | 解码为对象后按 memory_set 三列回写（含 metadata 三件套）；`metrics` 恢复可写；快照重建后 `verify` 45/45 一致 | delx-memory 条目 + 快照 |
 
-**验证**：见文末「第二轮评审修复回执」与 `skill-evaluation/evaluation-report-2026-10-20-r2.md` §修复回执。
+**验证**：协议 `83/83`（新增 1 条边校验）；单测 `278`；记忆工具 `60`；审计 `51`；软链 `15`；shell `6+7`；smoke `rc0`（3897/3900，余 3）；`audit scan --fail-on=high` rc0；Investigation 全路径实测走通（loop 恒 0）；5 个定向变异全部转红（缺边 / 少 1 项 / 回退短路径 / 去 `[next]` / 换批次序）。
 
 ## v1.22.1 — 第四轮评审修复 + 注释精简（R4-D1–D7，同版本第六批）
 
@@ -62,55 +58,26 @@
 
 **验证**：`memory_tool` 57/57、runtime 271/271、审计 51/51、软链 15/15、协议 82/82、shell 6+7、smoke rc0（规则行数见回执）；6 个变异体（删 L1 `rules/test.md`、删 L0 `skill-metrics`、删 safety S8 §3、删 confidence S8、删 `always_whole`、删 profile Required）**均被新用例判红**。详见 `skill-evaluation/evaluation-report-2026-10-21-r3.md` §13 修复回执。
 
-## v1.22.1 — 设计收敛补丁（`.state.md` 迁出 + 机器可读契约）
+## v1.22.1 — 第二轮评审修复（D1–D9，同版本第四批）
 
-> **同版本第二批**（未提交 git，版本不迭代）。**触发**：对 `docs/design/` 三份 MVP 设计做 P0 级评审，发现 6 项会导致实现跑偏的硬缺陷；其中两项**必须改协议文件**才能闭环，故本批次落 Skill 侧最小增补。核心判别：**运行时状态不属于 Skill 安装目录**，**副本必须被机械校验**。
+> **同版本第四批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-20-r2.md` 第二轮独立复评发现的 D1–D9。本批修复了 D1（标准 Loop 起点与预算）、D2（空规则库 fail-open）、D3–D8（规则一致性、profile、README、记忆路由、6b 文案、文档漂移）、D9.1–D9.2（协议门禁与 smoke 4b 输出）。D9.3（遗留 `skills/vibe-coder-loop/.state.md` 本地实例）按资产生命周期不物理删除，保持 gitignore + 不引用；D9.4 预算若超限则上调并记明理由（见末尾验证）。
 
-### 一、状态文件迁出 Skill 目录（原设计自相矛盾）
+| # | 缺陷 | 修复 | 落点 |
+|---|---|---|---|
+| 1 | D1 标准 Loop 从 0 开始、实际 4 轮 | 新增 `S7→S8: init_if_zero`（首次进 Code=1，Case B 保持 N+1）；机器块加 `(loop=init)`；`check-protocol` 增加 S7→S8 初始化校验；新增 3 个回归测试 | `runtime/core/state_machine.py`、`runtime/core/protocol.py`、`engine/transition.md`、`tests/core/` |
+| 2 | D2 空规则库 preflight rc0 fail-open | `preflight` 在 `skill:rules/*` 为 0 且非 `--files` 时输出 `[RULE_STORE_MISSING]` + rc3；`--files` 应急路径仍允许 | `backup/memory_tool.py`、`backup/test_memory_tool.py` |
+| 3 | D2 11 处“检索失败降级”与 fail-closed 冲突 | 类型 C 骨架文件改为 fail-closed 措辞；`retrieval.md`（文件 canonical）澄清“不存在摘要降级” | `references/*.md`、`rules/*.md`、`learning/*.md` |
+| 4 | D3 Quick Loop 重试三方矛盾 | `kernel.md` §7 改为“S9 失败不回退 Code，建议升级”，与 `rules/test.md` 与 `loop_max=1` 一致 | `kernel.md` |
+| 5 | D4 README 快速开始命令不可执行 | `verify <快照路径>`；key 校验改用 `smoke-check.sh --table`（4b）；“加密快照”改为 gzip/JSON（未加密） | `README.md` |
+| 6 | D5 profile 必读清单缺口 | review/debugging/coding/planning/refactoring/skill-maintenance 补齐 S1/S8/S10/S12 必读 | `profiles/*.md` |
+| 7 | D6 记忆路由精确 key vs memory_search 矛盾 | 散文改为“已知 key 用 memory_get，经验域用 memory_search，均最小充分” | `learning/memory/retrieval.md`、`engine/transition.md` |
+| 8 | D7 smoke 6b 虚假 freshness 声明 | 文案改为“含 updated_at 字段；freshness 由 load-checkpoint 判定”；Case B 记号澄清 | `smoke-check-core.sh`、`engine/transition.md`、`engine/state-machine.md` |
+| 9 | D8 文档漂移（Core/Exec 未实现、未跟踪、加密） | residual-risks / change-list / README 修正现状；2026-10-19 报告加历史快照说明 | `docs/audits/*`、`README.md` |
+| 10 | D9.1 协议门禁盲区 | `check-protocol` 增加 S7→S8 初始化校验 + 回归测试 | `runtime/core/protocol.py`、`tests/core/` |
+| 11 | D9.2 smoke 4b `MISSING\t` 前缀 | 解析 `MISSING`/`NOT_PERMANENT` 前缀，输出分类原因 | `skill-authoring/scripts/smoke-check-core.sh` |
+| 12 | D9.5 exec 非权限沙箱未声明 | README 安全与隐私补一句“exec 是防手滑，不是权限沙箱” | `README.md` |
 
-| # | 变更 | 落点 |
-|---|---|---|
-| 1 | 运行实例位置 `<skill>/.state.md` → `<project_root>/.vibe-kernel/.state.md`；**文件名不变**，减少数十处引用的改名面 | `engine/state-machine.md`「Workflow Checkpoint」 |
-| 2 | 补**位置解析顺序**（`--state-dir` → `VIBE_KERNEL_STATE_DIR` → 项目 config → 缺省）与 `project_root` 判定（显式 cwd，或向上首个含 `.git`/`.vibe-kernel`/`pyproject.toml`/`package.json`/`go.mod` 的目录） | 同上 |
-| 3 | 补**隔离规则**：每项目 / 每 worktree 各一份；`realpath` 归一（软链同目录 = 同项目）；解析结果落在 Skill 安装目录内 → **拒绝写入**（fail-closed，防多项目互相覆盖） | 同上 |
-| 4 | `SKILL.md` 加载时机索引与 `load_plan.json` `_core_note` 指向新位置（防旧口径回流） | `SKILL.md` / `load_plan.json` |
-
-### 二、机器可读契约（防「协议更新、代码用旧表」）
-
-| # | 变更 | 落点 |
-|---|---|---|
-| 5 | 新增「机器可读转移表」节：`<!-- vc:transitions v1 -->` 块，含 28 条边 + Loop 修饰符（`(+1)` / `(loop=0)` / `(loop=1)` / `(resume)` / `(a/b)` 允许集），供 `check-protocol` 逐边 + 修饰符比对 | `engine/transition.md` |
-| 6 | 块内修正两处与状态转移图不一致的边：**`S14 → S13 \| RESUME`**（原设计误写 `S14 → S0/S1`；`kernel.md` §1 明确「维持原 Loop N 继续」）；**补 `S10 → S7`**（Investigation 分支「情况 A 回 S7[N+1] / 情况 B 回 S7[0]」） | 同上 |
-| 7 | 明确 `S10 → S6(+1)` 的递增**只发生一次**，`S6→S7→S8` 继承同一 `N+1`（消除"重设计后回 S8 同轮"的歧义） | 同上 |
-| 8 | 新增「保留键」表：`_schema`（真实键，非顶部注释）/ `_rev` / `_project_id` / `_resume_from` + 子键 `review.failure_state`；**不计入 13 字段**；`_schema` 超前 → 只读降级 | `engine/state-machine.md` |
-| 9 | 新增三条兼容硬约束：**未知键必须原样保留** / 高版本只读 / 保留键缺失按缺省（不判损坏） | 同上 |
-| 10 | 新增「语法（机器读取口径）」：受限 YAML 子集（块映射/块序列/引号标量/`\|`/`#`），**不支持**锚点别名·流式集合·多文档；写端字符串标量一律加引号；三层降级（严格 → 仅扁平标量 → `corrupt` 备份） | 同上 |
-| 11 | 新增「写入方式（机器端）」：临时文件 + `fsync` + `os.replace`；跨平台锁；`expected_rev` 不匹配即冲突**不覆盖**（锁只保证串行，版本号才防「基于旧状态覆盖」） | 同上 |
-
-### 三、pending 核验改三态（修「文件存在 = 完成」误判）
-
-| # | 变更 | 落点 |
-|---|---|---|
-| 12 | 恢复协议第 5 步：`verified`（强证据：内容哈希 / 本轮起点后有新提交 / 声明的验证命令跑通）→ 移 `completed`；`unverified`（仅"存在"或"mtime 较新"这类**弱证据**）→ **不得**移；`still_pending` → 保留待人工确认。口径明写「**文件存在 ≠ 任务完成**」 | `engine/state-machine.md` 恢复协议 |
-
-### 四、运行时扩展码登记（防与工作流码混淆）
-
-| # | 变更 | 落点 |
-|---|---|---|
-| 13 | 「VC 错误码族」新增**运行时扩展码**表（12 个），一律带 `[runtime]` 前缀、同守「不带 `[next]` 不构成错误码」与 fail-closed 铁律；**声明不改变既有码语义** | `engine/transition.md` |
-| 14 | 其中 `STATE_ILLEGAL_TRANSITION` 明确**不复用** `RULE_NOT_LOADED`——后者语义是「阶段必读文件未加载」，借用会把 LLM 的 `[next]` 动作引错（去加载文件而不是回退阶段） | 同上 |
-| 15 | 登记 `CHECKPOINT_LOCATION_UNRESOLVED` / `_FOREIGN` / `_STALE` / `_DEGRADED` / `_CORRUPT` / `_SCHEMA_AHEAD` / `_WRITE_FAILED` / `PROTOCOL_DRIFT` / `PHASE_TRANSITION_MISSING` / `STATE_REV_CONFLICT` / `EXIT_CHECKLIST_INCOMPLETE` | 同上 |
-
-### 五、模板与配套
-
-| # | 变更 | 落点 |
-|---|---|---|
-| 16 | 模板新增 `_schema: 1`；注释改为项目本地路径 + 保留键清单 + 字符串引号纪律 | `.state.template.md` |
-| 17 | 设计文档同步（6 项 P0 + 专项）：状态机单一事实源校验、Loop 按 Level 分档（L0/L1=1，L2+=3）、Safe Mode 收窄为确定性触发、Exec 流式有界 + 整树终止、指纹 sha256 规范化 + 连续计数持久化、artifact 分 `ephemeral`/`pinned`、Hook 事实按 `@opencode-ai/plugin@1.15.4` 类型定义修正、新会话恢复走 `chat.system.transform` | `docs/design/` 五份 |
-
-**验证**：`transition.md` 机器块与设计文档 `LEGAL_TRANSITIONS` 交叉比对 **28 边 / 28 边，修饰符 7 条，CONSISTENT**；`.state.template.md` 经 `yaml.safe_load` 解析为单文档 14 键（13 语义 + `_schema`）；`load_plan.json` JSON 合法；全仓代码围栏配平。
-
-**未验证（不宣称）**：`check-protocol` 与 `core state check` 尚未实现，当前只有契约没有门禁；OpenCode 三条 Hook 仅在类型定义层确认，真机行为待 Phase 3 冒烟（A3/B2）。
+**验证**：见文末「第二轮评审修复回执」与 `skill-evaluation/evaluation-report-2026-10-20-r2.md` §修复回执。
 
 ## v1.22.1 — 体系评审缺陷修复（D1–D10 / P1–P8）
 
@@ -162,9 +129,59 @@
 
 **未验证（不宣称）**：真 fresh clone（临时 HOME + 干净 DB）未实跑——规则库必填，无法在无私有快照的机器上得到 rc=0；跨平台（Linux/Windows）未真机复跑。
 
+## v1.22.1 — 设计收敛补丁（`.state.md` 迁出 + 机器可读契约）
+
+> **同版本第二批**（未提交 git，版本不迭代）。**触发**：对 `docs/design/` 三份 MVP 设计做 P0 级评审，发现 6 项会导致实现跑偏的硬缺陷；其中两项**必须改协议文件**才能闭环，故本批次落 Skill 侧最小增补。核心判别：**运行时状态不属于 Skill 安装目录**，**副本必须被机械校验**。
+
+### 一、状态文件迁出 Skill 目录（原设计自相矛盾）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 1 | 运行实例位置 `<skill>/.state.md` → `<project_root>/.vibe-kernel/.state.md`；**文件名不变**，减少数十处引用的改名面 | `engine/state-machine.md`「Workflow Checkpoint」 |
+| 2 | 补**位置解析顺序**（`--state-dir` → `VIBE_KERNEL_STATE_DIR` → 项目 config → 缺省）与 `project_root` 判定（显式 cwd，或向上首个含 `.git`/`.vibe-kernel`/`pyproject.toml`/`package.json`/`go.mod` 的目录） | 同上 |
+| 3 | 补**隔离规则**：每项目 / 每 worktree 各一份；`realpath` 归一（软链同目录 = 同项目）；解析结果落在 Skill 安装目录内 → **拒绝写入**（fail-closed，防多项目互相覆盖） | 同上 |
+| 4 | `SKILL.md` 加载时机索引与 `load_plan.json` `_core_note` 指向新位置（防旧口径回流） | `SKILL.md` / `load_plan.json` |
+
+### 二、机器可读契约（防「协议更新、代码用旧表」）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 5 | 新增「机器可读转移表」节：`<!-- vc:transitions v1 -->` 块，含 28 条边 + Loop 修饰符（`(+1)` / `(loop=0)` / `(loop=1)` / `(resume)` / `(a/b)` 允许集），供 `check-protocol` 逐边 + 修饰符比对 | `engine/transition.md` |
+| 6 | 块内修正两处与状态转移图不一致的边：**`S14 → S13 \| RESUME`**（原设计误写 `S14 → S0/S1`；`kernel.md` §1 明确「维持原 Loop N 继续」）；**补 `S10 → S7`**（Investigation 分支「情况 A 回 S7[N+1] / 情况 B 回 S7[0]」） | 同上 |
+| 7 | 明确 `S10 → S6(+1)` 的递增**只发生一次**，`S6→S7→S8` 继承同一 `N+1`（消除"重设计后回 S8 同轮"的歧义） | 同上 |
+| 8 | 新增「保留键」表：`_schema`（真实键，非顶部注释）/ `_rev` / `_project_id` / `_resume_from` + 子键 `review.failure_state`；**不计入 13 字段**；`_schema` 超前 → 只读降级 | `engine/state-machine.md` |
+| 9 | 新增三条兼容硬约束：**未知键必须原样保留** / 高版本只读 / 保留键缺失按缺省（不判损坏） | 同上 |
+| 10 | 新增「语法（机器读取口径）」：受限 YAML 子集（块映射/块序列/引号标量/`\|`/`#`），**不支持**锚点别名·流式集合·多文档；写端字符串标量一律加引号；三层降级（严格 → 仅扁平标量 → `corrupt` 备份） | 同上 |
+| 11 | 新增「写入方式（机器端）」：临时文件 + `fsync` + `os.replace`；跨平台锁；`expected_rev` 不匹配即冲突**不覆盖**（锁只保证串行，版本号才防「基于旧状态覆盖」） | 同上 |
+
+### 三、pending 核验改三态（修「文件存在 = 完成」误判）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 12 | 恢复协议第 5 步：`verified`（强证据：内容哈希 / 本轮起点后有新提交 / 声明的验证命令跑通）→ 移 `completed`；`unverified`（仅"存在"或"mtime 较新"这类**弱证据**）→ **不得**移；`still_pending` → 保留待人工确认。口径明写「**文件存在 ≠ 任务完成**」 | `engine/state-machine.md` 恢复协议 |
+
+### 四、运行时扩展码登记（防与工作流码混淆）
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 13 | 「VC 错误码族」新增**运行时扩展码**表（12 个），一律带 `[runtime]` 前缀、同守「不带 `[next]` 不构成错误码」与 fail-closed 铁律；**声明不改变既有码语义** | `engine/transition.md` |
+| 14 | 其中 `STATE_ILLEGAL_TRANSITION` 明确**不复用** `RULE_NOT_LOADED`——后者语义是「阶段必读文件未加载」，借用会把 LLM 的 `[next]` 动作引错（去加载文件而不是回退阶段） | 同上 |
+| 15 | 登记 `CHECKPOINT_LOCATION_UNRESOLVED` / `_FOREIGN` / `_STALE` / `_DEGRADED` / `_CORRUPT` / `_SCHEMA_AHEAD` / `_WRITE_FAILED` / `PROTOCOL_DRIFT` / `PHASE_TRANSITION_MISSING` / `STATE_REV_CONFLICT` / `EXIT_CHECKLIST_INCOMPLETE` | 同上 |
+
+### 五、模板与配套
+
+| # | 变更 | 落点 |
+|---|---|---|
+| 16 | 模板新增 `_schema: 1`；注释改为项目本地路径 + 保留键清单 + 字符串引号纪律 | `.state.template.md` |
+| 17 | 设计文档同步（6 项 P0 + 专项）：状态机单一事实源校验、Loop 按 Level 分档（L0/L1=1，L2+=3）、Safe Mode 收窄为确定性触发、Exec 流式有界 + 整树终止、指纹 sha256 规范化 + 连续计数持久化、artifact 分 `ephemeral`/`pinned`、Hook 事实按 `@opencode-ai/plugin@1.15.4` 类型定义修正、新会话恢复走 `chat.system.transform` | `docs/design/` 五份 |
+
+**验证**：`transition.md` 机器块与设计文档 `LEGAL_TRANSITIONS` 交叉比对 **28 边 / 28 边，修饰符 7 条，CONSISTENT**；`.state.template.md` 经 `yaml.safe_load` 解析为单文档 14 键（13 语义 + `_schema`）；`load_plan.json` JSON 合法；全仓代码围栏配平。
+
+**未验证（不宣称）**：`check-protocol` 与 `core state check` 尚未实现，当前只有契约没有门禁；OpenCode 三条 Hook 仅在类型定义层确认，真机行为待 Phase 3 冒烟（A3/B2）。
+
 ## v1.22.1 — 加载计划按阶段裁剪（preflight 瘦身 + stage→section 映射）
 
-> 提交 v1.22.0（4300e81）后递增。**触发**：对 v1.22.0 做收益评估，实测发现**保守档反而净增 7~8%** —— `preflight` 自身输出 L1 5,301 / L2 6,760 字符（章节索引占其约六成），超过它带来的节省；且"机械可定位"只覆盖 1 个文件（`engine/transition.md`，因只有它的 H2 标题自带阶段号）。本轮按评估结论实施两项：**① 输出瘦身 ② stage→section 映射**。
+> **同版本第一批**（未提交 git，版本不迭代）。提交 v1.22.0（4300e81）后递增。**触发**：对 v1.22.0 做收益评估，实测发现**保守档反而净增 7~8%** —— `preflight` 自身输出 L1 5,301 / L2 6,760 字符（章节索引占其约六成），超过它带来的节省；且"机械可定位"只覆盖 1 个文件（`engine/transition.md`，因只有它的 H2 标题自带阶段号）。本轮按评估结论实施两项：**① 输出瘦身 ② stage→section 映射**。
 
 ### 一、preflight 输出瘦身
 

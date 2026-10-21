@@ -1632,6 +1632,7 @@ def cmd_preflight(args, db):
             print(f"      节: {_truncate(seg, 200)}")
             if len(seg) > 200:
                 print(f"      [OUTPUT_LIMIT] 命中节列表已截断显示；完整跨度用 read 该文件查看")
+                print(f"      [next] read {rel} 查看完整节跨度")
         else:
             print(f"  {rel}  ({nlines} 行, 整文件)")
             print(f"      {digest}")
@@ -1640,8 +1641,10 @@ def cmd_preflight(args, db):
                 print(f"      章节: {_truncate(idx, 260)}")
                 if len(idx) > 260:
                     print(f"      [OUTPUT_LIMIT] 章节标题超长已截断显示；完整标题 read 该文件可见")
+                    print(f"      [next] read {rel} 查看完整章节标题")
                 if overflow:
                     print(f"      [OUTPUT_LIMIT] 章节索引仅显示前 {len(headings)} 节，另有 {overflow} 节（read 该文件可见）")
+                    print(f"      [next] read {rel} 查看全部 {len(headings) + overflow} 节")
     # 前言（首个 H2 之前）不在命中节内。仅当存在**实质行**（排除 frontmatter/空行/H1/围栏）时提示——
     # 原判定 `min(start)-1 >= 3` 被 frontmatter 计入而恒真（恒触发=噪音，审查 P2）。
     pre_files = [
@@ -1974,6 +1977,7 @@ def cmd_artifact_page(args, db):
     limit = raw_limit
     if limit > ARTIFACT_LIMIT_CAP:
         print(f"[OUTPUT_LIMIT] --limit {limit} 超过单页上限 {ARTIFACT_LIMIT_CAP}，按上限执行（显式 clamp，不静默）")
+        print(f"[next] 接受 clamp（limit={ARTIFACT_LIMIT_CAP}）并用 --offset 分页续取。")
         limit = ARTIFACT_LIMIT_CAP
     raw_mb = args.max_bytes if args.max_bytes is not None else ARTIFACT_DEFAULT_MAX_BYTES
     if raw_mb <= 0:
@@ -1983,6 +1987,7 @@ def cmd_artifact_page(args, db):
     max_bytes = raw_mb
     if max_bytes > ARTIFACT_MAX_BYTES_CAP:
         print(f"[OUTPUT_LIMIT] --max-bytes {max_bytes} 超过单页字节上限 {ARTIFACT_MAX_BYTES_CAP}，按上限执行（显式 clamp，不静默）")
+        print(f"[next] 接受 clamp（max-bytes={ARTIFACT_MAX_BYTES_CAP}）并用 --offset 分页续取。")
         max_bytes = ARTIFACT_MAX_BYTES_CAP
     if args.offset is not None and args.offset < 0:
         print(f"[INVALID_ARGUMENT] --offset 不能为负（收到 {args.offset}）")
@@ -2004,6 +2009,7 @@ def cmd_artifact_page(args, db):
     print(f"  offset={offset} limit={limit} → 返回 {len(page)} 行 / {used} 字节")
     if truncated:
         print(f"  [OUTPUT_LIMIT] 已达 max_bytes={max_bytes}，本页提前结束（未静默截断）")
+        print(f"  [next] artifact page --ref {args.ref} --offset {offset + len(page)} 续取下一页")
     print()
     for row in page:
         print(row)

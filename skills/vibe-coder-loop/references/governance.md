@@ -12,8 +12,8 @@ SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），�
 - **Memory Canonical（类型 B）**：项目规则与经验（`rule:*`、`project:*`、`lesson:*`、`pattern:*` 等）——**条目为事实源**；Skill 文件仅"动作 + 指针 + 必要 fallback"（如 transition S2/S13 对 `rule:skill-iteration-manifest` 的处理）。
 - **Static Reference（类型 C，覆盖映射表中 skill:* 规则条目）**：Skill 文件 = 稳定摘要 + 降级 fallback；`skill:*` 条目 = **完整规则的 Canonical Source**。两者是"摘要/完整版"关系，不是两条独立规则；修改规则时以条目为准并同步文件摘要。
 - **协议核心特例（通用 vs 实例分治）**：拆分后，`learning/memory/` 分片按 canonical 归属分两类：
-  - **通用概念 → canonical = `delx-memory-protocol/protocol.md`**：三层体系 / 命名空间 / Tag-scope / TTL / Relevance / supersession / Consolidation / 跨项目迁移。本 skill 的 `memory/architecture.md` + `memory/advanced.md` = **实例特化 + 指针**（通用概念已裁指针，非第二 canonical，非 fallback 副本）；修改通用概念以 `delx-memory-protocol` 为准。
-  - **实例特化 → 仍文件事实源**（防自指 + S2 强制动作兜底）：`memory/lifecycle.md`（出口回写绑定 S2/S8/S12）/ `memory/promotion.md`（S12 收尾）/ `memory/retrieval.md`（Task→Memory Router 任务类型路由）。
+  - **通用概念 → canonical = `delx-memory-protocol/protocol.md`**：三层体系 / 命名空间 / Tag-scope / TTL / Relevance / supersession / Consolidation / 跨项目迁移。本 skill 的 `learning/memory/architecture.md` + `learning/memory/advanced.md` = **实例特化 + 指针**（通用概念已裁指针，非第二 canonical，非 fallback 副本）；修改通用概念以 `delx-memory-protocol` 为准。
+  - **实例特化 → 仍文件事实源**（防自指 + S2 强制动作兜底）：`learning/memory/lifecycle.md`（出口回写绑定 S2/S8/S12）/ `learning/memory/promotion.md`（S12 收尾）/ `learning/memory/retrieval.md`（Task→Memory Router 任务类型路由）。
   - `learning/memory.md` 为稳定路径索引（外部「节名」引用经索引解析）；同内容条目（`query-router` 等）为可执行副本，以条目内"主源"声明为准。
 
 > 注（类型判定）：**类型 A（摘要/指针，不构成第二规则源）** = `skill:policy/priority:conflict-resolution`（完整规则在 `policy/priority.md` §3.5）+ `skill:rules/review:hard-constraints`（完整清单在 `policy/safety.md` §3，条目仅是检查模板）+ `skill:rules/intent:decision-arbitration`（完整协议在 `policy/safety.md` §2，条目/`rules/intent.md` 均为摘要指针）；**类型 C（条目为完整版）** = 映射表中其余 `skill:` 规则条目。**数据条目**（`skill:vibe-coder-loop:metrics` 仪表盘 / `skill:vibe-coder-loop:rollback-point` 回滚锚点）既非 A 也非 C——它们是数据快照，不参与规则 canonical 判定（规则本体在 `learning/skill-metrics.md`）。
@@ -61,4 +61,4 @@ SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），�
 
 S2 Preflight 检索动作已由 `backup/memory_tool.py preflight` 承担：该命令一次返回**加载清单 + 运行时章节索引 + 成本对比 + `skill:rules/*` 候选 key 列表**（只回 key 不回 value），替代原先"先读导航表 → 再逐个取 key → 再 memory_list"的多轮往返。命中域才 `memory_get`（Level 0/1 命中域才取；Level 2+ 全量 key 列表 + 命中 get）。
 
-**宪法层**（kernel.md / policy/safety.md / engine/state-machine.md / SKILL.md / manifest.yaml）**永不沉**——确定性加载，禁止下沉。**learning/ 实例特化**（`memory/lifecycle.md` 出口回写 / `memory/promotion.md` S12 收尾 / `memory/retrieval.md` 路由表）= 文件事实源；**通用协议概念**（三层体系/命名空间/TTL/Relevance/supersession/Consolidation/跨项目迁移）canonical = `delx-memory-protocol/protocol.md`，本目录 `memory/architecture.md` + `memory/advanced.md` 为**实例特化 + 指针**（通用概念已裁指针，含实例触发条件），修改通用概念以 delx-memory-protocol 为准。索引 `memory.md` 维护稳定路径（不承载规则内容）。
+**宪法层**（kernel.md / policy/safety.md / engine/state-machine.md / SKILL.md / manifest.yaml）**永不沉**——确定性加载，禁止下沉。**learning/ 实例特化**（`learning/memory/lifecycle.md` 出口回写 / `learning/memory/promotion.md` S12 收尾 / `learning/memory/retrieval.md` 路由表）= 文件事实源；**通用协议概念**（三层体系/命名空间/TTL/Relevance/supersession/Consolidation/跨项目迁移）canonical = `delx-memory-protocol/protocol.md`，本目录 `learning/memory/architecture.md` + `learning/memory/advanced.md` 为**实例特化 + 指针**（通用概念已裁指针，含实例触发条件），修改通用概念以 delx-memory-protocol 为准。索引 `memory.md` 维护稳定路径（不承载规则内容）。

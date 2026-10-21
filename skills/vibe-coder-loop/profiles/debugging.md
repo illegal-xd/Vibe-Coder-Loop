@@ -16,7 +16,7 @@ status: active
 - 行为异常：功能不工作/结果错误/回归失败，需先定位根因再修复
 - 测试失败反复（Test 回退 Code 循环）
 
-**任务分类**：A. Direct Action（调试变体）；记忆路由行 = 「编码/调试」（`memory/retrieval.md` 路由表）
+**任务分类**：A. Direct Action（调试变体）；记忆路由行 = 「编码/调试」（`learning/memory/retrieval.md` 路由表）
 
 **执行路径**：
 - Level 1（单点 bug）：S1 → S2 → S4 → S8 → S9 → S10（Test 失败 → Lesson 保存 → 回退 Code[N+1]，不进 Review）
