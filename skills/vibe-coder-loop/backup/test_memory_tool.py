@@ -934,9 +934,15 @@ class PreflightAndArtifactCase(unittest.TestCase):
             if n >= 1:
                 req += ["rules/test.md", "rules/review.md"]
             if n >= 2:
-                req += ["rules/design.md", "rules/plan.md", "learning/memory/promotion.md"]
+                req += [
+                    "rules/design.md", "rules/plan.md", "learning/memory/promotion.md",
+                    "policy/lifecycle.md", "policy/priority.md", "learning/reflection.md",
+                ]
             if n >= 3:
-                req += ["rules/orchestration.md", "learning/evolution.md"]
+                req += [
+                    "rules/orchestration.md", "learning/evolution.md",
+                    "learning/memory.md", "learning/memory/architecture.md",
+                ]
             return req
 
         for level_key, files in plan["levels"].items():

@@ -1,45 +1,16 @@
 #!/usr/bin/env bash
 # smoke-check-core.sh — 通用 Skill 一致性自检引擎（skill-authoring 协议 · 唯一事实源）
 #
-# 性质：**被 source 的库**，不单独执行。三个消费者共用本文件，消除"同一份检查逻辑
-# 复制三遍"的重复（单一来源 + 生成，不做 duplicate guide）：
-#   1. skill-authoring/scripts/smoke-check.sh            （skill-authoring 自身实例）
-#   2. skill-authoring/scripts/smoke-check-template.sh   （供外部 Skill 实例化的模板）
-#   3. vibe-coder-loop/scripts/smoke-check.sh            （宿主 Skill 实例）
-#
-# 契约（调用方在 source 本文件**之前**设置）：
-#   SKILL_DIR            必填。目标 Skill 根目录（core 会 cd 进去）
-#   SMOKE_NAME           可选。报告标题（缺省取 SKILL_DIR basename）
-#   DEAD_PTR_WORDS       必填。死指针候选词正则（历史改名轨迹词集中于此）
-#   DEAD_PTR_KNOWN       可选。已裁定为合法命中的白名单（数组；键 = "./<相对路径>::<整行内容>"——
-#                        路径须与 find 产物同形，含 ./ 前缀；去首尾空白后双精确匹配。内容/文件任一变动
-#                        即重新成为候选；条目自身命中不到任何文件行 → HARD（防僵尸条目静默失效））
-#   GOV_FILE             可选。governance 映射文件（相对 SKILL_DIR）
-#   GOV_KEY_PREFIX       可选。映射表左列 key 前缀（缺省 skill:）
-#   SELFTEST_CMD         可选。自测命令（相对 SKILL_DIR），非 0 即 HARD
-#   LOAD_PLAN_FILE       可选。加载计划 JSON（相对 SKILL_DIR），校验路径存在性
-#   LOAD_PLAN_MENTION    可选。必须提及加载计划内全部路径的文件（如 SKILL.md）
-#   CHECKPOINT_FILE       可选。Workflow Checkpoint 文件（相对 SKILL_DIR，或绝对路径），
-#                         校验 YAML 单文档可解析 + 13 字段齐全（含 updated_at 字段存在性；freshness 值由 runtime.core load-checkpoint 判定；pyyaml 缺失则显式跳过）。
-#                         指定的文件不存在 → 打印跳过原因（不计为通过）；空值 = 本 Skill 无 Checkpoint
-#   BUDGET_FILE_LINES    可选。单文件行数预算（0 = 关闭；超出 → BUDGET_EXCEEDED）
-#   BUDGET_TOTAL_LINES   可选。规则文件总行数预算（0 = 关闭）
-#   SCAN_EXCLUDE_PATHS   可选。额外排除的 path glob 片段（数组字符串）
-#
-# 错误码（结构化输出，见 engine/transition.md「VC 错误码族」的同一套纪律）：
-#   RESIDUAL_HIT          日期/版本残留命中（HARD）
-#   DEAD_POINTER_CANDIDATE 死指针候选（需裁决，非 HARD）
-#   MAP_INCONSISTENT      governance 映射表引用的文件不存在（HARD）
-#   STRUCTURAL_INCONSISTENT 结构性缺陷（自测失败 / 表格列数不一致）（HARD）
-#   LOAD_PLAN_PATH_MISSING 加载计划内路径在磁盘缺失（HARD）
-#   LOAD_PLAN_UNDOCUMENTED 加载计划内路径未被 SKILL.md 提及（HARD）
-#   LOAD_PLAN_PATTERN_MISS stage_sections 的匹配串未命中真实章节标题（HARD，改名后成死指针）
-#   LOAD_PLAN_STAGE_INVALID level_stages 值域非法（非 S1–S13 规范 token / 空列表 / 重复）（HARD）
-#   BUDGET_EXCEEDED      行数预算超限（非 HARD，但退出码 2）
-#
-# 退出码：0 = 无 HARD 违规；1 = 有 HARD 违规；2 = 仅预算超限；3 = 用法/环境错误
-#
-# 不做：规则内容正确性判断（那是人工 / Critic 的事）。本脚本只负责"候选是否出现 + 是否漂移 + 是否超预算"。
+# 被 source 的库，不单独执行；三个消费者：skill-authoring 实例 / 模板 / vibe-coder-loop 实例。
+# 调用方在 source 前设置：
+#   SKILL_DIR 必填；DEAD_PTR_WORDS 必填；SMOKE_NAME/DEAD_PTR_KNOWN/GOV_FILE/GOV_KEY_PREFIX/
+#   SELFTEST_CMD/LOAD_PLAN_FILE/LOAD_PLAN_MENTION/CHECKPOINT_FILE/BUDGET_FILE_LINES/
+#   BUDGET_TOTAL_LINES/SCAN_EXCLUDE_PATHS 可选（详见各调用方配置区）。
+# 错误码：RESIDUAL_HIT / MAP_INCONSISTENT / STRUCTURAL_INCONSISTENT / LOAD_PLAN_PATH_MISSING /
+#   LOAD_PLAN_UNDOCUMENTED / LOAD_PLAN_PATTERN_MISS / LOAD_PLAN_STAGE_INVALID（HARD）；
+#   DEAD_POINTER_CANDIDATE（需裁决）；BUDGET_EXCEEDED（退出码 2）。
+# 退出码：0 无 HARD；1 有 HARD；2 仅预算超限；3 用法/环境错误。
+# 不做规则内容正确性判断——只查「候选是否出现 / 是否漂移 / 是否超预算」。
 
 set -uo pipefail
 

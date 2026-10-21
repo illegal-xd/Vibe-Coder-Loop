@@ -155,6 +155,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 - [ ] 若涉及不确定判断（3 类场景）→ Confidence + Evidence 已标注
 - [ ] Lesson 检索已执行并标注结果
 - [ ] 资产生命周期操作合规
+- [ ] **不可修复的 Hard 项已上报**：已造成不可逆后果且无法回退 → `--vc-violation <事实>` 进 S14；可修复者仍走 S10 情况 B（分流见 `policy/safety.md` §3）
 - [ ] 若本轮 Code 完成了一个版本功能/修改了 API 签名 → 标注 `[待 Memory Evolution]`
 - [ ] **steering 队列检查**：若运行中存在 steering 消息（用户插话，见 `kernel.md` 双队列契约）→ 注入当前轮次后继续；注入后重新执行前置检查
 - [ ] **能力载体适用性检查**：若 Plan 绑定了能力载体（技能 / 子 agent），执行中确认其与实际问题匹配；不匹配 → 按 `engine/skill-routing.md` 输出 `[Skill 切换]` 说明并更新对应 Step 绑定。未绑定则本项标「不涉及」
@@ -197,6 +198,8 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 | 1 ～ 5 处 且 无结构性 | 情况 A → S8 Code[N+1] | N→N+1 |
 | ≥6 处 或 存在结构性 或 硬性约束违反 | 情况 B → S6 Design[0] → S8 Code[N+1] | N→N+1 |
 | N+1 > 3 | 输出已达最大迭代次数 → S13 Complete | 停止 |
+
+> **硬约束违规的例外**：仅"可修复"的违规走情况 B；**已造成不可逆后果且无法回退** → 上报 `vc_violation` 进 S14（分流唯一事实源 = `policy/safety.md` §3）。
 
 **情况 C 后置**：Review 通过后、输出最终结果前，先执行 S11 Reflection 触发判定，再执行 S12 Memory Evolution。
 
@@ -264,7 +267,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 **Tool 层运维码（补充登记）**：`memory_tool.py` / `smoke-check-core.sh` 另输出以下运维码，同守「不带 `[next]` 不构成错误码」铁律，属维护域（不进上表的工作流判定）：
 
-`ARTIFACT_SOURCE_MISSING`（源文件缺失→核对路径）/ `ARTIFACT_NAME_INVALID`（`--name` 含路径分隔符→改纯文件名）/ `ARTIFACT_REF_INVALID`（ref 形态或边界非法→核验 index 是否被篡改）/ `INVALID_ARGUMENT`（参数非正→修正后重试）/ `DB_NOT_FOUND`（库路径缺失→--db 或 DELX_MEMORY_DB）/ `KEYS_CHECK_INPUT_MISSING`（key 清单为空→stdin 或 --files 传入）；smoke-check 侧：`RESIDUAL_HIT` / `MAP_INCONSISTENT` / `STRUCTURAL_INCONSISTENT` / `LOAD_PLAN_PATH_MISSING` / `LOAD_PLAN_UNDOCUMENTED` / `DEAD_POINTER_CANDIDATE`（唯一保留人工裁决）/ `BUDGET_EXCEEDED`（棘轮，只降不升）。
+`ARTIFACT_SOURCE_MISSING`（源文件缺失→核对路径）/ `ARTIFACT_NAME_INVALID`（`--name` 消毒后仍越界→改纯文件名；分隔符本身会被消毒）/ `ARTIFACT_REF_INVALID`（ref 形态或边界非法→核验 index 是否被篡改）/ `INVALID_ARGUMENT`（参数非正或正则非法→修正后重试）/ `DB_NOT_FOUND`（库路径缺失→--db 或 DELX_MEMORY_DB）/ `KEYS_CHECK_INPUT_MISSING`（key 清单为空→stdin 或 --files 传入）；smoke-check 侧：`RESIDUAL_HIT` / `MAP_INCONSISTENT` / `STRUCTURAL_INCONSISTENT` / `LOAD_PLAN_PATH_MISSING` / `LOAD_PLAN_UNDOCUMENTED` / `DEAD_POINTER_CANDIDATE`（唯一保留人工裁决）/ `BUDGET_EXCEEDED`（棘轮，只降不升）。
 
 **运行时扩展码（确定性代码层登记）**：以下码由 `runtime/core`（状态/Checkpoint）与 `runtime/exec`（执行/产物）产生，**不属于工作流判定**——输出时必须带 **`[runtime]` 前缀**以示区分，且同样遵守「不带 `[next]` 不构成错误码」与 fail-closed 铁律。**登记在此仅为防混淆，不改变上表任何码的语义**。
 

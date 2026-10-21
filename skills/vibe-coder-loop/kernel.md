@@ -162,7 +162,7 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 | 删除风险持续增加 | 连续 Review 发现删除操作 | 连续 2 轮 |
 | Workflow 循环震荡 | 同一文件在 Code[N] 和 Code[N+1] 间反复修改 | — |
 | **无进展（No Progress）** | 连续 2 次 Code→Review 满足任一：① 同一 issue 未被解决；② 修改后 issue 数未下降；③ Test 结果无改善（无新增通过项） | 连续 2 次 |
-| **硬约束违规** | S8/S10 出口上报 `vc_violation`（`policy/safety.md` §3 Hard 项） | 1 次（不等待重复） |
+| **硬约束违规（不可修复）** | S8/S10 出口按 `policy/safety.md` §3 分流：可修复 → 情况 B；不可修复/已不可逆 → 上报 `vc_violation` | 不可修复者 1 次即停 |
 | Memory 产生污染风险 | 记忆更新与 CodeGraph 事实冲突 | ≥3 处 |
 | Skill 规则冲突无法收敛 | 两条规则互相矛盾且无法通过 Rule Priority 仲裁 | — |
 

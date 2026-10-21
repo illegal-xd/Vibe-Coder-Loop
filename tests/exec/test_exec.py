@@ -734,5 +734,43 @@ class TestNormalizers(unittest.TestCase):
         self.assertEqual(infer_lang(["npx", "jest"]), "jest")
 
 
+class TestArgValidation(ExecTest):
+    """参数校验：非法超时/输出上限必须是 INVALID_ARGUMENT，不得误报 TIMEOUT。"""
+
+    def test_request_rejects_invalid_limits(self) -> None:
+        with self.assertRaises(ValueError):
+            _req(["python3", "-c", "print(1)"], self.tmp, timeout_ms=0)
+        with self.assertRaises(ValueError):
+            _req(["python3", "-c", "print(1)"], self.tmp, max_output_bytes=-1)
+
+    def test_cli_rejects_negative_timeout(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        from runtime.exec.cli import main as exec_main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = exec_main(
+                ["run", "--cwd", self.tmp, "--timeout-ms", "-5", "--", "python3", "-c", "print(1)"]
+            )
+        self.assertEqual(rc, 2, buf.getvalue())
+        self.assertIn("INVALID_ARGUMENT", buf.getvalue())
+
+    def test_cli_rejects_negative_max_output(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        from runtime.exec.cli import main as exec_main
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = exec_main(
+                ["run", "--cwd", self.tmp, "--max-output", "-1", "--", "python3", "-c", "print(1)"]
+            )
+        self.assertEqual(rc, 2, buf.getvalue())
+        self.assertIn("INVALID_ARGUMENT", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

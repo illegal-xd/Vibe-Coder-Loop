@@ -59,6 +59,10 @@ class ExecRequest:
             raise ValueError("cmd 不能为空")
         if not self.cwd:
             raise ValueError("cwd 必填")
+        if self.timeout_ms <= 0:
+            raise ValueError("timeout_ms 必须为正")
+        if self.max_output_bytes < 0:
+            raise ValueError("max_output_bytes 不能为负")
         if not self.exec_id:
             object.__setattr__(self, "exec_id", str(uuid.uuid4()))
 

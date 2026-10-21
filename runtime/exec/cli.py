@@ -57,6 +57,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not cmd:
         _emit({"ok": False, "code": "INVALID_ARGUMENT", "message": "命令为空（用 --cmd 或位置参数）"})
         return 2
+    if args.timeout_ms <= 0:
+        _emit({"ok": False, "code": "INVALID_ARGUMENT", "message": f"--timeout-ms 须为正整数（收到 {args.timeout_ms}）"})
+        return 2
+    if args.max_output < 0:
+        _emit({"ok": False, "code": "INVALID_ARGUMENT", "message": f"--max-output 不能为负（收到 {args.max_output}）"})
+        return 2
     cancel_event = threading.Event()
     req = ExecRequest(
         cmd=cmd,

@@ -25,6 +25,23 @@
 
 **验证**：见文末「第二轮评审修复回执」与 `skill-evaluation/evaluation-report-2026-10-20-r2.md` §修复回执。
 
+## v1.22.1 — 第四轮评审修复 + 注释精简（R4-D1–D7，同版本第六批）
+
+> **同版本第六批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-21-r4.md` 复评发现的 R4-D1–R4-D7；同时按用户要求精简冗余注释。
+
+| # | 缺陷 | 修复 | 落点 |
+|---|---|---|---|
+| 1 | R4-D1 硬约束违规双出口（S6 vs S14）且 `vc_violation` 无入口 | `policy/safety.md` §3 增「可修复→情况 B / 不可逆→`vc_violation`→S14」分流；S8 出口与 S10 判定表补对应条目；`kernel.md` §5 同步 | `policy/safety.md`、`engine/transition.md`、`kernel.md` |
+| 2 | R4-D2 per-level 期望表是子集（4 个变异静默） | 自测期望表补 L2（lifecycle/priority/reflection）与 L3（memory.md/architecture.md） | `backup/test_memory_tool.py` |
+| 3 | R4-D3 `--offset -1` 静默按 0 | 负数 → `INVALID_ARGUMENT` rc3 | `backup/memory_tool.py` |
+| 4 | R4-D4 非法 `--grep` 正则静默转字面量 | `re.error` → `INVALID_ARGUMENT` rc3 | `backup/memory_tool.py` |
+| 5 | R4-D5 `ARTIFACT_NAME_INVALID` 不可达 / 文档口径冲突 | 保留消毒 + 双保险；码表与文档改为「消毒后仍越界才拒绝」 | `engine/transition.md`、`backup/memory_tool.py` |
+| 6 | R4-D6 审计文档测试计数过期（43/51/55） | 清单改为「rc=0 / 以输出为准」，`compatibility` 标注当前基线 | `docs/audits/release-checklist.md`、`compatibility.md`、`residual-risks.md` |
+| 7 | R4-D7 `--timeout-ms` 负数被误报 TIMEOUT | CLI 校验 → `INVALID_ARGUMENT` rc2；`ExecRequest` 增加入参守卫 + 3 个测试 | `runtime/exec/cli.py`、`runner.py`、`tests/exec/test_exec.py` |
+| 8 | 冗余注释 | `memory_tool.py` 模块 docstring 106→25 行、6 处长注释块压到 2–3 行；smoke core 头部 41→12 行；SKILL/state-machine 去重复解释 | `backup/memory_tool.py`、`smoke-check-core.sh`、`SKILL.md`、`engine/state-machine.md` |
+
+**验证**：274 单测 +57 memory +51 audit +15 symlink +6/7 shell +82 协议 = 492 项全过；smoke rc0（3892/3900）；audit check/scan rc0；4 个原静默变异（L2 lifecycle/priority/reflection、L3 architecture）全部转红。
+
 ## v1.22.1 — 第三轮评审修复（R3-D1–D10，同版本第五批）
 
 > **同版本第五批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-21-r3.md` 第三轮独立复评（新增变异测试通道）发现的 R3-D1–R3-D10。核心：**门禁绿 ≠ 阶段载荷正确**——加载计划只校验"章节被映射到某处"，不校验"该阶段仍覆盖必需章节"；本轮同时补装配与防线。

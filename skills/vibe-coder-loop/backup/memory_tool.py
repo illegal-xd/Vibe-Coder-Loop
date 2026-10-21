@@ -1,102 +1,28 @@
 #!/usr/bin/env python3
 """
-vibe-coder-loop 记忆 Tool（跨平台：macOS / Linux / Windows）
+vibe-coder-loop 记忆 Tool（纯标准库；macOS / Linux / Windows）
 
-两组子命令（**Skill 只向 Agent 暴露 runtime 组**）：
+子命令：
+  runtime（Agent 调用，确定性执行；协议见 ../learning/memory/lifecycle.md「回写契约」）
+    touch <key>... [--hit]        消费回写：access_count+1（--hit 同时 cache_hit_count+1）
+    metrics [--delta ...] [--counts] [--note T]
+                                  仪表盘 upsert（完整回写；hit_rate=预算内完成率，
+                                  memory_hit_rate=召回命中率，语义不同不可混用）
+    preflight [--level N] [--task T] [--stage S8|^S3] [--files a,b]
+                                  加载计划：清单 + 按阶段裁剪的命中节（实测行号）+ 成本 + 记忆候选。
+                                  `--stage S8` 只保留所列，`^S3` 从默认集排除；只回 key 不回 value。
+                                  退出码 0 正常 / 3 = 计划或清单文件缺失（fail-closed，--files 可绕过）
+    artifact put|page|list|release
+                                  结果外置（24h TTL）：page 支持投影/过滤/字节上限，
+                                  clamp 显式报 OUTPUT_LIMIT；退出码 3=源缺失/参数非法，4=ref 不可用
+  maintenance（技能迭代时）
+    backup / restore / verify / list / export-rules
+                                  export-rules 导出脱敏规则集（本机/私有通道，不入库）
 
-  runtime —— Agent 调用，确定性执行（协议见 ../learning/memory/lifecycle.md「回写契约」）
-    touch <key>... [--hit]          消费回写：access_count+1（--hit 时 cache_hit_count+1）
-    metrics [--<delta> ...] ...     仪表盘 upsert：读当前值 → 叠加本轮 delta → 完整回写
-    preflight [--level N] [--task T] [--stage S8,S9| ^S3] [--files a,b]
-                                    加载计划：一次调用替代 N 次导航读取。输出 =
-                                    加载清单 + **按阶段裁剪的命中节（含实测行号）** + 成本对比
-                                    （整文件口径 → 按阶段命中，省 N%）+ 记忆候选。
-                                    阶段集缺省取 load_plan.json level_stages[level]；`--stage` 收窄：
-                                    `S8` = 只保留所列（循环中单阶段重读）；`^S3` = 从默认集**排除**
-                                    （S1 冲突预检无冲突时用，免手抄全清单——手抄漏 S13 = 静默裁掉收尾义务）。
-                                    阶段 token 校验 S1–S13，非法 `[INVALID_ARGUMENT]` exit 3。
-                                    映射失效自动回退整文件（fail-safe，不静默漏读）；
-                                    transition.md 机械分支仅命中 VC 节时同样回退整文件。
-                                    只回 key 不回 value（Memory ≠ Context 硬约束）。
-                                    退出码 0 正常 / 3 = 计划缺失（[LOAD_PLAN_MISSING]，
-                                    --files 可绕过）或清单内文件缺失（[RULE_NOT_FOUND]），
-                                    均 fail closed 不静默降级
-    artifact put --file F [--name N] [--kind text|jsonl] [--loop N]
-                                    结果外置：大产物落盘，回 ref（24h TTL，put 时顺带回收过期）。
-                                    --name 会消毒（去路径分隔符/首尾点），非法直接拒绝不落盘
-    artifact page --ref R [--offset N] [--limit N] [--max-bytes N]
-                  [--fields a,b] [--equals k=v] [--grep RE] [--count]
-                                    分页取用：投影 + 过滤 + 字节上限；clamp（--limit>上限）
-                                    显式报 [OUTPUT_LIMIT] 不静默；--count 只回计数
-    artifact list                  列出当前工作区产物与剩余 TTL
-    artifact release --ref R...    释放产物（ref 形态/边界非法一律拒绝，不信任 index.json）
-                                    退出码：3 = 源缺失/参数非法/[ARTIFACT_NAME|REF]_INVALID；
-                                    4 = ref 不存在或已过期（均可经 [next] 行自纠）
-                                    产物目录 = $VIBE_LOOP_ARTIFACTS_DIR，
-                                    缺省 ~/.vibe-loop/artifacts/<workspace-hash>/
-
-  maintenance —— 技能迭代时调用，非运行时路径
-    backup / restore / verify / list   技能相关记忆的快照导出 / 恢复 / 校验 / 列举
-    export-rules [--check]            导出**脱敏**规则集（私有通道分发/漂移比对）
-                                      —— snapshots/ 与 rules/ 均为本机数据（gitignore）：
-                                         规则内容按隐私约束不入库，跨机只走安全私有通道
-
-  自测 —— 标准库 unittest（自建临时库，不触碰真实库）：
-    python3 test_memory_tool.py
-
-备份范围（仅技能相关联的数据记忆，不备份其他项目记忆）：
-  - 前缀 skill:* 的全部条目（规则条目 / 仪表盘 / 指标 / 回滚锚点；计数以 memory_list 实时核对）
-  - 显式关联条目（SKILL_LINKED_KEYS 常量，清单与数量以该常量 + backup/README.md「备份范围」为准，不在注释内重复枚举）
-  - 合计条目数每次以实际库为准：python3 memory_tool.py list
-
-维护约定（技能迭代时必守）：
-  - 新增/删除技能相关记忆 key → 同步更新 SKILL_LINKED_KEYS 与 backup/README.md 备份范围说明
-  - 技能规则/关联内容更新后 → 重新执行 python3 memory_tool.py backup（快照含 skill_version + changelog_top 溯源）
-    并执行 python3 memory_tool.py export-rules 刷新脱敏规则集（本机生成，不入库）
-  - 迭代历史唯一事实源 = ../CHANGELOG.md；版本号唯一事实源 = ../manifest.yaml version
-
-数据库路径解析优先级：
-  1. --db 参数
-  2. 环境变量 DELX_MEMORY_DB
-  3. backup/config.json 的 db_path 字段（手动修改，或让 agent 调整）
-  4. 自动探测：~/.delx-memory/db.sqlite（macOS/Linux）、
-     %USERPROFILE%\\.delx-memory\\db.sqlite（Windows）
-
-用法（Python 3 标准库，无第三方依赖）：
-  python3 memory_tool.py backup             # 备份到 snapshots/（时间戳快照 + latest），并自动压缩历史快照
-  python3 memory_tool.py restore <file> [--dry-run] [--force]
-        # 从备份文件更新数据库（upsert，保留 created_at；支持 .json.gz）
-        # 范围守卫：备份内出现非 skill:* / SKILL_LINKED_KEYS 的越界 key → 默认拒绝执行
-        # 写前快照：实际写入前，先把当前库状态落到 snapshots/skill_memory_prerestore_<ts>.json
-        # --dry-run 只打印将发生的变更（不写库）；--force 放行越界 key（须自行确认范围）
-  python3 memory_tool.py verify <file>      # 校验备份/数据库一致性（支持 .json.gz）
-        # 硬校验：缺失/值/tags/metadata/created_at/ttl_expires_at + 范围完整性（库内技能 key 是否都进过备份）
-  python3 memory_tool.py export-rules [--check] [--out P] [--dry-run]
-        # 导出脱敏规则集到 rules/skill_memory_canonical.json（**不入库**，仅本机/私有通道）：
-        #   留 key/value/tags/metadata，去掉 db / snapshot 时间戳；本机绝对路径 → ~ / <USERPROFILE>
-        #   脱敏后仍含本机路径/邮箱/凭证 → 拒绝写入（退出码 4，fail-closed）
-        # --check 比对本机规则集与活库（漂移 → 退出码 4）
-  python3 memory_tool.py list               # 列出技能相关 key 与当前数据库路径
-
-运行时写入（确定性执行，属 Skill 的 Tool 侧；Skill 只声明「何时调用」）：
-  python3 memory_tool.py touch <key>... [--hit]
-        # Memory 消费回写：access_count+1（--hit 同时 cache_hit_count+1）
-        # 不变量：value 不改、tags 不动、metadata 其余字段原样保留、有限 TTL 按剩余时长重锚
-  python3 memory_tool.py metrics [--conflict N --by-user N --by-level N
-                                 --retrieval N --budget-hit N --memory-hit N --over-budget N
-                                 --auto-promoted N --auto-demoted N --auto-deleted N --auto-pending N
-                                 --rollback N --skeleton-entries N --skeleton-bytes N
-                                 --counts] [--note TEXT]
-        # 仪表盘 upsert：读 DASHBOARD_KEY → 叠加本轮 delta → 完整回写（两个 rate 重算）
-        # 两个 rate 语义不同、互不替代（详见 METRIC_FIELDS 注释）：
-        #   hit_rate        = budget_hits / searches   → 检索「在红线预算内完成」的比率
-        #   memory_hit_rate = memory_hits / searches   → 检索「确有召回结果」的比率
-        # --counts 时机械重算 memory.* 条目计数；未触及字段 / tags / metadata 原样保留
-
-历史快照策略：
-  - 按天去重：每天只保留一份最新时间戳快照（多余清理，用户要求）
-  - 历史时间戳快照自动压缩为 .json.gz（gzip level 9），删除原 .json
-  - 幂等：已存在对应 .json.gz 的跳过（扩展名即"是否已压缩"判断）；latest 永不压缩（restore/verify 主入口）
+数据库：--db > $DELX_MEMORY_DB > backup/config.json > 自动探测 ~/.delx-memory/db.sqlite
+备份范围：skill:* + SKILL_LINKED_KEYS（清单以常量与 backup/README.md 为准）
+快照策略：每天一份、历史压缩 .json.gz、latest 不压缩；写前快照保留 2 份
+维护约定：增删技能 key / 改规则后 → backup + export-rules；版本与历史见 manifest.yaml / CHANGELOG.md
 """
 
 import argparse
@@ -478,16 +404,9 @@ def build_snapshot_payload(db):
 
 
 # ---------------------------------------------------------------------------
-# canonical rules：本机生成的脱敏规则集（不入库；供私有通道分发与漂移比对）
+# canonical rules：脱敏规则集（本机生成、不入库；私有通道分发 + 漂移比对）
+# 与 snapshots/skill_memory_latest.json 的分工见 backup/README.md
 # ---------------------------------------------------------------------------
-#
-# 两个制品分工（D2 修复）：
-#   1) snapshots/skill_memory_latest.json —— 本机运行时快照：完整条目 + 运行时字段，
-#      含个人记忆/本机路径 → 一律 gitignore，仅本机或私有通道迁移使用。
-#   2) rules/skill_memory_canonical.json —— 脱敏规则集：仅 key/value/tags/metadata，
-#      本机绝对路径换成 ~ / <USERPROFILE> → 同样 gitignore（规则内容按隐私约束不入库），
-#      用途是本机漂移比对（export-rules --check）与私有通道分发。
-# 两者都不入库：仓库只分发协议骨架，规则内容由本机库生成。
 CANONICAL_RULES_FILE = (
     Path(__file__).resolve().parent / "rules" / "skill_memory_canonical.json"
 )
@@ -760,14 +679,9 @@ def cmd_restore(args, db):
 
 
 # ============================================================================
-# maintenance: export-rules —— 导出脱敏规则集（本机生成，不入库）
+# maintenance: export-rules —— 脱敏规则集（不入库，供私有通道分发/漂移比对）
 # ============================================================================
-#
-# 为什么需要它：SKILL.md 的 fail-closed 恢复动作要求「新机器克隆后恢复 skill:* 规则」，
-# 但本机快照含个人记忆与本机路径，不能提交。故把「可分发」与「本机运行时」拆成两个文件：
-#   snapshots/skill_memory_latest.json  （gitignore，本机/私有通道）
-#   rules/skill_memory_canonical.json   （gitignore，脱敏后的规则内容：私有通道分发/漂移比对）
-# 退出码：0 = 写入成功 / 一致；1 = 无源数据或文件缺失；4 = 脱敏残留或规则集漂移（fail-closed）。
+# 退出码：0=成功/一致；1=无源数据；4=脱敏残留或漂移（fail-closed）。
 
 
 def cmd_export_rules(args, db):
@@ -1002,13 +916,8 @@ def cmd_touch(args, db):
 
 
 # (argparse dest, 仪表盘分组, 字段名, 是否计入该组「事件数」)
-# 事件数只统计该组的主计数器——by_user/by_level 是 total 的子集，budget_hits / memory_hits 是 searches
-# 的子集，不可重复计入（否则显示「事件: {conflict: 2}」这类子集/超集混淆）。
-#
-# retrieval 组两个「率」不可混用（曾因手工把命中率写进 hit_rate 字段导致口径互踩）：
-#   budget_hits      → hit_rate：检索「在红线预算内完成」的比率（Agent 行为配额合规）
-#   memory_hits      → memory_hit_rate：检索「确有召回结果」的比率（召回有效性）
-#   两者都由 Tool 重算；降级路径禁止手写任何 rate（见 learning/skill-metrics.md）
+# 只统计主计数器：by_user/by_level 是 total 子集，budget_hits/memory_hits 是 searches 子集。
+# hit_rate=预算内完成率，memory_hit_rate=召回命中率；rate 一律由 Tool 重算（禁止手写）。
 METRIC_FIELDS = [
     ("conflict", "conflict", "total", True),
     ("by_user", "conflict", "by_user", False),
@@ -1201,23 +1110,10 @@ def cmd_list(args, db):
 
 
 # ============================================================================
-# maintenance: check-keys —— 映射表声明的 key 是否真实存在
+# maintenance: check-keys —— 映射表声明的 key 是否存在（smoke 4b 调用）
 # ============================================================================
-#
-# 用途：供 smoke-check 的 governance 映射一致性检查调用。把「映射表里写的 key」
-# 从**声明**变成**可校验事实** —— 规则条目改名/删除后映射表未同步，是最常见的
-# 死指针来源（改名后只改一处，其余引用静默存活多轮）。
-#
-# 输入行格式（制表符分隔，类型可省略）：
-#   <key>                → 只校验存在性
-#   <key>\t<canonical>   → 额外校验：canonical ≠ 数据 时 tags 必须含 permanent
-#
-# 为什么不变量是「permanent」：Canonical 类型 A/C 表示该条目承担规则事实源职责，
-# 一旦带 TTL，到期后规则会**凭空消失**并静默降级到文件内摘要 —— 属于不可接受的失效模式。
-# 数据条目（仪表盘 / 回滚锚点）不参与此约束。
-#
-# 输出：每行一个违规项，前缀 `MISSING\t` 或 `NOT_PERMANENT\t`。
-# 退出码：0 = 全部通过；4 = 有违规；3 = 输入问题。
+# 行格式：<key>[\t<canonical>]；canonical≠数据 时 tags 必须含 permanent（防 TTL 到期静默丢规则）。
+# 输出：MISSING\t / NOT_PERMANENT\t；退出码 0=通过 / 4=违规 / 3=输入问题。
 
 CANONICAL_DATA = "数据"
 
@@ -1285,17 +1181,10 @@ def cmd_check_keys(args, db):
 
 
 # ============================================================================
-# runtime: preflight —— 加载计划（一次调用替代 N 次导航读取）
+# runtime: preflight —— 加载计划（替代 N 次导航读取）
 # ============================================================================
-#
-# 设计要点（渐进式披露 + 动态渲染）：
-#   1. 章节索引在**运行时扫描生成**，不写死行号 —— 行号漂移不会造成死指针
-#   2. 输出有界：章节数、key 数均有上限，超出显式标注（不静默截断）
-#   3. **只回 key 名与计数，不回 value** —— 遵守 engine/state-machine.md
-#      「Memory ≠ Context」硬约束（记忆按需检索命中才进入上下文）
-#
-# 加载清单事实源 = SKILL.md「加载时机索引」+「分级加载」表；
-# backup/load_plan.json 是等价机器副本（冲突以 SKILL.md 为准）。
+# 章节索引运行时扫描（不写死行号）；输出有界且显式标注；只回 key 不回 value。
+# 清单事实源 = SKILL.md 两表，load_plan.json 为等价机器副本（冲突以 SKILL.md 为准）。
 
 LOAD_PLAN_NAME = "load_plan.json"
 FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n", re.S)
@@ -1829,17 +1718,10 @@ def cmd_preflight(args, db):
 
 
 # ============================================================================
-# runtime: artifact —— 结果外置（大产出落盘，上下文只留 Ref + 投影视图）
+# runtime: artifact —— 结果外置（大产出落盘，上下文只留 ref + 投影）
 # ============================================================================
-#
-# 对齐 put / page / release 的结果契约：
-#   - 大产出（全量测试日志 / 逐项 Review 结果 / 状态矩阵）写盘，不进上下文
-#   - 回流只带 Ref + 投影视图（--fields / --grep / --equals / --limit / --max-bytes）
-#   - --count 等价 outputMode:count（先摸规模再决定是否取内容）
-#   - 24h TTL，put 时顺带回收过期产物
-#
-# 落盘位置：$VIBE_LOOP_ARTIFACTS_DIR，缺省 ~/.vibe-loop/artifacts/<workspace-hash>/
-#   （namespace 口径与 delx-memory 一致：git 仓库根路径哈希，无仓库则用 cwd）
+# page 支持投影/过滤/上限；24h TTL，put 时回收过期。
+# 目录：$VIBE_LOOP_ARTIFACTS_DIR，缺省 ~/.vibe-loop/artifacts/<workspace-hash>/
 
 ARTIFACT_TTL_SECONDS = 24 * 3600
 ARTIFACT_DEFAULT_MAX_BYTES = 4096
@@ -2070,8 +1952,10 @@ def cmd_artifact_page(args, db):
     if args.grep:
         try:
             rx = re.compile(args.grep)
-        except re.error:
-            rx = re.compile(re.escape(args.grep))
+        except re.error as e:
+            print(f"[INVALID_ARGUMENT] --grep 不是合法正则: {e}")
+            print("[next] 修正正则后重试；确需字面量匹配时先自行转义。")
+            return 3
         rows = [r for r in rows if rx.search(r)]
 
     total = len(rows)
@@ -2100,7 +1984,11 @@ def cmd_artifact_page(args, db):
     if max_bytes > ARTIFACT_MAX_BYTES_CAP:
         print(f"[OUTPUT_LIMIT] --max-bytes {max_bytes} 超过单页字节上限 {ARTIFACT_MAX_BYTES_CAP}，按上限执行（显式 clamp，不静默）")
         max_bytes = ARTIFACT_MAX_BYTES_CAP
-    offset = max(0, args.offset or 0)
+    if args.offset is not None and args.offset < 0:
+        print(f"[INVALID_ARGUMENT] --offset 不能为负（收到 {args.offset}）")
+        print("[next] 修正 --offset 后重试（首页用 0 或省略）。")
+        return 3
+    offset = args.offset or 0
 
     page, used, truncated = [], 0, False
     for row in rows[offset : offset + limit]:

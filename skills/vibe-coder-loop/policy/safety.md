@@ -95,6 +95,8 @@ status: active
 | 9 | 归档注释格式（使用归档时须 `@Iteration`） | **Hard** | 同左 |
 | 10 | 关键判断未标注 Confidence + Evidence | **条件 Hard** | 仅下方 3 类场景未标注 = 违例 |
 
+> **Hard 违规只有两条出口（按可修复性分流，不得同时套用）**：**可修复**（本轮能改回合规）→ S10 情况 B（回 `S6 Design[0]` 重设计）；**已造成不可逆后果或本轮无法修复** → S8/S10 出口上报 `vc_violation`（`core transition --vc-violation <事实>` / `feed-exec` 的 `ExecResult.vc_violation`）→ SAFE MODE（S14）。分流判定在 S10 出口做一次，不重复计量。
+
 ### Signal（#1 / #2 / #3）的正确处理
 
 Signal = **Review Signal**，不是 Violation：

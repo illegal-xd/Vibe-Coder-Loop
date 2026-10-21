@@ -122,7 +122,7 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 
 按 Loop Depth 控制 rules/ 层加载量，避免 Quick Loop 读取全量流程文件：
 
-> **前馈 / 反馈对偶**：本节为**前馈侧**（控制「什么进入上下文」＝加载哪些文件，由 Loop Depth 决定）；**反馈侧**（「什么离开 / 被压缩」）**完全属 Runtime**——压缩阈值、时机、机制由宿主决定，Skill 不设阈值、不请求压缩（边界声明见 `engine/state-machine.md`「上下文压缩（Runtime 负责）」）。两侧职责不重叠：Skill 管加载量，Runtime 管预算与压缩。**确定性执行（消费回写 / 指标聚合）由 `backup/memory_tool.py` 承担**，不进 rules/ 加载量。
+> **前馈 / 反馈边界**：本节只决定「加载哪些文件」（前馈，Skill 职责）；压缩阈值与时机属 Runtime（见上节边界声明）。确定性执行（回写 / 指标）由 `backup/memory_tool.py` 承担，不计入 rules/ 加载量。
 
 | 模式 | rules/ 必读 | policy/ 必读 | learning/ 必读 |
 |---|---|---|---|

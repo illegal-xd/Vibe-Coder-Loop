@@ -142,7 +142,7 @@ S14 Safe Mode
 > **触发核对（出现任一即采集）**：① 压缩后无法确定 Phase / Loop N / 下一步；② context overflow 或 TASK 字段缺失（如 S10 情况 B 引用不到 S6 模块划分）；③ 用户反馈进度信息丢失。
 > **采集动作**：当场填 `references/e4-matrix.md`「D-3 现场采集卡」→ 列入「📋 待用户决策清单」，**不暂停循环**（除非同时命中 `kernel.md` §1，此时以暂停优先）→ 据实补 E4 证据，被证伪则改本条契约并同步 CHANGELOG。详见 `lesson:compaction-e4-unverified-reminder`。
 
-**执行者边界（架构事实）**：**Context 管理属 Agent Runtime 职责**——Context Window、工具输出限制、Conversation History 压缩、摘要重建、压缩阈值与判定，均由宿主（Pi / OpenCode 等）自主承担，且**不同 Runtime 机制不同**（具体校准因宿主与环境而异）。**本 Skill 不实现 Conversation History Compression、不维护压缩阈值、不计算 token 预算，也不假设 Runtime 提供任何特定压缩命令**。Agent 侧承担三件事：**压缩后继续 Workflow** + **遵循信息获取规范** + **E4 未验证期的提醒义务**（见上）。
+**执行者边界（架构事实）**：Context 管理（窗口 / 工具输出上限 / 压缩 / 摘要重建 / 阈值）属 Runtime，不同宿主机制不同；本 Skill 不实现压缩、不设阈值、不算 token 预算、不假设压缩命令。Agent 只承担「压缩后继续 + 信息获取规范 + E4 提醒」。
 
 ### 压缩后状态延续契约（Context Zone）
 
@@ -174,9 +174,9 @@ S14 Safe Mode
 
 **压缩后继续执行**：Runtime 完成压缩后，Agent **不重放、不重建历史**，直接从摘要卡恢复 📌 TASK 区 + 🔥 ACTIVE 区继续执行（当前目标 / Level / Phase / Loop / 已完成 / 未完成 / 下一步）；若摘要卡不足以恢复 TASK 区，按「防跳过规则」回退到**能重建该引用对象的最早阶段**，并遵守三条底线：**① 已完成/已确认的成果不重做**（含已确认的 S5 需求复述、S6 模块划分与 Step 完成标记 —— 仅**重建缺失的引用对象**；**「重建」= 补写该引用对象本身，不重走该阶段的确认/评审流程**）**② 不因恢复动作改动已确认的 Loop 计数** **③ 压缩场景下「防跳过规则」的「回退重新执行」收窄为「重建引用对象」**，不整段重做该阶段产出（防级联重做与震荡）。
 
-**与「骨架化治理」的关系**（`references/governance.md`）：骨架化治理管**磁盘层常驻**（宪法层永不沉 → STATIC 区供给源），本节管**窗口层延续性**（单会话运行时）；两者同哲学（确定性保留 vs 按需取回）、不同轴，不可互相替代。
+**与「骨架化治理」的关系**：前者管磁盘常驻（STATIC 区供给源），后者管窗口层延续性；两者不同轴、不可互替（见 `references/governance.md`）。
 
-**与 Memory 的边界（硬约束）**：**Memory ≠ Context**——**Context 不进 Memory**（会话过程细节/工具输出/中间推理不得写入 delx-memory，除非经「经验质量审计」判定具长期价值）；**Memory 不进 Context**（记忆条目按需检索命中才进入，不得无条件注入）。详见 `learning/memory/retrieval.md`「Memory ≠ Context 边界（硬约束）」。
+**与 Memory 的边界（硬约束）**：Memory ≠ Context 双向隔离——Context 不进 Memory，Memory 不进 Context；完整定义见 `learning/memory/retrieval.md`「Memory ≠ Context 边界（硬约束）」。
 
 ### 信息获取规范（Agent 行为，非压缩）
 

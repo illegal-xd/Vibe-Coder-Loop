@@ -12,9 +12,9 @@
 | `verify-symlinks.sh`（仓库内） | 已验证 | 静态审查 | Git Bash/WSL 静态审查；原生 PowerShell 不适用 |
 | `verify-symlinks.sh --host` | 已验证（本机软链） | 静态审查（`$HOME` 约定） | 静态审查；需 Git Bash/WSL，且链接创建成功 |
 | `scripts/audit.sh` | 已验证（v1.0.0，scan/check/report/verify/rules） | 静态审查 | 静态审查（Git Bash/WSL）；不含原生 CMD 实现 |
-| `scripts/tests/test-audit.sh` | 已验证（43 PASS / 0 FAIL） | 静态审查 | 静态审查（Git Bash/WSL） |
+| `scripts/tests/test-audit.sh` | 已验证（当前基线 51/51，以输出为准） | 静态审查 | 静态审查（Git Bash/WSL） |
 | `smoke-check-core.sh` | 已验证（Bash + Python 3） | 静态审查 | Git Bash/WSL + Python 3 静态审查；`/tmp` 已改为 `TMPDIR`/`mktemp` |
-| `memory_tool.py` | 已验证（Python 3.13.3，51 tests） | 静态审查（标准库跨平台） | 静态审查（`Path.home()`、`USERPROFILE`、SQLite、`os.replace`） |
+| `memory_tool.py` | 已验证（Python 3.13.3，当前基线 57/57，以输出为准） | 静态审查（标准库跨平台） | 静态审查（`Path.home()`、`USERPROFILE`、SQLite、`os.replace`） |
 | OpenCode Agent Prompt | 已验证（本机 OpenCode） | 取决于 OpenCode 自身支持 | 取决于 OpenCode 自身支持；frontmatter 为 OpenCode 约定 |
 | Pi Runtime | 未验证（本机未安装） | 未验证 | 未验证 |
 | Git 历史/发布 | 已验证（只读检查） | 不适用 | 不适用 |

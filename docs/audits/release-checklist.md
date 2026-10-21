@@ -55,8 +55,7 @@ bash scripts/audit.sh check --fail-on=high
 ```
 
 - [ ] 以上命令全部 rc=0（smoke-check 若因未安装宿主依赖失败，记录原因并确认不是脚本回归）。
-- [ ] `test-audit.sh`：43 PASS / 0 FAIL。
-- [ ] `test_memory_tool.py`：51 tests OK。
+- [ ] 计数以命令实际输出为准（**不在清单里写死数字**，避免测试增加后过期）：`test-audit.sh` 末行 `FAIL=0`；`test_memory_tool.py` 末行 `OK`。
 - [ ] `verify-symlinks.sh`：仓库无断链；`--host` 无断链（未安装宿主时仅 info/warn）。
 - [ ] `scan/check --fail-on=high`：无 critical/high；H002 info 已人工确认。
 - [ ] 如修改了审计规则/检查项，已同步 `docs/audits/audit-tool.md` 与自测。
