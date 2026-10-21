@@ -25,6 +25,26 @@
 
 **验证**：见文末「第二轮评审修复回执」与 `skill-evaluation/evaluation-report-2026-10-20-r2.md` §修复回执。
 
+## v1.22.1 — 第三轮评审修复（R3-D1–D10，同版本第五批）
+
+> **同版本第五批**（未提交 git，版本不迭代）。**触发**：`skill-evaluation/evaluation-report-2026-10-21-r3.md` 第三轮独立复评（新增变异测试通道）发现的 R3-D1–R3-D10。核心：**门禁绿 ≠ 阶段载荷正确**——加载计划只校验"章节被映射到某处"，不校验"该阶段仍覆盖必需章节"；本轮同时补装配与防线。
+
+| # | 缺陷 | 修复 | 落点 |
+|---|---|---|---|
+| 1 | R3-D1 S8/S10 默认载荷缺 safety §1（不可逆清单） | `stage_sections` 的 S8 与 S10 各前置「1. 不可逆操作清单」；S8 载荷 75→89 行、S10 68→82 行 | `load_plan.json` |
+| 2 | R3-D2 门禁无「阶段×文件×章节」覆盖率断言（5 个变异全绿） | 自测新增 `test_real_plan_stage_payload_and_profile_coverage`：`always_whole`、S8/S10 的 safety/confidence 必需章节、per-level 分级加载下限、profile Required 覆盖、kernel §5 硬约束行 | `backup/test_memory_tool.py` |
+| 3 | R3-D3 profile 未覆盖 S12/S13 强制文件 | review/debugging/refactoring/skill-maintenance/coding 补齐 `memory/lifecycle`、`skill-metrics`、`promotion`、`retrieval`；planning 补 `retrieval` | `profiles/*.md` |
+| 4 | R3-D4 Case B 输出 `[Loop: 0]` 与 checkpoint `N+1` 分叉 | 输出标签统一为 `[Loop: N+1]`；`Design[0]` 降为文档记号；`kernel.md` §7、`state-machine.md`、`rules/review.md`、`references/example.md` 同步 | 四文件 |
+| 5 | R3-D5「继续循环重置」有条款无实现 | 计数器「重置」行改为**仅两条边**归 0（`S13→S1`、`S10→S7`）；明确无"继续即重置"路径 | `engine/state-machine.md` |
+| 6 | R3-D6 SAFE MODE 阈值不可配置 + 强制触发集缺文档行 | `kernel.md` §5 增「硬约束违规 1 次」行；声明运行期事实源 = `safemode.py`、无项目级配置链；`manifest` 标注观测/强制口径 | `kernel.md`、`manifest.yaml` |
+| 7 | R3-D7 300 行阈值语义互斥（Signal vs 归档触发器） | 从 Deprecated→Archived 触发条件移除行数项；显式声明行数为 Signal、不自动触发归档 | `policy/lifecycle.md`、`kernel.md` |
+| 8 | R3-D8 Prompt 暂停条件缺「引用对象不可重建」 | 补该条（含维持原 Loop N）；声明细则以 Skill `kernel.md` §1 为准 | `kernel/Vibe Coder.md` |
+| 9 | R3-D9 `metrics` 输出 `skeleton=Nonee/NoneB` | 模板去掉多余 `e` | `backup/memory_tool.py` |
+| 10 | R3-D10a smoke 注释仍称校验 freshness | 注释改为「含 updated_at 字段存在性；freshness 由 load-checkpoint 判定」 | `skill-authoring/scripts/smoke-check-core.sh` |
+| 11 | R3-D10b 两个骨架文件标题仍写「摘要（降级用）」 | 标题改为「摘要（仅定位，不作规则推断）」 | `references/output-format.md`、`references/debug-mode.md` |
+
+**验证**：`memory_tool` 57/57、runtime 271/271、审计 51/51、软链 15/15、协议 82/82、shell 6+7、smoke rc0（规则行数见回执）；6 个变异体（删 L1 `rules/test.md`、删 L0 `skill-metrics`、删 safety S8 §3、删 confidence S8、删 `always_whole`、删 profile Required）**均被新用例判红**。详见 `skill-evaluation/evaluation-report-2026-10-21-r3.md` §13 修复回执。
+
 ## v1.22.1 — 设计收敛补丁（`.state.md` 迁出 + 机器可读契约）
 
 > **同版本第二批**（未提交 git，版本不迭代）。**触发**：对 `docs/design/` 三份 MVP 设计做 P0 级评审，发现 6 项会导致实现跑偏的硬缺陷；其中两项**必须改协议文件**才能闭环，故本批次落 Skill 侧最小增补。核心判别：**运行时状态不属于 Skill 安装目录**，**副本必须被机械校验**。

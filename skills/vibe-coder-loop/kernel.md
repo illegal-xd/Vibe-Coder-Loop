@@ -52,7 +52,7 @@ status: active
 | 生命周期转换 | Agent 权限 | 触发条件 | 操作方式 |
 |---|---|---|---|
 | Active → Deprecated | ✅ 可自主 | 功能被新组件替代、需求变更废弃 | 归档注释 `@Iteration` + 计入文件行数 |
-| Deprecated → Archived | ✅ 可自主 | Deprecated 累计 ≥ 30 天，或文件累计归档致超 300 行，或同一文件归档片段 ≥ 3 处（三条件任一命中，完整定义见 `policy/lifecycle.md`） | 移至 `archive/` 子目录，源位置留指针注释 |
+| Deprecated → Archived | ✅ 可自主 | Deprecated 累计 ≥ 30 天，或同一文件归档片段 ≥ 3 处（两条件任一命中，完整定义见 `policy/lifecycle.md`；**文件行数是 Signal，不是归档触发器**） | 移至 `archive/` 子目录，源位置留指针注释 |
 | Archived → Removed | ❌ **Agent 不执行物理删除** | 用户明确指令"删除 xxx""移除 xxx" | 输出 Conflict Card + 「🗑 待删除清单」（含可执行命令）→ **物理删除由用户执行** |
 
 **删除权限的对象划分（唯一口径）**：删除规则按**对象**分两类，不再按"用户是否明确指令"一刀切：
@@ -154,7 +154,7 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 
 ## 5. SAFE MODE（异常保护机制）
 
-当检测到以下任一条件时，自动进入 SAFE MODE（阈值见 `manifest.yaml` `tunable_parameters.safe_mode_triggers`；项目可按风险偏好调宽/调严，缺省值如下）：
+当检测到以下任一条件时，自动进入 SAFE MODE（阈值 = `runtime/core/safemode.py` 的强制常量；`manifest.yaml` `tunable_parameters.safe_mode_triggers` 为其**描述性镜像**，`check-protocol` 校验键集与下界。当前**不提供项目级配置链**：调宽/调严须同时改代码常量与本表）：
 
 | 触发条件 | 检测方式 | 缺省阈值 |
 |---|---|---|
@@ -162,8 +162,11 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 | 删除风险持续增加 | 连续 Review 发现删除操作 | 连续 2 轮 |
 | Workflow 循环震荡 | 同一文件在 Code[N] 和 Code[N+1] 间反复修改 | — |
 | **无进展（No Progress）** | 连续 2 次 Code→Review 满足任一：① 同一 issue 未被解决；② 修改后 issue 数未下降；③ Test 结果无改善（无新增通过项） | 连续 2 次 |
+| **硬约束违规** | S8/S10 出口上报 `vc_violation`（`policy/safety.md` §3 Hard 项） | 1 次（不等待重复） |
 | Memory 产生污染风险 | 记忆更新与 CodeGraph 事实冲突 | ≥3 处 |
 | Skill 规则冲突无法收敛 | 两条规则互相矛盾且无法通过 Rule Priority 仲裁 | — |
+
+> **镜像口径**：`hard_violation_repeats: 3` 是「重复告警」的观测下界，与上方「硬约束违规 1 次即强制」是两个不同机制（前者观测、后者切态），不可互相替代。
 
 > **无进展判定口径**（保持可数、可判，不做评分）：只比较**相邻两次 Code→Review 的输出**，三个条件取"或"。误判代价可控——SAFE MODE 是暂停等确认，不是终止（用户"继续"即恢复）。异常归类见 `engine/state-machine.md`「异常路径收敛表」。
 
@@ -197,6 +200,6 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 
 - **最多执行 3 轮 Code+Review 循环**（Loop 1/2/3；Intent/Preflight/Decision/Clarify/Design/Plan 阶段不递增计数器）
 - **Quick Loop（Level 0/1）上限 1 轮**：S8 出口内联检查不通过 → 同一轮内回退修复 1 次（不递增 Loop）；Level 1 的 S9 Test 失败 → **不回退 Code**，直接输出 `⚠️ Quick Loop 未通过，建议升级 Standard Loop`（见 `rules/test.md`；运行时 `loop_max=1` 会拒绝 `S9→S8`）。仍不通过 → 停止并建议升级 Standard Loop
-- **情况 B 回退不重置计数器**：Review[N] → Design（重入序号 0，checkpoint `loop=N+1`）→ Code[N+1]
+- **情况 B 回退不重置计数器**：Review[N] → Design（`Design[0]` 中的 0 是设计重入序号，仅作文档记号；checkpoint `loop=N+1`，**输出标签用 `[Loop: N+1]`**）→ Code[N+1]
 - **计数器上限拦截**：若 Review[3] 触发情况 B（N+1=4>3），不进入 Design，直接停止
 - **防跳过回退不消耗计数**：因无法引用上一阶段而回退，属同一轮内修正，Code 仍标原 N

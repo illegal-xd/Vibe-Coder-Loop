@@ -96,7 +96,7 @@ PAUSE, RESUME = "PAUSE", "RESUME"
 | 阶段 Label 文本 | 同上 | 同上 | 同上 |
 | Loop 计数规则 | `kernel.md` §7 + `transition.md` 各节「计数器」栏 | 断言 `INCREMENT_EDGES`（§3.3）与两条事实源一致 | 同上 |
 | 复杂度分级 / Loop Depth 激活矩阵 | `engine/complexity-gate.md` | 与 `manifest.yaml` `complexity.levels` 比对 Level 集合 + 各 Level 激活阶段 | 同上 |
-| Safe Mode 触发条件**键集合** | `kernel.md` §5 + `manifest.yaml` `tunable_parameters.safe_mode_triggers` | 键集合一致（**值**允许项目覆盖，**键**不允许单边新增） | 同上 |
+| Safe Mode 触发条件**键集合** | `kernel.md` §5 + `manifest.yaml` `tunable_parameters.safe_mode_triggers` | 键集合一致；**值**在 `runtime/core/safemode.py` 固定（manifest 为描述性镜像，校验键集 + 下界，**不提供项目级覆盖链**） | 同上 |
 
 **机器可读块的约定（对 Skill 文件的最小侵入）**：`transition.md` 保留人读正文，另加一个受注释包裹的机器块：
 
@@ -232,7 +232,7 @@ SAFE_MODE_OBSERVED = {
 
 进入记录：转 S14 时写 `_resume_from = <原 phase>` 与 `_rev`，`exit_checklist` 出 S14 必须含**用户原话证据**（或 `user_decisions` 条目 id）；无证据不离开 S14。**进入不需确认，退出必需确认**。
 
-> **`manifest.yaml` 自述**：`tunable_parameters` 是「项目无关缺省参考值，非契约；项目应自行覆盖」。Core 读取这些值作缺省，**允许项目覆盖**（与 memory_tool.py `config.json` 的覆盖链一致）；覆盖只允许收紧。
+> **`manifest.yaml` 自述**：`tunable_parameters` 中 `code_style` / `retrieval_caps` 等为「项目无关缺省参考值，非契约；项目可自行覆盖」。**例外 = `safe_mode_triggers`**：运行期强制阈值在 `runtime/core/safemode.py` 固定，manifest 只是描述性镜像（`check-protocol` 校验键集与下界），当前**没有**读取链——调宽/调严须同时改代码常量与 kernel §5。
 
 ---
 

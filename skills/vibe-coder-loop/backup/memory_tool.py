@@ -1173,7 +1173,7 @@ def cmd_metrics(args, db):
         print(f"[metrics] 警告：{w}")
     print(
         "  conflict={c} | retrieval={s}(budget {h} / memory {mh}) | auto_pending={ap}"
-        " | rollback={rb} | skeleton={sk}e/{sb}B".format(
+        " | rollback={rb} | skeleton={sk}/{sb}B".format(
             c=val.get("conflict", {}).get("total"),
             s=r.get("searches"),
             h=r.get("hit_rate"),

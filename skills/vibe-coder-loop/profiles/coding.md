@@ -31,7 +31,7 @@ Required:
 - policy/safety.md + policy/confidence.md + policy/lifecycle.md（资产归档）
 - rules/intent.md（S1 目标三元组）→ rules/code.md（S8）→ rules/test.md（S9，L1+）→ rules/review.md（S10，L1+）
 - learning/memory/lifecycle.md（S2 计数协议 + 出口 Quick 闭环）+ learning/memory/retrieval.md（S2 最小召回）
-- learning/skill-metrics.md（S13 仪表盘）
+- learning/memory/promotion.md（L2+ 的 S12 收尾）+ learning/skill-metrics.md（S13 仪表盘）
 
 Optional:
 - rules/plan.md（S7，L2+）+ rules/design.md（S6，L2+）

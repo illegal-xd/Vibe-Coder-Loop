@@ -60,7 +60,7 @@ Test 在前 Review 在后。**Test 失败不进 Review**，直接回退 Code[N+1
 
 **关键流向**：
 - 情况 A → 同一回复输出 `[Phase: Code] [Loop: N+1]` 修复代码
-- 情况 B → 同一回复输出 `[Phase: Design] [Loop: 0]`（回退不重置计数器；Review[3] 回退 → N+1=4 超上限直接停止）
+- 情况 B → 同一回复输出 `[Phase: Design] [Loop: N+1]`（`Design[0]` 的 0 仅为重入序号记号，不作标签；回退不重置计数器；Review[3] 回退 → N+1=4 超上限直接停止）
 - 情况 C → Reflection 触发判定 → Memory Evolution
 
 ## 情况 C 后置：Reflection 触发判定

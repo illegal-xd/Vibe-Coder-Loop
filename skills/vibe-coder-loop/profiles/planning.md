@@ -27,6 +27,7 @@ Required:
 - kernel.md + policy/safety.md + policy/priority.md（冲突仲裁优先级）
 - engine/state-machine.md（S1–S7 出口）+ engine/transition.md + engine/complexity-gate.md + engine/router.md（S4 分级 + Level 3/4 高风险升级判定）
 - rules/intent.md（S1）+ rules/design.md（S6）+ rules/plan.md（S7 五要素 Step + 编排决策）
+- learning/memory/retrieval.md（S2 最小召回）
 - engine/skill-routing.md（**仅存在能力缺口的 Step** 才绑定能力载体）
 
 Optional:

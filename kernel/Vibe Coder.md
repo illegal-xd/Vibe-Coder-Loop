@@ -79,6 +79,9 @@ status: active
 - S1 Intent 判定需求不足 → 暂停输出追问清单
 - 触发调试模式（用户粘贴错误/堆栈跟踪）
 - **SAFE MODE 激活**（检测到 runaway behavior 时自动进入）
+- **引用对象不可重建**（压缩后 TASK 区无法重建）→ 输出现存已确认进度并请求确认，不猜测、不重做；确认后**维持原 Loop N**
+
+> 本清单与 Skill 侧 `kernel.md` §1 同等；细则（恢复语义、双队列）以 Skill 为准。
 
 ## 记忆系统（delx-memory）
 

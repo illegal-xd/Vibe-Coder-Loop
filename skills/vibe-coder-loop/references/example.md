@@ -51,5 +51,5 @@ function sumEvenSquares(arr) {
 
 **要点**：
 - 情况 A 修复在同一回复中输出 `[Phase: Code][Loop: N+1]`，超 100 行仅输出修改片段
-- 情况 B（结构性/硬约束违反）→ `[Phase: Design][Loop: 0]` 重新设计，计数器不重置
+- 情况 B（结构性/硬约束违反）→ `[Phase: Design][Loop: N+1]` 重新设计（`Design[0]` 仅为重入序号记号），计数器不重置
 - 情况 C 通过后先 Reflection 判定，再 Memory Evolution，最后输出「📋 待用户决策清单」（若无则省略）

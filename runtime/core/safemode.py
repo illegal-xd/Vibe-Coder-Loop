@@ -28,8 +28,10 @@ SAFE_MODE_OBSERVED: dict[str, int | float] = {
     "loops_vs_avg_ratio": 1.5,
 }
 
-# 强制触发键 ↔ manifest `tunable_parameters.safe_mode_triggers` 键的对照
-# （值允许项目覆盖；键不允许单边新增——由 check-protocol 断言）
+# 强制触发键 ↔ manifest `tunable_parameters.safe_mode_triggers` 键的**命名对照**
+# （不是读取链：强制阈值以本文件常量为准；manifest 为描述性镜像，check-protocol 只校验
+#  键集与下界。hard_violation_repeats 是「重复告警」观测下界，与 1 次即切的
+#  hard_constraint_violation 是两个机制。见 kernel.md §5「镜像口径」。）
 SAFE_MODE_SOURCES: dict[str, str] = {
     "consecutive_same_failures": "consecutive_loops",
     "loop_budget_exhausted": "loop_max",

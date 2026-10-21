@@ -20,7 +20,7 @@
 #   LOAD_PLAN_FILE       可选。加载计划 JSON（相对 SKILL_DIR），校验路径存在性
 #   LOAD_PLAN_MENTION    可选。必须提及加载计划内全部路径的文件（如 SKILL.md）
 #   CHECKPOINT_FILE       可选。Workflow Checkpoint 文件（相对 SKILL_DIR，或绝对路径），
-#                         校验 YAML 单文档可解析 + 13 字段齐全（含 updated_at freshness；pyyaml 缺失则显式跳过）。
+#                         校验 YAML 单文档可解析 + 13 字段齐全（含 updated_at 字段存在性；freshness 值由 runtime.core load-checkpoint 判定；pyyaml 缺失则显式跳过）。
 #                         指定的文件不存在 → 打印跳过原因（不计为通过）；空值 = 本 Skill 无 Checkpoint
 #   BUDGET_FILE_LINES    可选。单文件行数预算（0 = 关闭；超出 → BUDGET_EXCEEDED）
 #   BUDGET_TOTAL_LINES   可选。规则文件总行数预算（0 = 关闭）

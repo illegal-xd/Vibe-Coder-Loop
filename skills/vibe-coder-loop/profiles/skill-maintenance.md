@@ -29,6 +29,9 @@ Required:
 - engine/transition.md（S13 出口残留验证）+ engine/complexity-gate.md + engine/router.md（S4 分级：本类任务常走 Level 0-Doc）
 - CHANGELOG.md（迭代历史 + 版本规则：正文禁止日期/版本残留）
 - manifest.yaml（版本号唯一事实源；本次变更统一合并当前版本号，未提交 git 不迭代）
+- learning/memory/retrieval.md（S2 强制召回：`rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue`）
+- learning/memory/lifecycle.md（S13 回写契约）+ learning/skill-metrics.md（S13 仪表盘）
+- learning/memory/promotion.md（Standard 路径的 S12 收尾）
 
 Optional:
 - `skill-authoring` skill（维护协议源：骨架化/canonical-source/下沉/fallback/残留验证纪律 + 自检脚本模板）

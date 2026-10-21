@@ -93,12 +93,12 @@ tunable_parameters:
     searches_per_loop: 5
     codegraph_lines: 200
     read_lines_per_file: 300
-  safe_mode_triggers:         # 见 kernel.md §5（项目可按风险偏好调宽/调严）
-    files_touched: 10
-    consecutive_loops: 2
-    hard_violation_repeats: 3
-    failure_type_share: 0.15
-    loops_vs_avg_ratio: 1.5
+  safe_mode_triggers:         # 描述性镜像（键集 + 下界由 check-protocol 校验）；运行期强制事实源 = runtime/core/safemode.py，当前无项目级配置链
+    files_touched: 10         # 观测
+    consecutive_loops: 2      # 强制：连续相同失败 → NO_PROGRESS
+    hard_violation_repeats: 3 # 观测：重复告警下界（强制触发是「硬约束违规 1 次」，见 kernel.md §5）
+    failure_type_share: 0.15  # 观测
+    loops_vs_avg_ratio: 1.5   # 观测
   memory_ttl_seconds:         # 见本文件 memory.ttl；仅集中镜像供查阅，事实源仍为 memory.ttl
     lesson: 7776000
     reflection: 15552000

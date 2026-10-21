@@ -886,6 +886,89 @@ class PreflightAndArtifactCase(unittest.TestCase):
         s10 = next(l for l in gate.splitlines() if l.startswith("| S10 Review |"))
         self.assertIn("内联文档子集", s10.split("|")[2], "矩阵 S10 的 L0 列未声明内联文档子集")
 
+    def test_real_plan_stage_payload_and_profile_coverage(self):
+        """阶段载荷 + per-level 文件清单 + profile 装配的覆盖断言（第三轮 R3-D1/D2/D3）。
+
+        变异测试证明：删 S8 的 safety §1、删某 Level 的必需文件、删 always_whole、
+        删 profile 的一行 Required —— 原有用例与 smoke-check **全绿**（无防线）。本用例补防。
+        """
+        root = TOOL_SRC.resolve().parent.parent
+        plan = json.loads((root / "load_plan.json").read_text(encoding="utf-8"))
+
+        # ① R0 宪法层永不裁剪
+        self.assertEqual(
+            ["kernel.md"], plan.get("always_whole"),
+            "always_whole 必须只含 kernel.md（R0 不按节裁剪）",
+        )
+        self.assertIn("kernel.md", plan.get("core", []), "core 缺 kernel.md")
+
+        # ② 阶段载荷：R1 不可逆清单必须在代码/审查阶段（R3-D1）
+        safety = plan["stage_sections"]["policy/safety.md"]
+        for stage in ("S8", "S10"):
+            self.assertIn(
+                "1. 不可逆操作清单", safety[stage],
+                f"{stage} 必须载入 safety §1（不可逆操作清单）",
+            )
+        for section in ("3. 约束分级", "4. 归档注释格式", "5. 子 agent 首步加载包"):
+            self.assertIn(section, safety["S8"], f"S8 缺 safety「{section}」")
+        for section in ("3. 约束分级", "5. 子 agent 首步加载包", "6. 子 agent 安全责任"):
+            self.assertIn(section, safety["S10"], f"S10 缺 safety「{section}」")
+        confidence = plan["stage_sections"]["policy/confidence.md"]
+        for stage in ("S8", "S10"):
+            for section in ("Confidence 三档", "Evidence 五级"):
+                self.assertIn(
+                    section, confidence[stage],
+                    f"{stage} 缺 confidence「{section}」",
+                )
+
+        # ③ per-level 文件清单：SKILL.md「分级加载」下限（R3-D2）
+        common = (
+            "policy/safety.md", "policy/confidence.md",
+            "learning/memory/lifecycle.md", "learning/memory/retrieval.md",
+            "learning/skill-metrics.md",
+        )
+
+        def required_for(level_key):
+            n = 0 if level_key.startswith("0") else int(level_key)
+            req = list(common)
+            if n >= 1:
+                req += ["rules/test.md", "rules/review.md"]
+            if n >= 2:
+                req += ["rules/design.md", "rules/plan.md", "learning/memory/promotion.md"]
+            if n >= 3:
+                req += ["rules/orchestration.md", "learning/evolution.md"]
+            return req
+
+        for level_key, files in plan["levels"].items():
+            if level_key.startswith("_"):
+                continue
+            for need in required_for(level_key):
+                self.assertIn(
+                    need, files,
+                    f"levels[{level_key}] 缺分级加载下限文件 {need}",
+                )
+
+        # ④ profile Required 覆盖 S2/S12/S13 强制文件（R3-D3；planning 不承担 S8–S13）
+        for path in sorted((root / "profiles").glob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("Required:", text, f"{path.name} 无 Required 段")
+            required = text.split("Required:", 1)[1].split("Optional:", 1)[0]
+            self.assertIn(
+                "learning/memory/retrieval.md", required,
+                f"{path.name} 的 Required 缺 retrieval.md（S2 强制召回）",
+            )
+            if path.name != "planning.md":
+                for need in ("learning/memory/lifecycle.md", "learning/skill-metrics.md"):
+                    self.assertIn(
+                        need, required,
+                        f"{path.name} 的 Required 缺 {need}（S13 收尾义务）",
+                    )
+
+        # ⑤ kernel §5 必须登记「硬约束违规」强制触发（R3-D6）
+        kernel_text = (root / "kernel.md").read_text(encoding="utf-8")
+        section5 = kernel_text.split("## 5. SAFE MODE", 1)[1].split("### SAFE MODE 行为", 1)[0]
+        self.assertIn("硬约束违规", section5, "kernel §5 缺「硬约束违规」触发行")
+
     def test_level_validation_rejects_unknown(self):
         """--level 与 --stage 同策略 fail closed（审查 P1：拼错 level 曾静默关闭全部裁剪 exit 0）。"""
         # _note：level_stages 的元键曾被当合法 level（逐字符成阶段集 → 只载 core 3 文件、exit 0）
