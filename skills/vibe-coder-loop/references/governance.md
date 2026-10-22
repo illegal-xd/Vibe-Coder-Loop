@@ -4,11 +4,11 @@
 
 ## 骨架化设计原则
 
-SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），内容型规则/清单/模板下沉为 `skill:` 前缀记忆条目（level:core/domain + permanent）。加载：进入对应阶段按 key `memory_get`；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
+SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），内容型规则/清单/模板下沉为 `skill:` 前缀记忆条目（level:core/domain + permanent）。**例外**：已升格为文件权威的条目（映射表 Canonical=A 的 `references/` 行）——文件本身即完整规则，条目仅为全文镜像，加载与冲突判定均以文件为准。加载：进入对应阶段按 key `memory_get`；条目不可用 → 按 `SKILL.md` 的 fail-closed 规则输出 `[RULE_STORE_MISSING]` 并停止；本文件摘要只用于定位，不得作为规则推断依据。
 
 ## Canonical Source（一个规则只能有一个事实源）
 
-- **Skill Canonical（类型 A）**：宪法层与核心执行契约（kernel.md / policy/safety.md / engine/state-machine.md / SKILL.md / manifest.yaml + transition 出口检查 + review 判定表 + priority.md §3.5）——**文件为事实源**；对应 memory 条目（`skill:policy/priority:conflict-resolution`、`skill:rules/review:hard-constraints`、`skill:rules/intent:decision-arbitration`）仅为摘要/指针/检查模板，不构成第二规则源。
+- **Skill Canonical（类型 A）**：宪法层与核心执行契约（kernel.md / policy/safety.md / engine/state-machine.md / SKILL.md / manifest.yaml + transition 出口检查 + review 判定表 + priority.md §3.5 + 映射表 Canonical=A 的 `references/` 完整规则文件）——**文件为事实源**；对应 memory 条目（`skill:policy/priority:conflict-resolution`、`skill:rules/review:hard-constraints`、`skill:rules/intent:decision-arbitration`）仅为摘要/指针/检查模板，`skill:references/*` 为**全文镜像**（`authority=file` + `mirror_kind=fulltext_mirror`，逐字同步），均不构成第二规则源。
 - **Memory Canonical（类型 B）**：项目规则与经验（`rule:*`、`project:*`、`lesson:*`、`pattern:*` 等）——**条目为事实源**；Skill 文件仅"动作 + 指针 + 必要 fallback"（如 transition S2/S13 对 `rule:skill-iteration-manifest` 的处理）。
 - **Static Reference（类型 C，覆盖映射表中 skill:* 规则条目）**：Skill 文件 = 稳定摘要 + 降级 fallback；`skill:*` 条目 = **完整规则的 Canonical Source**。两者是"摘要/完整版"关系，不是两条独立规则；修改规则时以条目为准并同步文件摘要。
 - **协议核心特例（通用 vs 实例分治）**：拆分后，`learning/memory/` 分片按 canonical 归属分两类：
@@ -16,7 +16,7 @@ SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），�
   - **实例特化 → 仍文件事实源**（防自指 + S2 强制动作兜底）：`learning/memory/lifecycle.md`（出口回写绑定 S2/S8/S12）/ `learning/memory/promotion.md`（S12 收尾）/ `learning/memory/retrieval.md`（Task→Memory Router 任务类型路由）。
   - `learning/memory.md` 为稳定路径索引（外部「节名」引用经索引解析）；同内容条目（`query-router` 等）为可执行副本，以条目内"主源"声明为准。
 
-> 注（类型判定）：**类型 A（摘要/指针，不构成第二规则源）** = `skill:policy/priority:conflict-resolution`（完整规则在 `policy/priority.md` §3.5）+ `skill:rules/review:hard-constraints`（完整清单在 `policy/safety.md` §3，条目仅是检查模板）+ `skill:rules/intent:decision-arbitration`（完整协议在 `policy/safety.md` §2，条目/`rules/intent.md` 均为摘要指针）；**类型 C（条目为完整版）** = 映射表中其余 `skill:` 规则条目。**数据条目**（`skill:vibe-coder-loop:metrics` 仪表盘 / `skill:vibe-coder-loop:rollback-point` 回滚锚点）既非 A 也非 C——它们是数据快照，不参与规则 canonical 判定（规则本体在 `learning/skill-metrics.md`）。
+> 注（类型判定）：**类型 A（摘要/指针，不构成第二规则源）** = `skill:policy/priority:conflict-resolution`（完整规则在 `policy/priority.md` §3.5）+ `skill:rules/review:hard-constraints`（完整清单在 `policy/safety.md` §3，条目仅是检查模板）+ `skill:rules/intent:decision-arbitration`（完整协议在 `policy/safety.md` §2，条目/`rules/intent.md` 均为摘要指针）；`skill:references/output-format` / `skill:references/debug-mode` 亦为 A，但形态是**全文镜像**（文件含完整规则、条目逐字同步，冲突以文件为准）；**类型 C（条目为完整版）** = 映射表中其余 `skill:` 规则条目。**数据条目**（`skill:vibe-coder-loop:metrics` 仪表盘 / `skill:vibe-coder-loop:rollback-point` 回滚锚点）既非 A 也非 C——它们是数据快照，不参与规则 canonical 判定（规则本体在 `learning/skill-metrics.md`）。
 
 ## 映射表
 
@@ -54,8 +54,8 @@ SKILL 文件保留**流程骨架**（触发条件 + 出口 + 安全细节），�
 | `learning/skill-metrics.md` | `skill:learning/metrics:fields` | domain | C |
 | `learning/skill-metrics.md` | `skill:learning/metrics:early-warning` | domain | C |
 | `learning/memory/retrieval.md`（查询参考节：路由表/分工/工具能力） | `skill:learning/memory:query-router`（含主动关联召回协议） | domain+reference | C |
-| `references/output-format.md` | `skill:references/output-format` | domain+reference | C |
-| `references/debug-mode.md` | `skill:references/debug-mode` | domain+reference | C |
+| `references/output-format.md` | `skill:references/output-format` | domain+reference | A |
+| `references/debug-mode.md` | `skill:references/debug-mode` | domain+reference | A |
 
 ## 加载协议
 
