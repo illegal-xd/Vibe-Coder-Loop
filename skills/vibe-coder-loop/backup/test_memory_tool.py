@@ -1216,8 +1216,16 @@ class PreflightAndArtifactCase(unittest.TestCase):
     def test_changelog_batch_order_is_monotonic(self):
         """同版本内「第N批」必须按编号单调（R6-D6：第四批曾在文首、第六批在第五批之上）。"""
         text = (TOOL_SRC.resolve().parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
-        cn = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
-        numbers = [cn[ch] for ch in re.findall(r"^> \*\*同版本第([一二三四五六七八九十])批\*\*", text, flags=re.M)]
+        cn = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+        def cn_num(s):
+            """中文数字 → 整数（支持 1–99）。此前只认单个汉字，第十一批起被静默跳过。"""
+            if "十" not in s:
+                return cn[s]
+            head, _, tail = s.partition("十")
+            return (cn[head] if head else 1) * 10 + (cn[tail] if tail else 0)
+
+        numbers = [cn_num(s) for s in re.findall(r"^> \*\*同版本第([一二三四五六七八九十]+)批\*\*", text, flags=re.M)]
         self.assertEqual(len(numbers), len(set(numbers)), f"批次号重复：{numbers}")
         self.assertEqual(numbers, sorted(numbers, reverse=True),
                          f"CHANGELOG 批次顺序应为新→旧单调递减，实际 {numbers}")
