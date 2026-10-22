@@ -11,18 +11,18 @@
 | **E3** | 静态推演 | 读规则文件后推导"应该会怎样" | ❌ 不可（只能标注"机制层成立"） |
 | **E2** | 文件事实 | 读到协议文件的确切内容 | ❌ 不可 |
 
-> **独立 agent 的 E4 边界**：独立 agent 在**全新上下文**中按协议真实执行 → 对"**机制可运行性**"构成 E4；但"**跨会话恢复**"必须由**前一个被中断的会话**产出的 `.state.md` 支撑——由 A agent 写、B agent 读，两者都用真机 → 该组合构成 E4。
+> **独立 agent 的 E4 边界**：独立 agent 在**全新上下文**中按协议真实执行 → 对"**机制可运行性**"构成 E4；但"**跨会话恢复**"必须由**前一个被中断的会话**产出的 Checkpoint 支撑——由 A agent 写、B agent 读，两者都用真机 → 该组合构成 E4。
 
 ## 测试矩阵
 
 | # | 测试 | 输入 | 通过判据 | 证据等级上限 |
 |---|---|---|---|---|
-| A | Standard Loop 主路径 | 一个真实 Level 2 任务（S1→S13 全阶段） | 每阶段有产出 + `.state.md` 每出口更新 + S13 status=complete + 无跳跃阶段 | E4 |
-| B | Test 失败回退 | 注入一个**必然失败**的测试（改 scratch 副本，不动真实文件） | Test FAIL → Lesson → Code[2]（Loop+1）→ Test PASS → Review 进入；`.state.md` loop=2 | E4 |
+| A | Standard Loop 主路径 | 一个真实 Level 2 任务（S1→S13 全阶段） | 每阶段有产出 + Checkpoint 每出口更新 + S13 status=complete + 无跳跃阶段 | E4 |
+| B | Test 失败回退 | 注入一个**必然失败**的测试（改 scratch 副本，不动真实文件） | Test FAIL → Lesson → Code[2]（Loop+1）→ Test PASS → Review 进入；Checkpoint 条目 loop=2 | E4 |
 | C | Review 情况 B | 投喂一份**故意违反 Hard 项**的实现（空 catch / 硬编码密钥 / 未经指令删除用户既有资产；Hard 清单见 `policy/safety.md` §3） | 判定为情况 B → 回 S6 Design[0] → Code[2]；**计数器不重置**（N→N+1） | E4 |
-| D | Compaction 存活 + 跨会话恢复 | 长上下文（S8/S9 大量工具输出）后触发 Runtime 压缩；+ 另一会话写 `.state.md` 供新会话恢复 | 压缩后仍能说出 Phase / Loop N / Step / 下一步 / 上轮失败原因；恢复方仅凭 `.state.md` 推出入口与下一步 | **D-1 已 E4**（跨会话恢复）/ **D-2 未观测 E3**（会话内压缩，Agent 无法自造）/ **D-3 现场采集卡**（下次真实发生即填，见下） |
-| E | Steering 插话 | 循环中途插入"先别做 X，改成 Y" | 进 steering 队列 → **不暂停** → 当前 turn 后注入 → 继续原循环；`.state.md` 记录该插话 | E4 |
-| F | Follow-up 追单 | 主任务 S13 后追加"顺便更新 README" | turn 间到达 → 下一 turn **视为新任务**：回 S1、**Loop 归 0**、先读 `.state.md` 恢复 + 核验 `pending`（**原判据"不计新任务 / Loop 不重置"已按 Test F 的发现修订**） | E4 |
+| D | Compaction 存活 + 跨会话恢复 | 长上下文（S8/S9 大量工具输出）后触发 Runtime 压缩；+ 另一会话写 Checkpoint 供新会话恢复 | 压缩后仍能说出 Phase / Loop N / Step / 下一步 / 上轮失败原因；恢复方仅凭 Checkpoint 推出入口与下一步 | **D-1 已 E4**（跨会话恢复）/ **D-2 未观测 E3**（会话内压缩，Agent 无法自造）/ **D-3 现场采集卡**（下次真实发生即填，见下） |
+| E | Steering 插话 | 循环中途插入"先别做 X，改成 Y" | 进 steering 队列 → **不暂停** → 当前 turn 后注入 → 继续原循环；Checkpoint 记录该插话 | E4 |
+| F | Follow-up 追单 | 主任务 S13 后追加"顺便更新 README" | turn 间到达 → 下一 turn **视为新任务**：回 S1、**Loop 归 0**、先读 Checkpoint 恢复 + 核验 `pending`（**原判据"不计新任务 / Loop 不重置"已按 Test F 的发现修订**） | E4 |
 
 ### D 的诚实边界（不可伪造）
 
@@ -33,7 +33,7 @@ Compaction 由 Runtime 拥有（阈值/时机宿主决定），**Agent 侧无法
 - **禁止**通过"假装上下文很长"或"手动总结对话"来冒充 Compaction 证据
 
 **当前状态（勿重复断言"全部未验证"）**：
-- **跨会话恢复** → **已取 E4**（D-1：另一会话写 `.state.md` → 全新 agent 真机读取并续跑）
+- **跨会话恢复** → **已取 E4**（D-1：另一会话写 Checkpoint 条目 → 全新 agent 真机读取并续跑）
 - **会话内压缩存活** → **未观测（E3）**：真机加载 ~28K tok 长上下文后 Runtime 仍未压缩（Test D-2）
 
 ### D-3 现场采集卡（Compaction 真实发生时**当场填**）
@@ -47,12 +47,12 @@ Compaction 由 Runtime 拥有（阈值/时机宿主决定），**Agent 侧无法
 - 可观察的压缩痕迹：<Runtime 提示 / 历史被摘要 / 其他；无痕迹则写"无">
 - 压缩后逐项自检（能答即"✓ <答>"，不能答即"✗"）：
   Phase=  |  Loop N=  |  Step 编号=  |  下一步=  |  上轮失败原因=  |  Review 判定 A·B·C=
-- 是否读到 .state.md 并恢复：<是/否 + 恢复到的入口阶段>
+- 是否读到 Checkpoint 并恢复：<是/否 + 恢复到的入口阶段>
 - 缺口：<哪一项答不出 / 契约哪一条被证伪>
 - 证据等级：E4（真机压缩已发生 + 上述自检记录）
 ```
 
-**填完后必须做**：① 回写 `.state.md` 的 `review`/`resume`（记录本次压缩中断与恢复点）；② 据实修订 `engine/state-machine.md`「压缩后状态延续契约」若有条目被证伪；③ 同步 CHANGELOG。
+**填完后必须做**：① 回写 Checkpoint 的 `review`/`resume`（记录本次压缩中断与恢复点）；② 据实修订 `engine/state-machine.md`「压缩后状态延续契约」若有条目被证伪；③ 同步 CHANGELOG。
 
 ## 每次测试必须记录（7 字段，缺一即证据不完整）
 
@@ -61,7 +61,7 @@ Compaction 由 Runtime 拥有（阈值/时机宿主决定），**Agent 侧无法
 - 输入：<原始任务/指令文本>
 - 实际读取文件：<路径 + 行数，逐条列出>
 - 实际加载 token 估算：<Σ(文件字节/4)>
-- 状态变化：<phase / loop / level / current_step 的前后取值；是否写 .state.md>
+- 状态变化：<phase / loop / level / current_step 的前后取值；是否写 Checkpoint 条目>
 - 是否恢复成功：<是 / 否 / 不适用 —— 恢复测试填"由 A 会话写 → B 会话读"的双方标识>
 - 失败点：<规则未定义 / 规则矛盾 / Agent 未遵守 / Runtime 阻断；无则填"无">
 - 证据等级：<E4 真机 / E3 推演 / E2 文件事实> + <支撑材料（命令、输出、文件）>
@@ -73,7 +73,7 @@ Compaction 由 Runtime 拥有（阈值/时机宿主决定），**Agent 侧无法
 |---|---|
 | 阶段跳跃 | 是否出现"未加载该阶段文件就输出该阶段内容"（防跳过规则） |
 | 计数器漂移 | Review 情况 B 后 Loop 是否被误重置；防跳过回退是否误消耗计数 |
-| `.state.md` 未更新 | 阶段出口是否只在"想起来"时更新（协议要求每出口更新） |
+| Checkpoint 未更新 | 阶段出口是否只在"想起来"时更新（协议要求每出口更新） |
 | 摆渡丢失 | 压缩后是否还能说出上轮失败原因 / Review 判定 A·B·C |
 | 队列误暂停 | steering / follow-up 是否被误判为暂停条件 |
 | TASK 区缺失 | S8 出口是否显式输出了 📌 TASK 区全量字段 |

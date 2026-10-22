@@ -40,13 +40,12 @@ def _state_text(**overrides: str) -> str:
 
 class RecoveryTests(CoreTest):
     def _write(self, text: str) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(text, encoding="utf-8")
+        self.write_state_text(text)
 
     def test_no_checkpoint(self) -> None:
         result = self.core.load_checkpoint()
         self.assertEqual(result.mode, "fresh_start")
-        self.assertFalse(self.state_path.exists())
+        self.assertFalse(self.state_exists())
 
     def test_fresh_active_resume(self) -> None:
         self.seed_code("S8", loop=1)
@@ -74,10 +73,12 @@ class RecoveryTests(CoreTest):
         result = self.core.load_checkpoint()
         self.assertEqual(result.mode, "fresh_start")
         self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertFalse(self.state_path.exists())
-        backups = list(self.state_path.parent.glob(".state.md.corrupt-*"))
-        self.assertEqual(len(backups), 1)
-        self.assertIn("definitely not yaml", backups[0].read_text(encoding="utf-8"))
+        archives = self.archive_keys("corrupt")
+        self.assertEqual(len(archives), 1)
+        entry = self.core.store.memory.get(archives[0])
+        assert entry is not None
+        self.assertIn("definitely not yaml", entry.value)
+        self.assertIsNone(self.state_text())
 
     def test_degraded_restores_only_flat_scalars(self) -> None:
         self._write(
@@ -106,26 +107,25 @@ class RecoveryTests(CoreTest):
 
     def test_foreign_project_backed_up(self) -> None:
         self._write(_state_text(_project_id="deadbeefdeadbeef"))
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         denied = self.core.transition("S3")
         self.assertEqual(denied.code, "CHECKPOINT_FOREIGN")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
         result = self.core.load_checkpoint()
-        self.assertEqual(result.mode, "foreign_start")
+        self.assertEqual(result.mode, "reference_only")
         self.assertEqual(result.code, "CHECKPOINT_FOREIGN")
-        self.assertFalse(self.state_path.exists())
-        self.assertTrue(list(self.state_path.parent.glob(".state.md.foreign-*")))
+        self.assertEqual(self.state_text(), before)
 
     def test_v18_schema_ahead_read_only(self) -> None:
         self._write(_state_text(_schema="2"))
         result = self.core.load_checkpoint()
         self.assertEqual(result.mode, "reference_only")
         self.assertEqual(result.code, "CHECKPOINT_SCHEMA_AHEAD")
-        self.assertTrue(self.state_path.exists())
-        before = self.state_path.read_bytes()
+        self.assertTrue(self.state_exists())
+        before = self.state_text()
         denied = self.core.transition("S3")
         self.assertEqual(denied.code, "CHECKPOINT_SCHEMA_AHEAD")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
     def test_invalid_updated_at_degraded(self) -> None:
         self._write(_state_text(updated_at="not-a-date", phase="S8 Code", loop="1"))

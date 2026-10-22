@@ -9,11 +9,12 @@ from .util import CoreTest
 
 
 class CoreApiTests(CoreTest):
-    def test_get_state_does_not_create_state_dir(self) -> None:
-        self.assertFalse(self.core.resolved.state_dir.exists())
+    def test_get_state_does_not_create_state(self) -> None:
+        self.assertFalse((self.root / ".vibe-kernel").exists())
         view = self.core.get_state()
         self.assertEqual(view.mode, "fresh_start")
-        self.assertFalse(self.core.resolved.state_dir.exists())
+        self.assertFalse(self.state_exists())
+        self.assertFalse((self.root / ".vibe-kernel").exists())
 
     def test_v12_repeated_failure_triggers_no_progress(self) -> None:
         self.seed_code("S8", loop=1)

@@ -421,14 +421,23 @@ check_canonical_rules() {
   return 0
 }
 
-# 协议声明的运行时状态路径必须被 Git 忽略（engine/state-machine.md「Workflow Checkpoint」：
-# 「整个 .vibe-kernel/ 须 gitignore，禁止提交」）。协议改了路径而 .gitignore 没跟上，
-# 下一次在本仓库跑 Workflow 就会产生未忽略的状态文件 —— 属静默漂移，故机械判定。
-check_runtime_state_ignored() {
-  local target='.vibe-kernel/.state.md'
-  has_git || return 0
-  git -C "$ROOT" check-ignore -q -- "$target" && return 0
-  add_check "$target" 0 C012 high '协议声明的运行时状态路径未被 .gitignore 忽略（禁止提交运行状态）'
+# C012：Checkpoint 存储契约（delx-memory，项目目录不落状态文件）。
+# 机械判定三点：① 协议声明 key 前缀 `vc:checkpoint:`；② 协议不再是"复制到
+# <project_root>/.vibe-kernel/.state.md"的旧口径；③ runtime core 不创建项目内状态目录。
+# 协议改了存储方式而任一实现没跟上 = 静默漂移（要么状态丢在项目里，要么读写两套）。
+check_runtime_state_contract() {
+  local sm='skills/vibe-coder-loop/engine/state-machine.md'
+  local core='runtime/core/checkpoint.py'
+  [ -f "$ROOT/$sm" ] || return 0
+  if ! grep -q 'vc:checkpoint:' "$ROOT/$sm" 2>/dev/null; then
+    add_check "$sm" 0 C012 high '协议未声明 delx-memory Checkpoint key 前缀 vc:checkpoint:'
+  fi
+  if grep -q '先读 `<project_root>/.vibe-kernel/.state.md`' "$ROOT/$sm" 2>/dev/null; then
+    add_check "$sm" 0 C012 high '协议仍声明项目内状态文件（应改为 delx-memory key）'
+  fi
+  if [ -f "$ROOT/$core" ] && grep -qE 'state_dir\.mkdir|STATE_DIRNAME.*mkdir' "$ROOT/$core" 2>/dev/null; then
+    add_check "$core" 0 C012 high 'runtime 仍在创建项目内状态目录（Checkpoint 应只写 delx-memory）'
+  fi
   return 0
 }
 
@@ -464,7 +473,7 @@ run_check() {
   check_host_links
   check_markdown_links
   check_tracked_sensitive
-  check_runtime_state_ignored
+  check_runtime_state_contract
   check_canonical_rules
   return 0
 }

@@ -28,11 +28,11 @@ class TransitionTests(CoreTest):
 
     def test_v2_illegal_jump_does_not_touch_file(self) -> None:
         self.seed_code("S1")
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         result = self.t("S8")
         self.assertFalse(result.ok)
         self.assertEqual(result.code, "STATE_ILLEGAL_TRANSITION")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
     def test_v3_retry_increments_loop(self) -> None:
         self.seed_code("S9", loop=1)
@@ -169,12 +169,12 @@ class TransitionTests(CoreTest):
 
     def test_exit_checklist_unverifiable_reference_rejected(self) -> None:
         self.seed_code("S7")
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         checklist = ExitChecklist("S7 Plan", ["not/a/real/file.py"], ["done"])
         result = self.t("S8", exit_checklist=checklist)
         self.assertFalse(result.ok)
         self.assertEqual(result.code, "EXIT_CHECKLIST_INCOMPLETE")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
     def test_exit_checklist_verified_reference_and_plan_files(self) -> None:
         self.seed_code("S7")

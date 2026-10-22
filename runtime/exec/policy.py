@@ -217,7 +217,7 @@ def check_policy(
         False,
         code="SCOPE_DENIED",
         reason=f"命令 {binary} 不在 allowlist（项目工具链二进制 / 只读 git 子命令）",
-        next="经 .vibe-kernel/config.json 扩展 allowlist，或改用受支持工具",
+        next="经宿主配置扩展 allowlist，或改用受支持工具",
     )
 
 

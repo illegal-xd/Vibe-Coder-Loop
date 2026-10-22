@@ -36,7 +36,7 @@ SELFTEST_CMD='python3 backup/test_memory_tool.py'
 LOAD_PLAN_FILE='load_plan.json'
 LOAD_PLAN_MENTION='SKILL.md'
 # 6b 校验对象 = **Checkpoint 模板**（`.state.template.md`，随仓库分发的 13 字段契约锚点）。
-# 运行实例 `<project_root>/.vibe-kernel/.state.md` 属项目侧实例数据，不在 Skill 目录内：
+# 运行实例存在 delx-memory（key `vc:checkpoint:<项目绝对地址>`），不在 Skill 目录内：
 # 需要校验真实实例时显式传 `VIBE_CHECKPOINT_FILE=<绝对路径>`；两者都缺失时 core 打印跳过原因（不静默通过）。
 CHECKPOINT_FILE="${VIBE_CHECKPOINT_FILE:-.state.template.md}"
 # 行数预算：防规则膨胀。**语义 = 容量预算，不是安全阈值** —— 超限不计 HARD，仅 exit 2。

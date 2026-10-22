@@ -14,6 +14,23 @@
 | 2 | 批次归属 | 第八批（预算 4200）、第九批（references 权威同步）→ commit `749a9ed`；第十批（转义竖线）、第十一批（EOF 漏检）→ commit `ff07ad2`；记忆分层工具链与报告 → commit `8f63b11` | `CHANGELOG.md` |
 | 3 | 快照同步 | `backup/snapshots/*` 与 `backup/rules/*` 内的 `skill_version` 由 `memory_tool.py backup` 重建时刷新（不入库，无需手改） | `backup/` |
 
+### 同版本第十二批 — Checkpoint 迁移到 delx-memory（协议不落项目目录）
+
+> **背景**：`.vibe-kernel/.state.md` 会在每个项目目录产生一份运行态文件（且需 gitignore/锁/权限/git 跟踪检查等一整套文件语义）。改为 **以项目绝对地址为唯一 ID 存 delx-memory** 后，跨项目隔离仍成立，但不再污染工作区，读写与大模型记忆走同一套能力。
+
+| # | 项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | 存储位置 | 废除 `<project_root>/.vibe-kernel/.state.md`；Checkpoint = delx-memory 条目，key = `vc:checkpoint:<realpath(project_root)>`（地址即唯一 ID） | `engine/state-machine.md`「Workflow Checkpoint（delx-memory）」 |
+| 2 | L0 独立 tag | 条目固定 `tags = vc-checkpoint / L0 / scope:project`，`metadata.layer = "L0"`（运行实例态，与 L1–L7 规则/经验召回隔离）；TTL 30 天、每次写入重锚 | `runtime/core/memory_store.py` |
+| 3 | 读写通道 | 统一走 delx-memory：机器端 `runtime.core.cli`（`BEGIN IMMEDIATE` 事务 + `_rev` 乐观锁）；Agent 端 `memory_get` / `memory_set`（降级）。库路径与 `memory_tool.py` 同源（`DELX_MEMORY_DB` / `~/.delx-memory/db.sqlite`） | 新增 `runtime/core/memory_store.py`；重写 `checkpoint.py` 存储层 |
+| 4 | 损坏与归档 | 损坏条目先复制到 `vc:checkpoint-quarantine:<project_id>:<kind>:<ts>` 再清空主条目（可回滚）；完成任务归档同机制；旧版项目状态文件只读导入一次、原文件不改不删 | `checkpoint.py` / `recovery.py` / `cli.py` |
+| 5 | 衍生路径 | pinned artifact → `~/.vibe-loop/artifacts/<project_id>/pinned/`；exec 非 git 基线 → `~/.vibe-loop/baseline/<sha256[:16]>.json`（均不再写项目目录） | `core.py` / `artifacts.py` / `exec/diff.py` |
+| 6 | 机检 | C012 由「`.vibe-kernel/.state.md` 是否被 gitignore」改为「Checkpoint 存储契约」：协议须声明 `vc:checkpoint:` 且不得回退项目内状态文件，runtime 不得创建项目内状态目录 | `scripts/audit.sh` + `scripts/tests/test-audit.sh`（51/51） |
+| 7 | 文档/模板 | `SKILL.md` 加载索引、`engine/transition.md` S1、`load_plan.json`、`.state.template.md`、README、`.gitignore`、release-checklist、design 文档（标注历史口径）同步 | 同名文件 |
+| 8 | 测试 | 文件语义用例（权限 / gitignore / FIFO / 软链 / config.json 路径）替换为记忆语义用例（key/tag/TTL/事务/隔离/归档）；新增 `tests/core/test_memory_store.py` | `tests/core/*` |
+
+**验证（E4）**：`unittest discover tests` **287/287 PASS**；`backup/test_memory_tool.py` **60/60 PASS**；`scripts/tests/test-audit.sh` **51/51 PASS**；`scripts/audit.sh check` rc=0（无 C012）；`runtime.core.cli check-protocol` rc=0（83 checks）；`smoke-check.sh` rc=0（规则 3950 行 / 预算 4200）；手工冒烟：写入后项目目录仅有 `.git/`，无 `.vibe-kernel/`，DB 行含 `tags=,vc-checkpoint,L0,scope:project,`。
+
 ## v1.22.1 — 表格检查器 EOF 漏检修复（同版本第十一批）
 
 > **同版本第十一批**（未提交 git，版本不迭代）。**触发**：第十批修完转义竖线后复查发现——表格检查只在读到**非表格行**时结算缓冲区，**文件最后一行是表格时永不参与判定**（静默漏检，正是第十批反例夹具初次误过假的原因）。

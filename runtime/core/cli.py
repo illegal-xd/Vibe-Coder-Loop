@@ -21,8 +21,6 @@ from .checkpoint import (
     STATE_SCHEMA_VERSION,
     CheckpointError,
     CheckpointLocationError,
-    CheckpointStore,
-    StateResolver,
 )
 from .core import ExecResult, WorkflowCore
 from .protocol import check_protocol
@@ -44,8 +42,8 @@ def _error(code: str, fact: str, *, action: str | None = None) -> dict[str, Any]
 def _core(args: argparse.Namespace) -> WorkflowCore:
     return WorkflowCore(
         args.cwd,
-        state_dir=getattr(args, "state_dir", None),
-        state_path=getattr(args, "state_path", None),
+        memory_key=getattr(args, "memory_key", None),
+        memory_db=getattr(args, "memory_db", None),
         import_legacy=getattr(args, "import_legacy", False),
     )
 
@@ -104,7 +102,8 @@ def cmd_state_check(args: argparse.Namespace) -> int:
                 "ok": True,
                 "exists": False,
                 "quality": "absent",
-                "state_path": str(core.resolved.state_path),
+                "memory_key": core.resolved.memory_key,
+                "memory_db": str(core.resolved.memory_db),
             },
             pretty=args.pretty,
         )
@@ -117,7 +116,7 @@ def cmd_state_check(args: argparse.Namespace) -> int:
         quality = ParseQuality.DEGRADED
     if raw is None:
         _emit(
-            _error(vc_codes.CHECKPOINT_CORRUPT, f"状态文件不可解析: {core.resolved.state_path}"),
+            _error(vc_codes.CHECKPOINT_CORRUPT, f"Checkpoint 条目不可解析: {core.resolved.memory_key}"),
             pretty=args.pretty,
         )
         return 4
@@ -177,7 +176,8 @@ def cmd_state_check(args: argparse.Namespace) -> int:
         "schema": schema_int,
         "missing": missing,
         "issues": issues,
-        "state_path": str(core.resolved.state_path),
+        "memory_key": core.resolved.memory_key,
+        "memory_db": str(core.resolved.memory_db),
     }
     if schema_ahead:
         data.update(
@@ -200,8 +200,7 @@ def cmd_state_check(args: argparse.Namespace) -> int:
 def cmd_state_gc(args: argparse.Namespace) -> int:
     try:
         core = _core(args)
-        with core.store.lock():
-            return _gc_locked(core, args)
+        return _gc_locked(core, args)
     except (CheckpointError, OSError) as exc:
         code = getattr(exc, "code", vc_codes.CHECKPOINT_WRITE_FAILED)
         _emit(_error(code, str(exc)), pretty=args.pretty)
@@ -216,7 +215,7 @@ def _gc_locked(core: WorkflowCore, args: argparse.Namespace) -> int:
         return 4
     if not snapshot.exists:
         _emit(
-            _error(vc_codes.CHECKPOINT_LOCATION_UNRESOLVED, "没有状态文件，拒绝 GC（无法确定引用集合）"),
+            _error(vc_codes.CHECKPOINT_LOCATION_UNRESOLVED, "没有 Checkpoint 条目，拒绝 GC（无法确定引用集合）"),
             pretty=args.pretty,
         )
         return 4
@@ -232,15 +231,6 @@ def _gc_locked(core: WorkflowCore, args: argparse.Namespace) -> int:
     if not snapshot.phase_valid:
         _emit(
             _error(vc_codes.CHECKPOINT_DEGRADED, "phase 非法，拒绝 GC"),
-            pretty=args.pretty,
-        )
-        return 4
-    if not core.resolved.allow_move and not getattr(args, "allow_external", False):
-        _emit(
-            _error(
-                vc_codes.INVALID_ARGUMENT,
-                "状态目录在项目 .vibe-kernel 之外，GC 需显式 --allow-external",
-            ),
             pretty=args.pretty,
         )
         return 4
@@ -398,8 +388,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_common(p: argparse.ArgumentParser, *, cwd_required: bool = True) -> None:
         p.add_argument("--cwd", required=cwd_required, help="项目工作目录（必填）")
-        p.add_argument("--state-dir", default=None, help="显式状态目录")
-        p.add_argument("--state-path", default=None, help="显式状态文件路径")
+        p.add_argument("--memory-key", default=None, help="显式 Checkpoint 记忆 key（默认 vc:checkpoint:<项目绝对地址>）")
+        p.add_argument("--memory-db", default=None, help="显式 delx-memory SQLite 路径")
         p.add_argument("--pretty", action="store_true", help="缩进输出（默认单行 JSON）")
 
     p = sub.add_parser("check-protocol", help="校验代码表与 Skill 事实源一致")
@@ -415,7 +405,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(gc)
     gc.add_argument("--retention-days", type=int, default=7)
     gc.add_argument("--dry-run", action="store_true")
-    gc.add_argument("--allow-external", action="store_true")
     gc.set_defaults(func=cmd_state_gc)
 
     p = sub.add_parser("get-state", help="只读状态快照")

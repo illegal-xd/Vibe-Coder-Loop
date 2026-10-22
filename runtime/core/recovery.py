@@ -25,7 +25,6 @@ from .checkpoint import (
     CheckpointStore,
     CorruptCheckpoint,
     Snapshot,
-    backup_file,
     parse_minute,
 )
 from .state_parse import ParseQuality, SubsetParseError, parse_subset, scan_flat_scalars
@@ -142,18 +141,6 @@ class RecoveryResult:
         return data
 
 
-def _backup(
-    path: Path,
-    kind: str,
-    *,
-    state_dir: Path | None = None,
-    allow_move: bool = False,
-) -> Path | None:
-    # 默认路径且位于状态目录内才移动；显式 state_path 一律只复制，绝不改名用户文件
-    move = allow_move and (state_dir is None or path.parent == state_dir)
-    return backup_file(path, kind, move=move)
-
-
 def age_minutes(updated_at: Any, *, now: datetime | None = None) -> int | None:
     stamp = parse_minute(updated_at)
     if stamp is None:
@@ -204,15 +191,14 @@ def _load_checkpoint_impl(
     try:
         text = store.read_text()
     except CorruptCheckpoint as exc:
-        backup = _backup(
-            store.state_path,
-            "corrupt",
-            state_dir=store.state_dir,
-            allow_move=store.resolved.allow_move,
-        )
+        archived = store.archive_state("corrupt")
+        if archived is not None:
+            store.clear()
         return RecoveryResult(
-            mode="fresh_start" if store.resolved.allow_move else "reference_only",
-            reason=f"corrupt（{'已隔离' if store.resolved.allow_move else '仅复制，需人工移走'}: {backup.name if backup else '失败'}）: {exc}",
+            mode="fresh_start" if archived else "reference_only",
+            reason=(
+                f"corrupt（已隔离为 {archived or '（隔离失败，条目保留）'}）: {exc}"
+            ),
             code=vc_codes.CHECKPOINT_CORRUPT,
         )
     if text is None:
@@ -224,10 +210,12 @@ def _load_checkpoint_impl(
     except SubsetParseError:
         raw = scan_flat_scalars(text)
         if raw is None:
-            backup = _backup(store.state_path, "corrupt", state_dir=store.state_dir, allow_move=store.resolved.allow_move)
+            archived = store.archive_state("corrupt")
+            if archived is not None:
+                store.clear()
             return RecoveryResult(
-                mode="fresh_start" if store.resolved.allow_move else "reference_only",
-                reason=f"corrupt（{'已隔离' if store.resolved.allow_move else '仅复制，需人工移走'}: {backup.name if backup else '失败'}）",
+                mode="fresh_start" if archived else "reference_only",
+                reason=f"corrupt（已隔离为 {archived or '（隔离失败，条目保留）'}）",
                 code=vc_codes.CHECKPOINT_CORRUPT,
             )
         quality = ParseQuality.DEGRADED
@@ -262,10 +250,9 @@ def _load_checkpoint_impl(
     # 项目身份
     owner = str(raw.get("_project_id", "") or "")
     if owner and owner != store.resolved.project_id:
-        backup = _backup(store.state_path, "foreign", state_dir=store.state_dir, allow_move=store.resolved.allow_move)
         return RecoveryResult(
-            mode="foreign_start" if store.resolved.allow_move else "reference_only",
-            reason=f"_project_id 不匹配（{'已隔离' if store.resolved.allow_move else '仅复制，需人工移走'}: {backup.name if backup else '失败'}）",
+            mode="reference_only",
+            reason="_project_id 与当前项目不匹配（Checkpoint key 以项目绝对地址为唯一 ID，不覆盖）",
             code=vc_codes.CHECKPOINT_FOREIGN,
         )
 

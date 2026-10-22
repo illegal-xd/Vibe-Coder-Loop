@@ -3,6 +3,7 @@
 > 目标：把 OpenCode 的**事件与 Hook**桥接到 Core/Exec，让「运行事实收集」与「状态注入」从 LLM 手动执行升级为宿主自动执行；**阶段转换仍由 LLM 显式驱动**（`exit_checklist` 无法自动生成，见 §4.2）。
 > 原则：**Adapter 是薄层**——只做事件/Hook→协议映射 + 协议→宿主注入，不重实现 Skill 工作流；宿主类型不泄漏进 Core。
 > 调研依据：本机 `@opencode-ai/plugin@1.15.4` 类型定义（`dist/index.d.ts` / `dist/tool.d.ts`）+ `@opencode-ai/sdk` 的 `Event` 联合类型 + `opencode.json` 实际配置（2026-10-20 核验）。
+> **路径更新（现行协议）**：本文「本地降级日志 / health 文件」的 `<project_root>/.vibe-kernel/*` 属历史设计；Checkpoint 已迁 delx-memory，且协议**不在项目目录创建运行态文件**——实现时应落用户缓存（如 `~/.vibe-loop/adapter/`）。
 
 ---
 

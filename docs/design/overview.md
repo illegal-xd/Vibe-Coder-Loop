@@ -184,7 +184,7 @@ MVP-2 Execution & Verification
 |---|---|---|
 | 语言 | **Python**（Core/Exec）+ **TypeScript**（Adapter） | Core/Exec 复用现有 memory_tool.py（Python 标准库，零依赖）；Adapter 必须用宿主插件语言 |
 | 依赖 | Core/Exec **零第三方依赖**（仅标准库）；Adapter 需 `@opencode-ai/plugin`（**运行时**，含 `tool()`） | YAML 用**受限子集自研解析器**而非 pyyaml（保持零依赖）；Adapter 依赖由宿主 bun 安装 |
-| 存储 | **状态**：`<project_root>/.vibe-kernel/.state.md`（YAML 子集，项目本地）+ **产物**：`ephemeral`(memory_tool artifact, 24h) / `pinned`(`.vibe-kernel/artifacts/`) | 状态是**项目私有数据**，不放 Skill 安装目录；产物按恢复周期分层 |
+| 存储 | **状态（现行）**：delx-memory 条目 `vc:checkpoint:<项目绝对地址>`（YAML 子集，L0 独立 tag）+ **产物**：`ephemeral`(memory_tool artifact, 24h) / `pinned`(`~/.vibe-loop/artifacts/<project_id>/pinned/`) | 状态是**项目私有数据**，key 以项目绝对地址为唯一 ID；产物按恢复周期分层 |
 | 运行 | 本地进程内（Core/Exec 作为 CLI 被 Adapter 调用）；无常驻服务 | 轻量、可调试、可回滚 |
 | 并发 | 文件锁 + **乐观版本号**（`_rev` + `expected_rev`） | 锁只保证串行，版本号才防"基于旧状态覆盖" |
 | 测试 | Python `unittest` + **协议一致性测试**（代码表 ↔ Skill 事实源）+ Adapter Hook 契约测试 | 副本必须被机械校验，不只被信任 |
@@ -278,7 +278,7 @@ Phase 4（未来）: Pi Adapter —— 复用 Core/Exec + 统一协议
 1. **Core 只管状态，不管判断**：架构/审查/下一步动作归 LLM；Core 不自行决定 review 结论。
 2. **沿用 13 字段语义，不新造数据结构**；保留键（`_schema`/`_rev`/`_project_id`）与保留子键（`review.failure_state`）不计入 13 字段，未知键必须透传。
 3. **状态机转换表取自 `transition.md`，且必须被校验**：副本不许裸信——`check-protocol` 逐边比对进 CI 门禁（这是对"镜像必漂移"的唯一有效对策）。
-4. **状态文件放项目本地，不放 Skill 安装目录**：`<project_root>/.vibe-kernel/.state.md` + 项目身份校验 + 锁 + 乐观版本号；落在 Skill 目录内直接拒绝（fail-closed）。
+4. **状态存 delx-memory，不落项目目录**：key `vc:checkpoint:<项目绝对地址>` + 项目身份校验 + SQLite 事务 + 乐观版本号；不创建任何项目内状态文件。
 5. **YAML 只支持受限子集**：零依赖自研解析器 + 三层降级（严格 / 仅扁平标量 / 损坏）+ 规范渲染幂等；不用 pyyaml，也不假装标准库能解析 YAML。
 6. **Exec 的输出限制发生在读取过程中**：Popen + 有界 Sink + 落盘；不用 `capture_output=True` 事后限流；超时/取消走**整进程树**终止。
 7. **失败指纹必须是稳定摘要 + 持久化连续计数**：`sha256` 规范 JSON（不含 `stage`）；`last_fingerprint + consecutive_count` 存入状态文件；集合包含判断不能表达"连续"。

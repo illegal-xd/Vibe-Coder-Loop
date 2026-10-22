@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 
 from runtime.core import WorkflowCore
 from runtime.core.checkpoint import STATE_SCHEMA_VERSION, now_to_minute
+from runtime.core.memory_store import CHECKPOINT_QUARANTINE_PREFIX
 from runtime.core.state_machine import STATE_LABELS
 
 
@@ -57,9 +57,28 @@ class CoreTest(unittest.TestCase):
     def t(self, to: str, **kwargs: Any):
         return self.core.transition(to, **kwargs)
 
+    # -- checkpoint state (delx-memory) ----------------------------------
     @property
-    def state_path(self) -> Path:
-        return self.core.resolved.state_path
+    def state_key(self) -> str:
+        return self.core.resolved.memory_key
+
+    def state_exists(self) -> bool:
+        return self.core.store.memory.get(self.state_key) is not None
+
+    def state_text(self) -> str | None:
+        entry = self.core.store.memory.get(self.state_key)
+        return None if entry is None else entry.value
+
+    def write_state_text(self, text: str, *, core: WorkflowCore | None = None) -> None:
+        """直接改记忆条目（模拟外部写入 / 损坏数据）。"""
+        target = core or self.core
+        target.store.memory.set(target.resolved.memory_key, text)
 
     def raw_state(self) -> str:
-        return self.state_path.read_text(encoding="utf-8")
+        text = self.state_text()
+        return "" if text is None else text
+
+    def archive_keys(self, kind: str, *, core: WorkflowCore | None = None) -> list[str]:
+        target = core or self.core
+        prefix = f"{CHECKPOINT_QUARANTINE_PREFIX}{target.resolved.project_id}:{kind}:"
+        return target.store.memory.keys(prefix)

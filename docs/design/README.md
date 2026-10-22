@@ -50,6 +50,7 @@
 **2026-10-20 — 设计收敛修订（针对 6 项 P0 + 专项问题）**
 
 - 状态文件从 `$SKILL_DIR/.state.md` 改为 `<project_root>/.vibe-kernel/.state.md`，补隔离规则表与 Git 忽略策略。
+- **后续变更（现行协议）**：Checkpoint 改为 delx-memory 条目 `vc:checkpoint:<项目绝对地址>`（L0 独立 tag），不再创建项目内状态目录；本文档的 `.vibe-kernel` 路径属历史设计记录。
 - 补齐 YAML 受限子集解析方案（严格/降级/损坏三态）、规范渲染幂等、跨平台原子写与锁、`expected_rev` 乐观并发与字段合并策略。
 - Exec 改为 Popen 流式采集（内存有界）+ 整进程树终止 + 外置失败不返回坏 ref。
 - 指纹改 sha256 规范 JSON（移除 `stage`）+ 连续计数持久化 + 穷举重置规则。

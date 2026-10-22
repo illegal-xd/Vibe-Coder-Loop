@@ -471,7 +471,7 @@ def _collect_git(cwd, base) -> DiffSummary:
 「mtime 对比」必须有基线，否则首次调用没有参照物。定案：
 
 ```text
-基线位置：<project_root>/.vibe-kernel/baseline.json
+基线位置（现行）：~/.vibe-loop/baseline/<sha256(project_root)[:16]>.json（历史设计曾用 <project_root>/.vibe-kernel/baseline.json）
 建立时机：S8 Code 入口首次调用 summarize_diff 时（无基线则创建），或显式 `exec diff baseline`
 内容：{created_at, root, entries: {relpath: {mtime_ns, size, sha256?}}}
 比较规则：

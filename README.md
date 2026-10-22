@@ -147,9 +147,9 @@ bash scripts/tests/test-audit.sh              # 工具自测（使用虚构路�
 
 ## 安全与隐私
 
-- 仓库不包含真实凭证；运行状态（`.vibe-kernel/`，含 `.state.md`）与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
+- 仓库不包含真实凭证；**Workflow Checkpoint 存 delx-memory**（key `vc:checkpoint:<项目绝对地址>`，L0 独立 tag），项目目录不落状态文件；legacy `.vibe-kernel/` 与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
 - `runtime/exec` 是**防手滑**，不是权限沙箱：allowlist 只拦截显式的危险命令（`rm -rf`、`git push` 等）；`python3 -c`、`npm` 脚本等仍可执行任意操作。不要把 exec 当作对抗性隔离边界，不可逆操作仍须走 `policy/safety.md` 的 Conflict Card 仲裁。
-- **机检兜底**：`bash scripts/audit.sh check` 的 **C012** 检查「协议声明的运行状态路径（`.vibe-kernel/.state.md`）是否被 `.gitignore` 忽略」，防止协议路径与 `.gitignore` 漂移。
+- **机检兜底**：`bash scripts/audit.sh check` 的 **C012** 检查「Checkpoint 存储契约」——协议必须声明 delx-memory key 前缀 `vc:checkpoint:`，且 runtime 不得创建项目内状态目录，防止协议与实现各写一套。
 - **规则内容不入库**：运行状态、记忆快照与脱敏规则集（`backup/snapshots/*`、`backup/rules/*`）均被忽略。仓库只分发协议骨架，规则内容由本机 delx-memory 生成，跨机器只经安全私有通道传输。
 - 示例路径使用 `<repo>`、`/path/to/...`、`$HOME` 或 `%USERPROFILE%`，不依赖作者本机目录。
 - 如发现疑似凭证或隐私泄露，请不要在 Issue 中粘贴原文；先脱敏，再联系维护者。

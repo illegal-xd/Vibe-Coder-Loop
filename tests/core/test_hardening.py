@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import subprocess
@@ -12,8 +10,7 @@ from pathlib import Path
 
 from runtime.core import WorkflowCore
 from runtime.core.artifacts import ArtifactStore
-from runtime.core.checkpoint import CheckpointLocationError, now_to_minute
-from runtime.core.cli import main
+from runtime.core.checkpoint import CheckpointLocationError
 from runtime.core.core import ExecResult
 from runtime.core.state_parse import SubsetParseError, parse_subset, render_subset
 from runtime.core.state_machine import STATE_LABELS, ExitChecklist
@@ -29,11 +26,11 @@ class UnknownPhaseHardening(CoreTest):
         for phase in ("Code", "S99 Bogus", ""):
             with self.subTest(phase=phase):
                 self.seed(phase=phase)
-                before = self.state_path.read_bytes()
+                before = self.state_text()
                 result = self.t("S1")
                 self.assertFalse(result.ok)
                 self.assertEqual(result.code, "STATE_ILLEGAL_TRANSITION")
-                self.assertEqual(self.state_path.read_bytes(), before)
+                self.assertEqual(self.state_text(), before)
 
     def test_state_check_rejects_invalid_enums(self) -> None:
         self.seed(phase="S99 Bogus", level=99, loop=-5, status="weird")
@@ -53,83 +50,66 @@ class UnknownPhaseHardening(CoreTest):
 
 
 class CheckpointHardening(CoreTest):
-    def test_corrupt_write_backs_up_and_refuses(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text("<<< corrupt >>>\n", encoding="utf-8")
+    def test_corrupt_write_quarantines_and_recovers(self) -> None:
+        self.write_state_text("<<< corrupt >>>\n")
         result = self.core.store.write({"phase": STATE_LABELS["S1"]})
-        self.assertFalse(result.ok)
-        self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertFalse(self.state_path.exists())
-        backups = list(self.state_path.parent.glob(".state.md.corrupt-*"))
-        self.assertEqual(len(backups), 1)
-        self.assertIn("corrupt", backups[0].read_text(encoding="utf-8"))
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("corrupt_quarantined", result.warnings)
+        archives = self.archive_keys("corrupt")
+        self.assertEqual(len(archives), 1)
+        entry = self.core.store.memory.get(archives[0])
+        assert entry is not None
+        self.assertIn("corrupt", entry.value)
+        self.assertIn("S1 Intent", self.raw_state())
 
-    def test_config_path_escape_rejected(self) -> None:
-        config_dir = self.root / ".vibe-kernel"
-        config_dir.mkdir()
-        (config_dir / "config.json").write_text(
-            json.dumps({"state_path": str(self.root.parent / "victim.txt")}),
-            encoding="utf-8",
-        )
+    def test_memory_key_override_must_be_checkpoint_namespace(self) -> None:
         with self.assertRaises(CheckpointLocationError):
-            WorkflowCore(self.root, env=self.env, import_legacy=False)
-        (config_dir / "config.json").write_text(
-            json.dumps({"state_path": "~/.zshrc"}), encoding="utf-8"
-        )
-        with self.assertRaises(CheckpointLocationError):
-            WorkflowCore(self.root, env=self.env, import_legacy=False)
-
-    def test_config_relative_path_allowed(self) -> None:
-        config_dir = self.root / ".vibe-kernel"
-        config_dir.mkdir()
-        (config_dir / "config.json").write_text(
-            json.dumps({"state_path": ".vibe-kernel/runtime/.state.md"}), encoding="utf-8"
-        )
-        core = WorkflowCore(self.root, env=self.env, import_legacy=False)
-        self.assertEqual(core.resolved.state_path, self.root.resolve() / ".vibe-kernel" / "runtime" / ".state.md")
-
-    def test_external_corrupt_state_is_copied_not_renamed(self) -> None:
-        outside = Path(self._tmp.name) / "victim.txt"
-        outside.write_text("PRECIOUS\n", encoding="utf-8")
+            WorkflowCore(self.root, env=self.env, import_legacy=False, memory_key="other:key")
         core = WorkflowCore(
             self.root,
             env=self.env,
             import_legacy=False,
-            state_path=outside,
+            memory_key="vc:checkpoint:explicit",
         )
+        self.assertEqual(core.resolved.memory_key, "vc:checkpoint:explicit")
+
+    def test_memory_key_override_is_used(self) -> None:
+        core = WorkflowCore(
+            self.root,
+            env=self.env,
+            import_legacy=False,
+            memory_key=f"vc:checkpoint:{self.root.resolve()}:run-2",
+        )
+        self.assertTrue(core.store.write({"phase": STATE_LABELS["S0"]}).ok)
+        self.assertIsNotNone(core.store.memory.get(core.resolved.memory_key))
+        self.assertIsNone(self.core.store.memory.get(self.core.resolved.memory_key))
+
+    def test_explicit_memory_db_corrupt_is_quarantined(self) -> None:
+        custom = Path(self._tmp.name) / "explicit" / "memory.sqlite"
+        core = WorkflowCore(self.root, env=self.env, import_legacy=False, memory_db=custom)
+        core.store.memory.set(core.resolved.memory_key, "<<< corrupt >>>\n")
         result = core.load_checkpoint()
         self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertTrue(outside.exists())
-        self.assertEqual(outside.read_text(encoding="utf-8"), "PRECIOUS\n")
-        backups = list(outside.parent.glob("victim.txt.corrupt-*"))
-        self.assertEqual(len(backups), 1)
+        self.assertTrue(custom.exists())
+        self.assertIsNone(core.store.memory.get(core.resolved.memory_key))
+        prefix = f"vc:checkpoint-quarantine:{core.resolved.project_id}:corrupt:"
+        self.assertEqual(len(core.store.memory.keys(prefix)), 1)
 
-    @unittest.skipUnless(sys.platform == "darwin" or os.name == "nt", "大小写不敏感平台")
-    def test_skill_dir_case_insensitive_bypass_blocked(self) -> None:
-        skill = Path(self._tmp.name) / "CaseSkill"
-        skill.mkdir()
-        (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
-        env = {"HOME": str(self.home), "VIBE_KERNEL_SKILL_DIR": str(skill)}
+    def test_reject_nul_memory_db(self) -> None:
         with self.assertRaises(CheckpointLocationError):
-            WorkflowCore(
-                self.root,
-                env=env,
-                import_legacy=False,
-                state_dir=str(skill).upper(),
-            )
+            WorkflowCore(self.root, env=self.env, import_legacy=False, memory_db="a\x00b")
 
-    def test_gitignore_symlink_not_followed(self) -> None:
+    def test_memory_db_does_not_create_project_directory(self) -> None:
         target = Path(self._tmp.name) / "target.txt"
         target.write_text("KEEP-ME\n", encoding="utf-8")
         (self.root / ".gitignore").symlink_to(target)
         result = self.seed()
+        self.assertTrue(result.ok)
         self.assertEqual(target.read_text(encoding="utf-8"), "KEEP-ME\n")
-        self.assertIn("gitignore_symlink_skipped", result.warnings)
-        self.assertTrue((self.root / ".vibe-kernel" / ".gitignore").exists())
+        self.assertFalse((self.root / ".vibe-kernel").exists())
 
     def test_project_id_change_forces_write(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(_state_text(phase="S1 Intent", loop="0"), encoding="utf-8")
+        self.write_state_text(_state_text(phase="S1 Intent", loop="0"))
         result = self.core.store.write({"current_step": "keep"})
         self.assertTrue(result.ok)
         self.assertTrue(result.changed)
@@ -144,12 +124,11 @@ class CheckpointHardening(CoreTest):
 
 class PhaseGuardHardening(CoreTest):
     def _write_raw(self, **overrides: str) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(_state_text(**overrides), encoding="utf-8")
+        self.write_state_text(_state_text(**overrides))
 
     def test_unknown_phase_rejected_in_all_read_paths(self) -> None:
         self._write_raw(phase="Code", loop="1")
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         loaded = self.core.load_checkpoint()
         self.assertEqual(loaded.mode, "reference_only")
         self.assertEqual(loaded.code, "CHECKPOINT_DEGRADED")
@@ -160,52 +139,44 @@ class PhaseGuardHardening(CoreTest):
         self.assertEqual(feed.code, "CHECKPOINT_DEGRADED")
         repeat = self.core.repeat_check("fp:x")
         self.assertEqual(repeat.code, "CHECKPOINT_DEGRADED")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
-    def test_non_utf8_state_is_corrupt_and_backed_up(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_bytes(b"\xff\xfe\x00")
-        result = self.core.load_checkpoint()
-        self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertFalse(self.state_path.exists())
-        self.assertTrue(list(self.state_path.parent.glob(".state.md.corrupt-*")))
-
-    @unittest.skipIf(os.name == "nt", "mkfifo 仅 POSIX")
-    def test_state_file_fifo_does_not_block(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        os.mkfifo(self.state_path)
-        result = self.core.load_checkpoint()
-        self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertFalse(self.state_path.exists())
-
-    def test_default_vibe_kernel_symlink_rejected(self) -> None:
-        outside = Path(self._tmp.name) / "outside"
-        outside.mkdir()
-        (self.root / ".vibe-kernel").symlink_to(outside)
-        with self.assertRaises(CheckpointLocationError):
-            WorkflowCore(self.root, env=self.env, import_legacy=False)
-
-    def test_existing_state_dir_permissions_not_changed(self) -> None:
-        shared = Path(self._tmp.name) / "shared"
-        shared.mkdir()
-        os.chmod(shared, 0o755)
-        core = WorkflowCore(
-            self.root, env=self.env, import_legacy=False, state_dir=shared
+    def test_expired_entry_is_treated_as_absent(self) -> None:
+        self.seed()
+        self.core.store.memory.set(
+            self.state_key, self.raw_state(), ttl_seconds=-1
         )
-        core.store.write({"phase": STATE_LABELS["S0"]})
-        if os.name != "nt":
-            self.assertEqual(shared.stat().st_mode & 0o777, 0o755)
+        result = self.core.load_checkpoint()
+        self.assertEqual(result.mode, "fresh_start")
+        self.assertEqual(result.reason, "no_checkpoint")
 
     def test_plan_fifo_does_not_block_transition(self) -> None:
         self.seed_code("S7")
-        plan = self.root / ".vibe-kernel" / "plan.md"
-        os.mkfifo(plan)
+        plan_dir = self.root / ".vibe-kernel"
+        plan_dir.mkdir()
+        plan = plan_dir / "plan.md"
+        if os.name == "nt":
+            plan.write_text("plan\n", encoding="utf-8")
+        else:
+            os.mkfifo(plan)
         (self.root / "a.py").write_text("x\n", encoding="utf-8")
         result = self.t(
             "S8",
             exit_checklist=ExitChecklist("S7 Plan", ["a.py"], ["done"]),
         )
         self.assertTrue(result.ok, result.message)
+
+    def test_legacy_symlink_not_imported(self) -> None:
+        legacy_dir = self.root / ".vibe-kernel"
+        legacy_dir.mkdir()
+        target = Path(self._tmp.name) / "victim.md"
+        target.write_text(_state_text(), encoding="utf-8")
+        (legacy_dir / ".state.md").symlink_to(target)
+        core = WorkflowCore(self.root, env=self.env, import_legacy=True)
+        result = core.load_checkpoint()
+        self.assertEqual(result.mode, "fresh_start")
+        self.assertIsNone(result.legacy_import)
+        self.assertEqual(target.read_text(encoding="utf-8"), _state_text())
 
 
 class ArchiveHardening(CoreTest):
@@ -219,15 +190,17 @@ class ArchiveHardening(CoreTest):
         self.assertTrue(self.t("S0").ok)
         self.assertEqual(self.core.get_state().status, "complete")
         self.assertTrue(self.t("S1", loop=0).ok)
-        self.assertTrue(list(self.state_path.parent.glob(".state.md.complete-*")))
+        self.assertEqual(len(self.archive_keys("complete")), 1)
         fields = self.core.store.snapshot().fields
         self.assertEqual(fields["completed"], [])
         self.assertEqual(fields["pending"], [])
 
-    def test_external_complete_state_is_copied_not_renamed(self) -> None:
-        outside = Path(self._tmp.name) / "external.md"
+    def test_explicit_key_complete_state_is_archived(self) -> None:
         core = WorkflowCore(
-            self.root, env=self.env, import_legacy=False, state_path=outside
+            self.root,
+            env=self.env,
+            import_legacy=False,
+            memory_key="vc:checkpoint:external-run",
         )
         core.store.write(
             {
@@ -240,10 +213,11 @@ class ArchiveHardening(CoreTest):
             }
         )
         self.assertTrue(core.transition("S1", loop=0).ok)
-        self.assertTrue(outside.exists())
-        backups = list(outside.parent.glob("external.md.complete-*"))
-        self.assertEqual(len(backups), 1)
-        self.assertIn('"S13 Complete"', backups[0].read_text(encoding="utf-8"))
+        prefix = f"vc:checkpoint-quarantine:{core.resolved.project_id}:complete:"
+        self.assertEqual(len(core.store.memory.keys(prefix)), 1)
+        archived = core.store.memory.get(core.store.memory.keys(prefix)[0])
+        assert archived is not None
+        self.assertIn('"S13 Complete"', archived.value)
 
 
 class SafeModeEvidenceHardening(CoreTest):
@@ -274,10 +248,8 @@ class SafeModeEvidenceHardening(CoreTest):
         self.assertFalse(result.no_progress)
 
     def test_snapshot_refuses_foreign_full_state(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            _state_text(_project_id="deadbeefdeadbeef", phase="S10 Review"),
-            encoding="utf-8",
+        self.write_state_text(
+            _state_text(_project_id="deadbeefdeadbeef", phase="S10 Review")
         )
         snapshot = self.core.snapshot_task_zone()
         self.assertIn("CHECKPOINT_FOREIGN", snapshot)
@@ -285,17 +257,18 @@ class SafeModeEvidenceHardening(CoreTest):
 
 
 class Round2Hardening(CoreTest):
-    def test_external_state_write_corrupt_copies_not_renames(self) -> None:
-        outside = Path(self._tmp.name) / "victim.txt"
-        outside.write_text("PRECIOUS\n", encoding="utf-8")
-        core = WorkflowCore(
-            self.root, env=self.env, import_legacy=False, state_path=outside
-        )
+    def test_memory_db_corrupt_write_quarantines(self) -> None:
+        custom = Path(self._tmp.name) / "custom" / "db.sqlite"
+        core = WorkflowCore(self.root, env=self.env, import_legacy=False, memory_db=custom)
+        core.store.memory.set(core.resolved.memory_key, "PRECIOUS\n")
         result = core.store.write({"phase": STATE_LABELS["S1"]})
-        self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertTrue(outside.exists())
-        self.assertEqual(outside.read_text(encoding="utf-8"), "PRECIOUS\n")
-        self.assertEqual(len(list(outside.parent.glob("victim.txt.corrupt-*"))), 1)
+        self.assertTrue(result.ok)
+        self.assertIn("corrupt_quarantined", result.warnings)
+        prefix = f"vc:checkpoint-quarantine:{core.resolved.project_id}:corrupt:"
+        self.assertEqual(len(core.store.memory.keys(prefix)), 1)
+        current = core.store.memory.get(core.resolved.memory_key)
+        assert current is not None
+        self.assertIn("S1 Intent", current.value)
 
     def test_unknown_key_only_write_is_persisted(self) -> None:
         self.seed()
@@ -322,9 +295,8 @@ class Round2Hardening(CoreTest):
         self.assertEqual(self.core.get_state().phase, "S14 Safe Mode")
 
     def test_state_check_rejects_float_and_bool_numbers(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            _state_text(loop="1.5", level="true", _rev='"abc"'), encoding="utf-8"
+        self.write_state_text(
+            _state_text(loop="1.5", level="true", _rev='"abc"')
         )
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "state", "check", "--cwd", str(self.root)],
@@ -416,10 +388,10 @@ class ArtifactHardening(CoreTest):
 class SafeModeHardening(CoreTest):
     def test_s14_self_escalation_rejected(self) -> None:
         self.seed_code("S14", status="paused", _resume_from="S8 Code")
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         result = self.t("S14", force=True, reason="again")
         self.assertEqual(result.code, "STATE_ILLEGAL_TRANSITION")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
     def test_s14_entry_does_not_complete_stage_or_clobber_step(self) -> None:
         self.seed_code("S8", loop=1, current_step="fix auth", completed=["prev"])
@@ -483,12 +455,11 @@ class SafeModeHardening(CoreTest):
 
 class CoreHardening(CoreTest):
     def test_repeat_check_returns_repeat_result_for_schema_and_foreign(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(_state_text(_schema="2"), encoding="utf-8")
+        self.write_state_text(_state_text(_schema="2"))
         result = self.core.repeat_check("fp:x")
         self.assertEqual(result.code, "CHECKPOINT_SCHEMA_AHEAD")
         self.assertEqual(result.fingerprint, "fp:x")
-        self.state_path.write_text(_state_text(_project_id="deadbeefdeadbeef"), encoding="utf-8")
+        self.write_state_text(_state_text(_project_id="deadbeefdeadbeef"))
         result = self.core.repeat_check("fp:x")
         self.assertEqual(result.code, "CHECKPOINT_FOREIGN")
         self.assertEqual(result.fingerprint, "fp:x")
@@ -503,16 +474,14 @@ class CoreHardening(CoreTest):
             ExecResult.from_dict({"exec_id": "e", "exit_code": "abc"})
 
     def test_feed_exec_refuses_degraded_state(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+        self.write_state_text(
             "---\nstatus: active\nphase: S8 Code\nloop: 1\nlevel: 2\n"
-            "updated_at: 2026-10-20 08:55\ncompleted: [unparsable\n",
-            encoding="utf-8",
+            "updated_at: 2026-10-20 08:55\ncompleted: [unparsable\n"
         )
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         result = self.core.feed_exec(ExecResult(exec_id="e1", ok=True))
         self.assertEqual(result.code, "CHECKPOINT_DEGRADED")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
     def test_snapshot_sanitizes_control_and_newlines(self) -> None:
         self.seed_code(
@@ -527,7 +496,7 @@ class CoreHardening(CoreTest):
     def test_complete_state_archived_on_new_cycle(self) -> None:
         self.seed_code("S13", status="complete")
         self.assertTrue(self.t("S1", loop=0).ok)
-        self.assertTrue(list(self.state_path.parent.glob(".state.md.complete-*")))
+        self.assertEqual(len(self.archive_keys("complete")), 1)
         self.assertEqual(self.core.store.snapshot().fields["completed"], [])
 
 
@@ -548,11 +517,9 @@ class CliHardening(CoreTest):
         self.assertEqual(proc.returncode, 4)
         self.assertTrue((self.core.resolved.artifacts_dir / "evidence.log").exists())
 
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+        self.write_state_text(
             "---\nstatus: active\nphase: S8 Code\nloop: 1\nlevel: 2\n"
-            "updated_at: 2026-10-20 08:55\ncompleted: [unparsable\n",
-            encoding="utf-8",
+            "updated_at: 2026-10-20 08:55\ncompleted: [unparsable\n"
         )
         proc = self._run("state", "gc", "--cwd", str(self.root))
         self.assertEqual(proc.returncode, 4)
@@ -603,28 +570,21 @@ class CliHardening2(CliHardening):
     def test_gc_refuses_schema_invalid(self) -> None:
         self.core.resolved.artifacts_dir.mkdir(parents=True, exist_ok=True)
         (self.core.resolved.artifacts_dir / "old.log").write_text("x\n", encoding="utf-8")
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(_state_text(_schema="-1"), encoding="utf-8")
+        self.write_state_text(_state_text(_schema="-1"))
         proc = self._run("state", "gc", "--cwd", str(self.root))
         self.assertEqual(proc.returncode, 4)
         self.assertTrue((self.core.resolved.artifacts_dir / "old.log").exists())
 
 
-
-
 class Round3Hardening(CoreTest):
-    def _config_core(self, relative: str = ".vibe-kernel/run/.state.md"):
-        config_dir = self.root / ".vibe-kernel"
-        config_dir.mkdir(exist_ok=True)
-        (config_dir / "config.json").write_text(
-            json.dumps({"state_path": relative}), encoding="utf-8"
+    def _explicit_core(self, key: str = "vc:checkpoint:run-explicit"):
+        return WorkflowCore(
+            self.root, env=self.env, import_legacy=False, memory_key=key
         )
-        return WorkflowCore(self.root, env=self.env, import_legacy=False)
 
-    def test_config_managed_corrupt_recovers(self) -> None:
-        core = self._config_core()
-        core.resolved.state_path.parent.mkdir(parents=True, exist_ok=True)
-        core.resolved.state_path.write_text("<<< corrupt >>>\n", encoding="utf-8")
+    def test_explicit_key_corrupt_recovers(self) -> None:
+        core = self._explicit_core()
+        core.store.memory.set(core.resolved.memory_key, "<<< corrupt >>>\n")
         loaded = core.load_checkpoint()
         self.assertEqual(loaded.mode, "fresh_start")
         self.assertEqual(loaded.code, "CHECKPOINT_CORRUPT")
@@ -632,20 +592,18 @@ class Round3Hardening(CoreTest):
         self.assertEqual(core.get_state().phase, "S1 Intent")
 
     def test_external_corrupt_is_reference_only_and_api_no_throw(self) -> None:
-        outside = Path(self._tmp.name) / "external.md"
-        outside.write_text("<<< corrupt >>>\n", encoding="utf-8")
-        core = WorkflowCore(
-            self.root, env=self.env, import_legacy=False, state_path=outside
-        )
+        custom = Path(self._tmp.name) / "external" / "db.sqlite"
+        core = WorkflowCore(self.root, env=self.env, import_legacy=False, memory_db=custom)
+        core.store.memory.set(core.resolved.memory_key, "<<< corrupt >>>\n")
         loaded = core.load_checkpoint()
-        self.assertEqual(loaded.mode, "reference_only")
+        self.assertEqual(loaded.mode, "fresh_start")
+        self.assertEqual(loaded.code, "CHECKPOINT_CORRUPT")
+        self.assertIsNone(core.store.memory.get(core.resolved.memory_key))
         result = core.transition("S1")
-        self.assertEqual(result.code, "CHECKPOINT_CORRUPT")
-        self.assertTrue(outside.exists())
+        self.assertTrue(result.ok, result.message)
 
-    def test_archive_reset_on_config_path(self) -> None:
-        core = self._config_core()
-        core.resolved.state_path.parent.mkdir(parents=True, exist_ok=True)
+    def test_archive_reset_on_explicit_key(self) -> None:
+        core = self._explicit_core()
         core.store.write(
             {
                 "status": "complete",
@@ -668,56 +626,23 @@ class Round3Hardening(CoreTest):
         self.assertEqual(fields["resume"], "")
         self.assertEqual(fields["goal"]["explicit"], "")
         self.assertNotIn("failure_state", fields["review"])
-
-    def test_archive_reset_on_external_path(self) -> None:
-        outside = Path(self._tmp.name) / "external.md"
-        core = WorkflowCore(
-            self.root, env=self.env, import_legacy=False, state_path=outside
-        )
-        core.store.write(
-            {
-                "status": "complete",
-                "phase": "S13 Complete",
-                "loop": 1,
-                "level": 2,
-                "completed": ["old"],
-                "pending": ["oldp"],
-                "review": {"failure_state": {"consecutive_count": 2}},
-            }
-        )
-        self.assertTrue(core.transition("S1", loop=0).ok)
-        fields = core.store.snapshot().fields
-        self.assertEqual(fields["completed"], [])
-        self.assertEqual(fields["pending"], [])
-        self.assertNotIn("failure_state", fields["review"])
-        self.assertTrue(outside.exists())
-        self.assertTrue(list(outside.parent.glob("external.md.complete-*")))
+        prefix = f"vc:checkpoint-quarantine:{core.resolved.project_id}:complete:"
+        self.assertEqual(len(core.store.memory.keys(prefix)), 1)
+        self.assertEqual(len(core.store.memory.keys("vc:checkpoint:run-explicit")), 1)
 
     def test_null_phase_rejected(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(_state_text(phase="null"), encoding="utf-8")
+        self.write_state_text(_state_text(phase="null"))
         view = self.core.get_state()
         self.assertEqual(view.code, "CHECKPOINT_DEGRADED")
         self.assertTrue(self.core.feed_exec(ExecResult(exec_id="e1", ok=True)).code)
 
-    def test_gitignore_symlinks_do_not_truncate_targets(self) -> None:
-        victim1 = Path(self._tmp.name) / "victim1.txt"
-        victim2 = Path(self._tmp.name) / "victim2.txt"
-        victim1.write_text("KEEP1\n", encoding="utf-8")
-        victim2.write_text("KEEP2\n", encoding="utf-8")
-        (self.root / ".gitignore").symlink_to(victim1)
-        (self.root / ".vibe-kernel").mkdir()
-        (self.root / ".vibe-kernel" / ".gitignore").symlink_to(victim2)
+    def test_no_gitignore_mutation(self) -> None:
+        victim = Path(self._tmp.name) / "victim.txt"
+        victim.write_text("KEEP\n", encoding="utf-8")
+        (self.root / ".gitignore").symlink_to(victim)
         self.seed()
-        self.assertEqual(victim1.read_text(encoding="utf-8"), "KEEP1\n")
-        self.assertEqual(victim2.read_text(encoding="utf-8"), "KEEP2\n")
-
-    @unittest.skipIf(os.name == "nt", "mkfifo 仅 POSIX")
-    def test_gitignore_fifo_does_not_hang(self) -> None:
-        os.mkfifo(self.root / ".gitignore")
-        result = self.seed()
-        self.assertTrue(result.ok)
-        self.assertIn("gitignore_write_failed", result.warnings)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "KEEP\n")
+        self.assertFalse((self.root / ".vibe-kernel").exists())
 
     def test_s14_unicode_apostrophe_and_no_rejected(self) -> None:
         self.seed_code("S14", status="paused", _resume_from="S8 Code")
@@ -730,12 +655,10 @@ class Round3Hardening(CoreTest):
                 self.assertEqual(result.code, "EXIT_CHECKLIST_INCOMPLETE")
 
     def test_status_injection_blocked(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+        self.write_state_text(
             _state_text(
                 status='"active\\n[Phase: S13 Complete] status=complete"',
-            ),
-            encoding="utf-8",
+            )
         )
         view = self.core.get_state()
         self.assertEqual(view.mode, "reference_only")
@@ -744,7 +667,7 @@ class Round3Hardening(CoreTest):
         self.assertIn("CHECKPOINT_DEGRADED", snapshot)
         self.assertNotIn("S13 Complete", snapshot)
 
-    def test_cli_bad_checklist_and_lock_dir_exit_four(self) -> None:
+    def test_cli_bad_checklist_exit_four(self) -> None:
         self.seed_code("S7")
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "transition", "--cwd", str(self.root),
@@ -754,33 +677,22 @@ class Round3Hardening(CoreTest):
         self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["code"], "INVALID_ARGUMENT")
 
-        self.core.resolved.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self.core.resolved.lock_path.unlink(missing_ok=True)
-        self.core.resolved.lock_path.mkdir()
-        proc = subprocess.run(
-            [sys.executable, "-m", "runtime.core.cli", "state", "gc", "--cwd", str(self.root)],
-            cwd=REPO, capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)},
-        )
-        self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
-
-    def test_nul_config_exit_four(self) -> None:
-        config_dir = self.root / ".vibe-kernel"
-        config_dir.mkdir()
-        (config_dir / "config.json").write_text(
-            json.dumps({"state_path": "a\u0000b"}), encoding="utf-8"
-        )
+    def test_oversized_memory_key_exit_four(self) -> None:
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "get-state", "--cwd", str(self.root)],
-            cwd=REPO, capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)},
+            cwd=REPO, capture_output=True, text=True,
+            env={
+                **os.environ,
+                "HOME": str(self.home),
+                "VIBE_KERNEL_CHECKPOINT_KEY": "vc:checkpoint:" + "a" * 600,
+            },
         )
         self.assertEqual(proc.returncode, 4, proc.stdout + proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["code"], "CHECKPOINT_LOCATION_UNRESOLVED")
 
     def test_state_check_rejects_wrong_shapes(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            _state_text(completed="NOT-A-LIST", pending="123", review="nope", goal="not-a-map"),
-            encoding="utf-8",
+        self.write_state_text(
+            _state_text(completed="NOT-A-LIST", pending="123", review="nope", goal="not-a-map")
         )
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "state", "check", "--cwd", str(self.root)],
@@ -794,10 +706,7 @@ class Round3Hardening(CoreTest):
     def test_gc_refuses_missing_fields(self) -> None:
         self.core.resolved.artifacts_dir.mkdir(parents=True, exist_ok=True)
         (self.core.resolved.artifacts_dir / "old.log").write_text("x\n", encoding="utf-8")
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            "---\n_schema: 1\nstatus: paused\nphase: S1 Intent\n", encoding="utf-8"
-        )
+        self.write_state_text("---\n_schema: 1\nstatus: paused\nphase: S1 Intent\n")
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "state", "gc", "--cwd", str(self.root)],
             cwd=REPO, capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)},
@@ -813,18 +722,18 @@ class Round3Hardening(CoreTest):
         replay = self.core.feed_exec(ExecResult(exec_id="e1", ok=False, fingerprint="fp:a"))
         self.assertEqual(replay.consecutive_count, 2)
 
-    def test_gc_creates_state_dir_0700(self) -> None:
+    def test_gc_without_state_creates_nothing(self) -> None:
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "state", "gc", "--cwd", str(self.root)],
             cwd=REPO, capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)},
         )
         self.assertEqual(proc.returncode, 4)
-        if os.name != "nt":
-            self.assertEqual(self.core.resolved.state_dir.stat().st_mode & 0o777, 0o700)
+        self.assertFalse((self.root / ".vibe-kernel").exists())
+        self.assertFalse(self.core.resolved.artifacts_dir.exists())
 
     def test_write_size_limit_does_not_corrupt_state(self) -> None:
         self.seed_code("S8", loop=1)
-        before = self.state_path.read_text(encoding="utf-8")
+        before = self.raw_state()
         result = self.core.feed_exec(
             ExecResult(exec_id="e1", ok=False, fingerprint="f" * (9 * 1024 * 1024))
         )
@@ -836,7 +745,7 @@ class Round3Hardening(CoreTest):
         for item in failure.get("history", []):
             self.assertLessEqual(len(str(item)), 256)
         self.assertEqual(stored.quality.value, "strict")
-        self.assertLessEqual(len(self.state_path.read_bytes()), 4 * 1024 * 1024)
+        self.assertLessEqual(len(self.raw_state().encode("utf-8")), 4 * 1024 * 1024)
         self.assertTrue(before)
 
     def test_complete_get_state_is_reference_only(self) -> None:

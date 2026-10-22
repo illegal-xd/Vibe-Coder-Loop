@@ -99,7 +99,7 @@ bash scripts/audit.sh check --format=json
 | C009 | high | 记忆快照被 Git 跟踪 |
 | C010 | info | 非 Git 工作区，跳过跟踪面检查 |
 | C011 | info / high | 本机脱敏规则集不存在（info：未生成，规则内容按隐私约束不入库）／存在但含个人路径（high：应导出为 `~` / `<USERPROFILE>`） |
-| C012 | high | 协议声明的运行时状态路径（`.vibe-kernel/.state.md`）未被 `.gitignore` 忽略（运行状态禁止提交） |
+| C012 | high | Checkpoint 存储契约漂移：协议未声明 delx-memory key `vc:checkpoint:`、协议回退到项目内 `.vibe-kernel/.state.md`，或 runtime 仍创建项目内状态目录 |
 
 宿主目录可用环境变量覆盖：
 

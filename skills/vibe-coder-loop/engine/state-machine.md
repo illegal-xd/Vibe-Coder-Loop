@@ -107,7 +107,7 @@ S14 Safe Mode
 | **Pause** | 输出追问清单 / 进度快照，等输入 | Confidence Low；S1 目标不明；Retry 耗尽；引用对象缺失**且不可重建**；用户"停止循环 / 接受当前代码" |
 | **Safe Mode** | 停自动修改 + 风险报告 + 等确认 | `kernel.md` §5 触发表（含**无进展**） |
 
-**不算异常（不进上表）**：**Queue** = steering / follow-up，进 `kernel.md` §1 双队列，不触发以上任一类；**Runtime Recovery** = Compaction / overflow，属宿主职责，Agent 只按「压缩后继续执行」+ `.state.md` 恢复；**Degradation** 非独立类，是 Rollback 类下的执行形态变化。
+**不算异常（不进上表）**：**Queue** = steering / follow-up，进 `kernel.md` §1 双队列，不触发以上任一类；**Runtime Recovery** = Compaction / overflow，属宿主职责，Agent 只按「压缩后继续执行」+ Checkpoint 恢复；**Degradation** 非独立类，是 Rollback 类下的执行形态变化。
 
 ## 循环计数规则
 
@@ -138,7 +138,7 @@ S14 Safe Mode
 
 ## 上下文压缩（Runtime 负责）
 
-> ⚠️ **验证状态（常驻提醒）**：本条「压缩后状态延续契约」在**「会话内压缩」维度未经真机观测**（R3–R8 共 26 次判定均为规则层推演 + 盲测，`[Evidence: E2/E3]`）。**「跨会话恢复」维度已取 E4**：另一会话写 `.state.md` → 全新 agent 真机读取并推出入口阶段/下一步（见 `references/e4-matrix.md` Test D-1）。
+> ⚠️ **验证状态（常驻提醒）**：本条「压缩后状态延续契约」在**「会话内压缩」维度未经真机观测**（R3–R8 共 26 次判定均为规则层推演 + 盲测，`[Evidence: E2/E3]`）。**「跨会话恢复」维度已取 E4**：另一会话写 Checkpoint 条目 → 全新 agent 真机读取并推出入口阶段/下一步（见 `references/e4-matrix.md` Test D-1）。
 > **触发核对（出现任一即采集）**：① 压缩后无法确定 Phase / Loop N / 下一步；② context overflow 或 TASK 字段缺失（如 S10 情况 B 引用不到 S6 模块划分）；③ 用户反馈进度信息丢失。
 > **采集动作**：当场填 `references/e4-matrix.md`「D-3 现场采集卡」→ 列入「📋 待用户决策清单」，**不暂停循环**（除非同时命中 `kernel.md` §1，此时以暂停优先）→ 据实补 E4 证据，被证伪则改本条契约并同步 CHANGELOG。详见 `lesson:compaction-e4-unverified-reminder`。
 
@@ -188,13 +188,15 @@ S14 Safe Mode
 
 **诚实约束**：禁止声称已调用不存在的压缩工具，禁止伪造压缩结果。
 
-## Workflow Checkpoint（`.state.md`）
+## Workflow Checkpoint（delx-memory）
 
-> **性质**：**Checkpoint ≠ Memory ≠ Context Manager**。它是 📌 TASK 区（字段定义见上「压缩后状态延续契约」表）的**落盘形式**，唯一用途是**跨会话恢复**。**不保存长期经验**（经验归 delx-memory，走 S11/S12），**不承担压缩**（压缩归 Runtime），**不参与规则仲裁**。
-> **文件**：运行实例 = `<project_root>/.vibe-kernel/.state.md`（单文件单实例，新循环覆盖上一循环；整个 `.vibe-kernel/` 须 gitignore，禁止提交）。**运行时状态不落 Skill 安装目录**——安装目录是只读代码资产，放进那里会让多个项目互相覆盖同一份状态。
-> **位置解析**：① `--state-dir` 显式参数 → ② `VIBE_KERNEL_STATE_DIR` → ③ `<project_root>/.vibe-kernel/config.json` 的 `state_path` → ④ 缺省 `<project_root>/.vibe-kernel/.state.md`。`project_root` = 显式 `--cwd`，或从 cwd 向上首个含项目标记（`.git` / `.vibe-kernel` / `pyproject.toml` / `package.json` / `go.mod`）的目录。**解析结果落在 Skill 安装目录内 → 拒绝写入**（fail-closed）。
-> **隔离**：每个项目、每个 git worktree 各自一份（worktree 优先于子目录）；路径一律 `realpath` 归一——软链接指向同一目录即视为**同一项目**（这是期望行为），指向不同目录则各自隔离。
-> **创建**：首次使用或实例缺失时，从 `<skill>/.state.template.md` 复制创建；模板只含字段骨架与注释，不含个人任务数据。
+> **性质**：**Checkpoint ≠ Memory ≠ Context Manager**。它是 📌 TASK 区（字段定义见上「压缩后状态延续契约」表）的**持久化形式**，唯一用途是**跨会话恢复**。**不保存长期经验**（经验归 delx-memory 的 L1–L7，走 S11/S12），**不承担压缩**（压缩归 Runtime），**不参与规则仲裁**。
+> **存储**：delx-memory 记忆条目，**项目目录不创建任何状态文件**（不建 `.vibe-kernel/`、不写 Checkpoint 条目）。
+> **唯一 ID**：key = `vc:checkpoint:<项目绝对地址 realpath>` —— 项目在系统中的地址即身份，天然区分同名目录、子目录与 worktree。
+> **L0 独立 tag**：条目固定 `tags = vc-checkpoint / L0 / scope:project`，`metadata.layer = "L0"`。`L0` = **运行实例态**（不是经验/规则层）；独立 tag 的作用是让 Preflight 召回规则/经验时**排除** Checkpoint，只有恢复协议按 key 精确读取。
+> **位置解析**：① `--memory-key` / `VIBE_KERNEL_CHECKPOINT_KEY`（测试/运维覆盖，须以 `vc:checkpoint:` 开头）→ ② 缺省 `vc:checkpoint:<realpath(project_root)>`。记忆库：`--memory-db` / `DELX_MEMORY_DB` → 缺省 `~/.delx-memory/db.sqlite`（与 `memory_tool.py` 同库同表）。
+> **project_root** = 显式 `--cwd`，或从 cwd 向上首个含项目标记（`.git` / `pyproject.toml` / `package.json` / `go.mod`）的目录；旧 `.vibe-kernel/` 仅作 legacy 标记与一次性导入来源。路径一律 `realpath` 归一——软链指向同一目录即**同一项目**（期望行为），不同目录各自隔离。
+> **创建**：首次写入即 upsert；值骨架见 `<skill>/.state.template.md`（模板本身不改写）。
 
 **字段（13 项，防漂移）**：`status` `phase` `loop` `level` `goal` `current_step` `completed` `pending` `decisions` `review` `user_decisions` `resume` `updated_at`。其中 **`updated_at`** 为 freshness 字段（最后写入时刻，**须到分钟**）——恢复协议第 1 条据它识别「同日陈旧」；不承载状态语义（必需字段集的机械判定见 smoke-check 6b）。其中 **`status` 为新增**；TASK 区 ⑨「上一阶段输出指针（S2 环境结论 / S5 需求复述 / S6 模块划分）」由 **`resume`** 承载，⑩「上轮失败原因 + Review 判定 A·B·C」由 **`review.last_review（最近一轮审查结论）/ review.last_failure（最近一次未通过的原因）`** 承载，其余项直接对应——故本机制不引入第二套状态语义。模板与字段注释见 `.state.template.md`（此处不复述）。
 
@@ -210,11 +212,21 @@ S14 Safe Mode
 
 **兼容规则（三条硬约束）**：① **未知键必须原样保留**——写入方不得丢弃不认识的键（防「Skill 先加字段、工具后升级」互相破坏）；② `_schema` 高于读取方支持版本 → 降级为「仅参考」，**只读不写**；③ 保留键缺失不构成损坏，按上表缺省处理。
 
-**语法（机器读取口径）**：顶部单个 `---` 开始的 **YAML 子集**——块映射、块序列（`- item`，空写 `[]`）、单/双引号标量、块字面量 `|`（`resume` 用）、行注释 `#`。**不支持**锚点/别名、流式集合、多文档、标签。写端须给字符串标量**一律加引号**（防列表项以 `**`/`*` 开头被当别名）。解析失败 → 先降级为「仅扁平标量」（`status`/`phase`/`loop`/`level`/`updated_at`）→ 仍失败判 `corrupt`（备份 `.state.corrupt-<ts>` 后全新开始，不静默丢弃）。
+**语法（机器读取口径）**：条目 `value` 是顶部单个 `---` 开始的 **YAML 子集**——块映射、块序列（`- item`，空写 `[]`）、单/双引号标量、块字面量 `|`（`resume` 用）、行注释 `#`。**不支持**锚点/别名、流式集合、多文档、标签。写端须给字符串标量**一律加引号**（防列表项以 `**`/`*` 开头被当别名）。解析失败 → 先降级为「仅扁平标量」（`status`/`phase`/`loop`/`level`/`updated_at`）→ 仍失败判 `corrupt`（复制到 `vc:checkpoint-quarantine:<project_id>:corrupt:<ts>` 后清空主条目，不静默丢弃）。
 
-**写入纪律（避免"写了文件但没写状态"）**：**仅当字段发生变化时写入**——`phase` / `loop` / `current_step` / `completed` / `pending` 任一项变化 → 在**该阶段出口**写入（追加式）。无变化的阶段不写（省去"未变化也记一行"的仪式，避免恒定写放大）。
+**写入纪律（避免"写了但没写状态"）**：**仅当字段发生变化时写入**——`phase` / `loop` / `current_step` / `completed` / `pending` 任一项变化 → 在**该阶段出口**写入（追加式）。无变化的阶段不写（省去"未变化也记一行"的仪式，避免恒定写放大）。
 
-**写入方式（机器端）**：同目录临时文件 → `flush` + `fsync` → `os.replace` 原子替换；写入全程持有跨平台文件锁（POSIX `fcntl.flock` / Windows `msvcrt.locking`）；带 `expected_rev` 的写入在 `_rev` 不匹配时返回冲突、**不覆盖**（锁只保证串行，版本号才防「基于旧状态覆盖」）。Agent 手写本文件后须自检：已安装 Core 时用 `core state check`；未安装时按上述语法人工核对（单个 `---` 开头、无流式集合/锚点、字符串已加引号、无第二个 `---`）。
+**写入通道（统一走 delx-memory）**：
+
+| 通道 | 用法 | 适用 |
+|---|---|---|
+| 机器端（首选） | `python3 runtime/core/cli.py <cmd> --cwd <project_root>`（`get-state` / `load-checkpoint` / `transition` / `state check`） | 有 `_rev` 乐观锁 + 字段校验 + 事务；阶段出口写状态 |
+| Agent 端 | `delx-memory_memory_get` / `delx-memory_memory_set`，key 同上 | 机器端不可用时的降级；**`memory_set` 必须整条回传 value + tags + metadata + ttl**（三列整体替换，漏传即清空） |
+
+- **并发**：写路径在 SQLite `BEGIN IMMEDIATE` 事务内完成读-改-写；`expected_rev` 不匹配 → `STATE_REV_CONFLICT`，**不覆盖**。
+- **损坏**：先复制为 quarantine 条目（可回滚）→ 清空主条目 → 全新开始；主条目内容不静默丢弃。
+- **TTL**：30 天，每次写入重锚（跨月恢复足够；过期条目按不存在处理）。
+- **旧版文件**：`<project_root>/.vibe-kernel/Checkpoint 条目` 仅在 `import_legacy` 时**只读导入一次**；原文件保留为审计（不改名、不删除）。
 
 **例外（必写）**：轮次收尾（S13）无论是否有变化都必须写一次 `status` + `resume`（含 pending 未落地项，防幽灵待办）。
 
@@ -222,20 +234,20 @@ S14 Safe Mode
 
 | 时机 | 动作 |
 |---|---|
-| 循环开始（S1） | 读 `.state.md`；不存在 → 从 `.state.template.md` 复制创建（模板本身不改写） |
+| 循环开始（S1） | 读 Checkpoint 条目；不存在 → 按 `.state.template.md` 骨架初始化 |
 | 每个阶段出口 | 更新 `phase` / `loop` / `current_step` / `completed` / `pending`（**追加式**，不重写已确认项） |
 | 关键决策点（S3 仲裁 / S10 判定 / SAFE MODE） | 追加 `decisions` / `review` / `status` |
-| 循环结束（S13） | `status: complete` + 输出最终摘要（文件保留，留待下一循环覆盖） |
+| 循环结束（S13） | `status: complete` + 输出最终摘要（条目保留，留待下一循环归档覆盖） |
 
 **恢复协议（新会话）**：
 
-1. 读 `.state.md` → **freshness 校验**：`status ∈ {active, paused}` 且 `updated_at` 与当前会话同量级（**须写到分钟**——仅到日会漏掉"同日陈旧"）；不满足 → 判为过期，退回 S1 全新开始（旧文件保留为审计，不删除）
+1. 读 Checkpoint 条目 → **freshness 校验**：`status ∈ {active, paused}` 且 `updated_at` 与当前会话同量级（**须写到分钟**——仅到日会漏掉"同日陈旧"）；不满足 → 判为过期，退回 S1 全新开始（旧条目保留为审计，不删除）
 2. **字段完整性校验**：**YAML 可解析 + 13 项齐全（含 `updated_at`）** → 可恢复；任一不满足 → 降级为「仅参考」，以用户输入 + 当前会话 TASK 区为准（**注意**：列表项以 `**`/`*` 开头会被 YAML 解析为别名而报错——写 markdown 强调时须加引号）
-3. **不覆盖 TASK / ACTIVE**：`.state.md` 仅在本次会话 TASK 区为空时供给；与本次用户输入冲突时 **以用户输入为准**
+3. **不覆盖 TASK / ACTIVE**：Checkpoint 仅在本次会话 TASK 区为空时供给；与本次用户输入冲突时 **以用户输入为准**
 4. **续跑**：`phase` + `current_step` 决定入口阶段；`completed` 项**不重做**；`status: paused`（含 SAFE MODE 触发态）→ 先输出恢复确认再继续
 5. **pending 逐项核验（防幽灵待办）**：对每个 `pending` 项用**最低成本命令**收集证据（文件是否存在 / 版本号 / `git status` / 声明的验证命令），结果分**三态**：**verified**（有强证据：内容哈希一致 / 本轮起点之后有新提交 / 声明的验证命令已跑通）→ 移入 `completed`；**unverified**（仅"文件存在"或"mtime 较新"这类**弱证据**）→ **不得**移入 `completed`，附证据交 Agent 判断；**still_pending**（无证据或无可解析线索）→ 保留并标注待人工确认。**未核验不得直接执行 `pending[0]`**。口径：**文件存在 ≠ 任务完成**——文件可能早已存在，或被无关操作更新了时间戳。
 
-**与压缩的衔接**：Runtime Compaction 后 TASK 区不可重建时，**优先读 `.state.md`**（本机制即「防跳过规则」契约外兜底的可执行解）；仍不可用 → 按 `kernel.md` §1「引用对象不可重建」暂停。
+**与压缩的衔接**：Runtime Compaction 后 TASK 区不可重建时，**优先读 Checkpoint 条目**（本机制即「防跳过规则」契约外兜底的可执行解）；仍不可用 → 按 `kernel.md` §1「引用对象不可重建」暂停。
 
 ## 防跳过规则
 

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import subprocess
@@ -404,7 +405,11 @@ def _make_entry(path: str, root_real: str) -> FileEntry | None:
 # ---------------------------------------------------------------------------
 
 def _baseline_path(cwd: str) -> Path:
-    return Path(cwd) / ".vibe-kernel" / "baseline.json"
+    """非 git 基线落用户缓存目录（不在项目目录创建运行态文件）。"""
+    explicit = os.environ.get("VIBE_KERNEL_BASELINE_DIR")
+    base = Path(explicit).expanduser() if explicit else Path.home() / ".vibe-loop" / "baseline"
+    digest = hashlib.sha256(os.path.realpath(cwd).encode("utf-8")).hexdigest()[:16]
+    return base / f"{digest}.json"
 
 
 def _create_snapshot(cwd: str) -> dict[str, Any] | None:

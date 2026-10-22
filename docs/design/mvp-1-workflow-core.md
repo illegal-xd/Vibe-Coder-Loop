@@ -536,6 +536,8 @@ review:
 
 ### 7.1 状态文件定位与隔离（P0 修正：不与 Skill 源文件同址）
 
+> **已被取代（现行协议）**：Checkpoint 改为 delx-memory 条目 `vc:checkpoint:<项目绝对地址>`（tags `vc-checkpoint` / `L0` / `scope:project`），读取写入统一走 delx-memory；不再创建 `.vibe-kernel/` 或任何项目内状态文件。本节保留为历史设计决策记录，实现以 `skills/vibe-coder-loop/engine/state-machine.md`「Workflow Checkpoint（delx-memory）」为准。
+
 **原设计的矛盾**：一边把状态放 `$SKILL_DIR/.state.md`，一边要求"按 cwd/worktree 隔离"。只要有第二个项目，所有项目会经软链写同一个文件，状态互相覆盖。**运行时状态不属于 Skill 安装目录**——安装目录是只读的代码资产，状态是每项目私有数据。
 
 **定位顺序**（`StateResolver`，每一步都做 `realpath` 归一）：

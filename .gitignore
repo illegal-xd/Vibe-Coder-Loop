@@ -47,9 +47,9 @@ coverage/
 # Local tool indexes
 .codegraph/
 
-# Runtime state (personal instance data; never publish)
-# 协议声明位置 = <project_root>/.vibe-kernel/.state.md；整个目录禁止提交
-# （engine/state-machine.md「Workflow Checkpoint」；机检见 scripts/audit.sh C012）
+# Legacy runtime state (v1.22 and earlier; never publish)
+# 当前协议把 Workflow Checkpoint 存 delx-memory（vc:checkpoint:<项目绝对地址>），
+# 不再创建项目内状态文件；此处保留忽略以防旧实例残留被提交。
 .vibe-kernel/
 # 遗留位置（v1.22 之前；仅供本机旧实例继续被忽略）
 skills/vibe-coder-loop/.state.md

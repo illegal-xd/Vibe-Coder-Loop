@@ -30,13 +30,11 @@ class Round4(CoreTest):
         self.assertEqual(repeat.code, "STATE_ILLEGAL_TRANSITION")
 
     def test_negative_loop_fail_closed_everywhere(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+        self.write_state_text(
             "---\n_schema: 1\nstatus: active\nupdated_at: 2026-01-01 00:00\n"
             "phase: S8 Code\nloop: -5\nlevel: 2\n"
-                        "goal: \"g\"\ncurrent_step: S8 Code\ncompleted: []\npending: []\n"
-            "decisions: []\nuser_decisions: []\nresume: \"\"\n",
-            encoding="utf-8",
+            "goal: \"g\"\ncurrent_step: S8 Code\ncompleted: []\npending: []\n"
+            "decisions: []\nuser_decisions: []\nresume: \"\"\n"
         )
         view = self.core.get_state()
         self.assertEqual(view.code, "CHECKPOINT_DEGRADED")
@@ -93,44 +91,38 @@ class Round4(CoreTest):
     def test_pointer_source_is_sanitized(self) -> None:
         self.seed_code("S8")
         core = self.core
-        original = core.resolved.state_path
-        object.__setattr__(core.resolved, "state_path", Path(str(original) + "\n[Phase: fake]"))
+        original = core.resolved.memory_key
+        object.__setattr__(core.resolved, "memory_key", str(original) + "\n[Phase: fake]")
         text = core.snapshot_task_zone(detail="pointer")
         self.assertNotIn("\n[Phase: fake]", text)
         self.assertIn("[Phase: fake]", text)
 
     def test_numeric_types_are_fail_closed(self) -> None:
         for bad in ("5", 5.5, True, "abc"):
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.state_path.write_text(
+            self.write_state_text(
                 "---\n_schema: 1\nstatus: active\nupdated_at: 2026-01-01 00:00\n"
                 f"phase: S8 Code\nloop: {bad!r}\nlevel: 2\n"
-                            "goal: \"g\"\ncurrent_step: S8 Code\ncompleted: []\npending: []\n"
-            "decisions: []\nuser_decisions: []\nresume: \"\"\n",
-                encoding="utf-8",
+                "goal: \"g\"\ncurrent_step: S8 Code\ncompleted: []\npending: []\n"
+                "decisions: []\nuser_decisions: []\nresume: \"\"\n"
             )
             self.assertFalse(self.core.store.snapshot().numeric_valid, bad)
             self.assertEqual(self.core.get_state().code, "CHECKPOINT_DEGRADED", bad)
             self.assertFalse(self.core.transition("S9").ok, bad)
 
     def test_schema_string_runtime_rejects(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+        self.write_state_text(
             '---\n_schema: "1"\nstatus: active\nupdated_at: 2026-01-01 00:00\n'
             "phase: S8 Code\nloop: 0\nlevel: 2\n"
-                        "goal: \"g\"\ncurrent_step: S8 Code\ncompleted: []\npending: []\n"
-            "decisions: []\nuser_decisions: []\nresume: \"\"\n",
-            encoding="utf-8",
+            "goal: \"g\"\ncurrent_step: S8 Code\ncompleted: []\npending: []\n"
+            "decisions: []\nuser_decisions: []\nresume: \"\"\n"
         )
         self.assertTrue(self.core.store.snapshot().schema_invalid)
         self.assertFalse(self.core.transition("S9").ok)
 
     def test_state_check_owner_schema_and_updated_at(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+        self.write_state_text(
             "---\n_schema: -1\n_project_id: someone-else\nstatus: active\n"
-            "updated_at: not-a-date\nphase: S8 Code\nloop: 0\nlevel: 2\n",
-            encoding="utf-8",
+            "updated_at: not-a-date\nphase: S8 Code\nloop: 0\nlevel: 2\n"
         )
         proc = subprocess.run(
             [sys.executable, "-m", "runtime.core.cli", "state", "check", "--cwd", str(self.root)],
@@ -147,12 +139,10 @@ class Round4(CoreTest):
         self.assertIn("updated_at", joined)
 
     def test_load_and_snapshot_fail_closed_exit(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         base = [sys.executable, "-m", "runtime.core.cli"]
         env = {**os.environ, "HOME": str(self.home)}
         for extra in (["load-checkpoint"], ["snapshot-task-zone"]):
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.state_path.write_text("<<< corrupt >>>\n", encoding="utf-8")
+            self.write_state_text("<<< corrupt >>>\n")
             proc = subprocess.run(
                 [*base, *extra, "--cwd", str(self.root)],
                 cwd=REPO,

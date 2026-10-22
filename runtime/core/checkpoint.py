@@ -1,35 +1,45 @@
-"""Checkpoint（``.state.md``）定位、解析、原子写入与并发版本控制。
+"""Checkpoint（delx-memory 记忆条目）定位、解析与并发版本控制。
 
 事实源：
-- skills/vibe-coder-loop/engine/state-machine.md「Workflow Checkpoint（.state.md）」
-- docs/design/mvp-1-workflow-core.md §4 / §7
+- skills/vibe-coder-loop/engine/state-machine.md「Workflow Checkpoint（delx-memory）」
+- delx-memory-protocol skill `protocol.md`
 
 关键约束：
-- 运行时状态属于项目，不属于 Skill 安装目录；落在 Skill 目录内 → fail-closed。
+- **项目目录不再创建任何状态文件**。状态以记忆条目承载：
+  key = ``vc:checkpoint:<项目绝对地址>``（realpath 即唯一 ID），
+  固定 tags = ``vc-checkpoint`` / ``L0`` / ``scope:project``。
 - 13 语义字段 + 保留键（``_schema`` / ``_rev`` / ``_project_id`` / ``_resume_from``）。
-- 原子写：锁住读-改-写全程 → 临时文件 → flush + fsync → ``os.replace`` → fsync 目录。
-- 乐观并发：``expected_rev`` 不匹配 → ``STATE_REV_CONFLICT``，不落盘。
+- 并发：写路径使用 SQLite ``BEGIN IMMEDIATE`` 事务；``expected_rev`` 不匹配 →
+  ``STATE_REV_CONFLICT``，不落盘。
+- 旧版 ``<project_root>/.vibe-kernel/.state.md`` 仅作**只读导入**来源，导入后不改名、不删除。
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
 import re
-import shutil
 import stat
-import subprocess
 import sys
-import tempfile
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from . import vc_codes
+from .memory_store import (
+    CHECKPOINT_KEY_PREFIX,
+    CHECKPOINT_LAYER,
+    CHECKPOINT_QUARANTINE_PREFIX,
+    CHECKPOINT_TITLE,
+    MemoryEntry,
+    MemoryStore,
+    MemoryStoreError,
+    _MemoryTransaction,
+    checkpoint_key,
+    default_db_path,
+)
 from .state_parse import (
     ParseQuality,
     SubsetParseError,
@@ -41,11 +51,8 @@ from .state_parse import (
 STATE_SCHEMA_VERSION = 1
 VALID_STATE_CODES = frozenset(f"S{i}" for i in range(15))
 MAX_STATE_BYTES = 4 * 1024 * 1024
-MAX_CONFIG_BYTES = 64 * 1024
 STATE_FILENAME = ".state.md"
-LOCK_FILENAME = ".state.lock"
-STATE_DIRNAME = ".vibe-kernel"
-CONFIG_FILENAME = "config.json"
+STATE_DIRNAME = ".vibe-kernel"  # 仅用于旧版状态只读导入
 
 _PROJECT_MARKERS = (".git", STATE_DIRNAME, "pyproject.toml", "package.json", "go.mod")
 GIT_SAFE_ARGS = (
@@ -62,7 +69,6 @@ GIT_SAFE_ARGS = (
     "-c",
     "core.pager=cat",
 )
-_GIT_SAFE_ARGS = GIT_SAFE_ARGS
 
 # 13 个语义字段（顺序即渲染顺序）
 SEMANTIC_FIELDS = (
@@ -243,58 +249,28 @@ def project_id_for(project_root: Path) -> str:
 class ResolvedState:
     cwd: Path
     project_root: Path
-    state_path: Path
-    state_dir: Path
-    lock_path: Path
-    artifacts_dir: Path
     project_id: str
+    memory_key: str
+    memory_db: Path
+    artifacts_dir: Path
+    legacy_state_path: Path
     source: str
-    allow_move: bool = True
+
+    @property
+    def location(self) -> str:
+        return self.memory_key
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "cwd": str(self.cwd),
             "project_root": str(self.project_root),
-            "state_path": str(self.state_path),
             "project_id": self.project_id,
+            "memory_key": self.memory_key,
+            "memory_db": str(self.memory_db),
+            "artifacts_dir": str(self.artifacts_dir),
+            "legacy_state_path": str(self.legacy_state_path),
             "source": self.source,
-            "allow_move": self.allow_move,
         }
-
-
-def _skill_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
-    env = env or os.environ
-    out: list[Path] = []
-    explicit = env.get("VIBE_KERNEL_SKILL_DIR")
-    if explicit:
-        out.append(Path(explicit))
-    repo = Path(__file__).resolve().parents[2] / "skills" / "vibe-coder-loop"
-    if (repo / "SKILL.md").exists():
-        out.append(repo)
-    home = env.get("HOME") or str(Path.home())
-    if home:
-        out.append(Path(home) / ".agents" / "skills" / "vibe-coder-loop")
-        out.append(Path(home) / ".config" / "opencode" / "skills" / "vibe-coder-loop")
-    resolved: list[Path] = []
-    for path in out:
-        with contextlib.suppress(OSError):
-            if path.exists():
-                resolved.append(Path(os.path.realpath(str(path))))
-    return resolved
-
-
-def _installed_skill_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
-    """只认“安装态” Skill 目录，避免把仓库开发目录的状态导进任意项目。"""
-    env = env or os.environ
-    out: list[Path] = []
-    explicit = env.get("VIBE_KERNEL_SKILL_DIR")
-    if explicit:
-        out.append(Path(explicit))
-    home = env.get("HOME") or str(Path.home())
-    if home:
-        out.append(Path(home) / ".agents" / "skills" / "vibe-coder-loop")
-        out.append(Path(home) / ".config" / "opencode" / "skills" / "vibe-coder-loop")
-    return [p for p in out if p.exists()]
 
 
 def _norm_path(path: Path | str) -> str:
@@ -302,15 +278,6 @@ def _norm_path(path: Path | str) -> str:
     if os.name == "nt" or sys.platform == "darwin":
         text = text.casefold()
     return text
-
-
-def _is_within(path: Path, parent: Path) -> bool:
-    try:
-        parent_text = _norm_path(parent).rstrip(os.sep)
-        path_text = _norm_path(path)
-        return path_text == parent_text or path_text.startswith(parent_text + os.sep)
-    except OSError:  # pragma: no cover
-        return False
 
 
 def find_project_root(cwd: Path) -> Path:
@@ -331,8 +298,22 @@ def find_project_root(cwd: Path) -> Path:
     return other_hits[-1] if other_hits else cwd
 
 
+def default_artifacts_dir(project_id: str, env: Mapping[str, str] | None = None) -> Path:
+    """pinned artifact 落用户缓存目录（项目目录不再创建运行态文件）。"""
+    env_map = os.environ if env is None else env
+    explicit = env_map.get("VIBE_KERNEL_ARTIFACTS_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    home = env_map.get("HOME") or str(Path.home())
+    return Path(home) / ".vibe-loop" / "artifacts" / project_id / "pinned"
+
+
 class StateResolver:
-    """按协议顺序解析状态文件位置，并做对称保护（拒绝落在 Skill 目录）。"""
+    """解析 Checkpoint 的记忆条目位置。
+
+    项目绝对地址（realpath）即唯一 ID：``vc:checkpoint:<realpath>``。
+    ``memory_key`` / ``memory_db`` 仅作测试与运维显式覆盖，默认值由协议推导。
+    """
 
     def __init__(self, env: Mapping[str, str] | None = None) -> None:
         self.env = dict(os.environ if env is None else env)
@@ -341,10 +322,10 @@ class StateResolver:
         self,
         cwd: str | os.PathLike[str],
         *,
-        state_dir: str | os.PathLike[str] | None = None,
-        state_path: str | os.PathLike[str] | None = None,
+        memory_key: str | None = None,
+        memory_db: str | os.PathLike[str] | None = None,
     ) -> ResolvedState:
-        if any("\x00" in str(value) for value in (cwd, state_dir or "", state_path or "")):
+        if any("\x00" in str(value) for value in (cwd, memory_key or "", memory_db or "")):
             raise CheckpointLocationError("路径含 NUL 字符，拒绝使用")
         cwd_path = expand_home(cwd)
         try:
@@ -355,219 +336,39 @@ class StateResolver:
             raise CheckpointLocationError(f"cwd 不存在或不是目录: {cwd_real}")
 
         project_root = find_project_root(cwd_real)
+        project_id = project_id_for(project_root)
 
-        explicit_path = state_path or self.env.get("VIBE_KERNEL_STATE_PATH")
-        explicit_dir = state_dir or self.env.get("VIBE_KERNEL_STATE_DIR")
-        source = "state_path" if explicit_path else ""
-
-        config = project_root / STATE_DIRNAME / CONFIG_FILENAME
-        config_data: dict[str, Any] = {}
-        config_origin = False
-        if not explicit_path and not explicit_dir and config.exists():
-            try:
-                config_data = json.loads(_read_small_text(config, MAX_CONFIG_BYTES, "config.json"))
-                if not isinstance(config_data, dict):
-                    config_data = {}
-            except (OSError, ValueError, UnicodeError, RecursionError, json.JSONDecodeError):
-                config_data = {}
-            if isinstance(config_data.get("state_path"), str):
-                explicit_path = config_data["state_path"]
-                source = "config"
-                config_origin = True
-            elif isinstance(config_data.get("state_dir"), str):
-                explicit_dir = config_data["state_dir"]
-                source = "config"
-                config_origin = True
-
-        if config_origin:
-            for raw in (explicit_path, explicit_dir):
-                if not raw:
-                    continue
-                candidate = expand_home(raw)
-                if candidate.is_absolute() or str(raw).startswith("~"):
-                    raise CheckpointLocationError(
-                        "config.json 的 state_path/state_dir 必须是项目根内的相对路径"
-                    )
-
-        if explicit_path:
-            if "\x00" in str(explicit_path):
-                raise CheckpointLocationError("state_path 含 NUL 字符，拒绝使用")
-            path = expand_home(explicit_path)
-            if not path.is_absolute():
-                path = (project_root if config_origin else cwd_real) / path
-            state_file = Path(os.path.realpath(str(path)))
-            state_directory = state_file.parent
-            source = source or "state_path"
-        elif explicit_dir:
-            if "\x00" in str(explicit_dir):
-                raise CheckpointLocationError("state_dir 含 NUL 字符，拒绝使用")
-            directory = expand_home(explicit_dir)
-            if not directory.is_absolute():
-                directory = (project_root if config_origin else cwd_real) / directory
-            directory = Path(os.path.realpath(str(directory)))
-            # 兼容把 --state-dir 指到文件的情况
-            if directory.suffix == ".md":
-                state_file = directory
-                state_directory = directory.parent
-            else:
-                state_file = directory / STATE_FILENAME
-                state_directory = directory
-            source = source or "state_dir"
-        else:
-            raw_default = project_root / STATE_DIRNAME
-            if raw_default.is_symlink():
-                raise CheckpointLocationError("默认 .vibe-kernel 是软链，拒绝使用")
-            if raw_default.exists() and not raw_default.is_dir():
-                raise CheckpointLocationError("默认 .vibe-kernel 不是目录")
-            state_directory = Path(os.path.realpath(str(raw_default)))
-            state_file = state_directory / STATE_FILENAME
-            source = "default"
-
-        for skill_dir in _skill_dirs(self.env):
-            if _is_within(state_directory, skill_dir) or _is_within(state_file, skill_dir):
-                raise CheckpointLocationError(
-                    f"状态路径落在 Skill 安装目录内，拒绝写入: {state_file}"
-                )
-
-        if config_origin and not _is_within(state_directory, project_root / STATE_DIRNAME):
+        explicit_key = memory_key or self.env.get("VIBE_KERNEL_CHECKPOINT_KEY")
+        key = explicit_key or checkpoint_key(project_root)
+        if not isinstance(key, str) or not key:
+            raise CheckpointLocationError("Checkpoint key 不能为空")
+        if not key.startswith(CHECKPOINT_KEY_PREFIX):
             raise CheckpointLocationError(
-                "config.json 的 state_path/state_dir 必须位于 .vibe-kernel/ 内"
+                f"Checkpoint key 必须以 {CHECKPOINT_KEY_PREFIX!r} 开头: {key!r}"
             )
+        if len(key) > 512:
+            raise CheckpointLocationError("Checkpoint key 超过 512 字符")
+        source = "memory_key" if explicit_key else "default"
+
+        raw_db = memory_db or self.env.get("DELX_MEMORY_DB")
+        db_path = Path(raw_db).expanduser() if raw_db else default_db_path(self.env)
+        try:
+            db_path = Path(os.path.realpath(str(db_path)))
+        except OSError as exc:
+            raise CheckpointLocationError(f"记忆库路径无法解析: {db_path}") from exc
+        if db_path.exists() and db_path.is_dir():
+            raise CheckpointLocationError(f"记忆库路径是目录，拒绝使用: {db_path}")
 
         return ResolvedState(
             cwd=cwd_real,
             project_root=project_root,
-            state_path=state_file,
-            state_dir=state_directory,
-            lock_path=state_directory / LOCK_FILENAME,
-            artifacts_dir=state_directory / "artifacts",
-            project_id=project_id_for(project_root),
+            project_id=project_id,
+            memory_key=key,
+            memory_db=db_path,
+            artifacts_dir=default_artifacts_dir(project_id, self.env),
+            legacy_state_path=project_root / STATE_DIRNAME / STATE_FILENAME,
             source=source,
-            allow_move=(
-                _is_within(state_file, project_root / STATE_DIRNAME)
-                and state_file.name == STATE_FILENAME
-            ),
         )
-
-
-# ---------------------------------------------------------------------------
-# 锁
-# ---------------------------------------------------------------------------
-class _FileLock:
-    """跨平台读写锁：POSIX flock / Windows msvcrt / O_EXCL 兜底。"""
-
-    def __init__(self, path: Path, *, timeout: float = 5.0) -> None:
-        self.path = path
-        self.timeout = timeout
-        self._fd: int | None = None
-        self._fallback_path: Path | None = None
-        self.mode = "none"
-
-    def __enter__(self) -> "_FileLock":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            import fcntl  # POSIX
-        except ImportError:
-            fcntl = None  # type: ignore[assignment]
-        try:
-            import msvcrt  # Windows
-        except ImportError:
-            msvcrt = None  # type: ignore[assignment]
-
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            self._fd = os.open(str(self.path), flags, 0o600)
-        except OSError as exc:
-            raise LockTimeout(f"无法打开锁文件: {self.path} ({exc})") from exc
-        try:
-            info = os.fstat(self._fd)
-            if not stat.S_ISREG(info.st_mode):
-                os.close(self._fd)
-                self._fd = None
-                raise LockTimeout(f"锁文件不是普通文件: {self.path}")
-        except OSError:
-            pass
-        deadline = time.monotonic() + self.timeout
-        if fcntl is not None:
-            self.mode = "flock"
-            while True:
-                try:
-                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return self
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        os.close(self._fd)
-                        self._fd = None
-                        raise LockTimeout(f"加锁超时: {self.path}")
-                    time.sleep(0.02)
-        locking = getattr(msvcrt, "locking", None) if msvcrt is not None else None
-        if locking is not None:  # pragma: no cover - CI 覆盖
-            self.mode = "msvcrt"
-            nb_lock = getattr(msvcrt, "LK_NBLCK", 2)
-            while True:
-                try:
-                    os.lseek(self._fd, 0, os.SEEK_SET)
-                    locking(self._fd, nb_lock, 1)
-                    return self
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        os.close(self._fd)
-                        self._fd = None
-                        raise LockTimeout(f"加锁超时: {self.path}")
-                    time.sleep(0.02)
-        return self._enter_fallback(deadline)
-
-    def _enter_fallback(self, deadline: float) -> "_FileLock":  # pragma: no cover - Windows 兜底
-        self.mode = "best_effort"
-        if self._fd is not None:
-            os.close(self._fd)
-            self._fd = None
-        self._fallback_path = self.path.with_suffix(self.path.suffix + ".excl")
-        while True:
-            try:
-                fd = os.open(
-                    str(self._fallback_path),
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o600,
-                )
-                os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii"))
-                os.close(fd)
-                return self
-            except FileExistsError:
-                with contextlib.suppress(OSError):
-                    age = time.time() - self._fallback_path.stat().st_mtime
-                    if age > 30:
-                        self._fallback_path.unlink()
-                if time.monotonic() >= deadline:
-                    raise LockTimeout(f"加锁超时: {self.path}")
-                time.sleep(0.02)
-
-    def __exit__(self, *exc: object) -> None:
-        if self._fd is not None:
-            with contextlib.suppress(OSError):
-                try:
-                    import fcntl
-
-                    fcntl.flock(self._fd, fcntl.LOCK_UN)
-                except (ImportError, OSError):
-                    pass
-            with contextlib.suppress(OSError):
-                try:
-                    import msvcrt
-
-                    locking = getattr(msvcrt, "locking", None)
-                    if locking is not None:
-                        os.lseek(self._fd, 0, os.SEEK_SET)
-                        locking(self._fd, getattr(msvcrt, "LK_UNLCK", 0), 1)
-                except (ImportError, OSError):
-                    pass
-            with contextlib.suppress(OSError):
-                os.close(self._fd)
-            self._fd = None
-        if self._fallback_path is not None:
-            with contextlib.suppress(OSError):
-                self._fallback_path.unlink()
-            self._fallback_path = None
 
 
 # ---------------------------------------------------------------------------
@@ -692,145 +493,59 @@ def resolve_git_bin(project_root: Path) -> str | None:
 
 
 class CheckpointStore:
+    """Checkpoint 逻辑（字段/校验/合并）与 delx-memory 持久化的唯一桥接层。"""
+
     def __init__(
         self,
         resolved: ResolvedState,
         *,
         import_legacy: bool = True,
         env: Mapping[str, str] | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         self.resolved = resolved
         self.import_legacy = import_legacy
         self.env = dict(os.environ if env is None else env)
+        self.memory = memory or MemoryStore(resolved.memory_db)
 
-    # -- 路径与初始化 ----------------------------------------------------
+    # -- 位置 ------------------------------------------------------------
     @property
-    def state_path(self) -> Path:
-        return self.resolved.state_path
+    def memory_key(self) -> str:
+        return self.resolved.memory_key
 
     @property
-    def state_dir(self) -> Path:
-        return self.resolved.state_dir
+    def location(self) -> str:
+        return self.resolved.memory_key
 
-    def lock(self, timeout: float = 5.0):
-        created = not self.state_dir.exists()
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        if created:
-            with contextlib.suppress(OSError):
-                os.chmod(self.state_dir, 0o700)
-        return _FileLock(self.resolved.lock_path, timeout=timeout)
+    @property
+    def artifacts_dir(self) -> Path:
+        return self.resolved.artifacts_dir
 
-    def ensure_layout(self) -> tuple[str, ...]:
-        warnings: list[str] = []
-        created = not self.state_dir.exists()
-        try:
-            self.state_dir.mkdir(parents=True, exist_ok=True)
-            if created:
-                with contextlib.suppress(OSError):
-                    os.chmod(self.state_dir, 0o700)
-        except OSError as exc:
-            raise CheckpointError(f"无法创建状态目录: {self.state_dir} ({exc})") from exc
-        warnings.extend(self._ensure_gitignore())
-        warnings.extend(self._git_tracked_warnings())
-        return tuple(warnings)
-
-    def _ensure_gitignore(self) -> list[str]:
-        warnings: list[str] = []
-        gitignore = self.resolved.project_root / ".gitignore"
-        entry = f"{STATE_DIRNAME}/"
-        fallback = self.state_dir / ".gitignore"
-        if gitignore.is_symlink():
-            warnings.append("gitignore_symlink_skipped")
-            _write_private(fallback, "*\n")
-            return warnings
-        try:
-            existing = ""
-            if gitignore.exists():
-                existing = _read_small_text(gitignore, MAX_CONFIG_BYTES, ".gitignore")
-            lines = existing.splitlines()
-            if entry not in {ln.strip() for ln in lines}:
-                block = ""
-                if existing and not existing.endswith("\n"):
-                    block += "\n"
-                block += f"# vibe-kernel runtime state\n{entry}\n"
-                if not _write_private(gitignore, existing + block):
-                    raise OSError("unsafe .gitignore")
-        except (OSError, ValueError, UnicodeError):
-            warnings.append("gitignore_write_failed")
-            if not _write_private(fallback, "*\n"):
-                warnings.append("gitignore_fallback_failed")
-        return warnings
-
-    def _git_tracked_warnings(self) -> list[str]:
-        if not (self.resolved.project_root / ".git").exists():
-            return []
-        try:
-            git_bin = resolve_git_bin(self.resolved.project_root)
-            if git_bin is None:
-                return []
-            with contextlib.suppress(OSError):
-                rel = os.path.relpath(self.state_path, self.resolved.project_root)
-                proc = subprocess.run(
-                    [
-                        git_bin,
-                        *_GIT_SAFE_ARGS,
-                        "-C",
-                        str(self.resolved.project_root),
-                        "ls-files",
-                        "--error-unmatch",
-                        "--",
-                        rel,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    errors="replace",
-                    timeout=10,
-                    env=_git_env(),
-                )
-                if proc.returncode == 0:
-                    return [vc_codes.STATE_TRACKED_BY_GIT]
-        except (OSError, subprocess.SubprocessError):
-            pass
-        return []
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "title": CHECKPOINT_TITLE,
+            "layer": CHECKPOINT_LAYER,
+            "memory_category": "state",
+            "status": "active",
+            "scope": "project",
+            "project_root": str(self.resolved.project_root),
+            "project_id": self.resolved.project_id,
+        }
 
     # -- 读取 ------------------------------------------------------------
+    def _entry(self, *, include_expired: bool = False) -> MemoryEntry | None:
+        try:
+            return self.memory.get(self.memory_key, include_expired=include_expired)
+        except MemoryStoreError as exc:
+            raise CheckpointError(f"读取 Checkpoint 记忆失败: {exc}") from exc
+
     def read_text(self) -> str | None:
-        try:
-            info = os.lstat(self.state_path)
-        except FileNotFoundError:
+        entry = self._entry()
+        if entry is None:
             return None
-        except OSError as exc:
-            raise CheckpointError(f"读取状态文件失败: {self.state_path} ({exc})") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise CorruptCheckpoint(f"状态文件是软链，拒绝读取: {self.state_path}")
-        if not stat.S_ISREG(info.st_mode):
-            raise CorruptCheckpoint(f"状态文件不是普通文件: {self.state_path}")
-        if info.st_size > MAX_STATE_BYTES:
-            raise CorruptCheckpoint(f"状态文件超过 {MAX_STATE_BYTES} 字节上限")
-        try:
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-            fd = os.open(str(self.state_path), flags)
-            try:
-                info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STATE_BYTES:
-                    raise CorruptCheckpoint(f"状态文件不是普通文件或超限: {self.state_path}")
-                chunks: list[bytes] = []
-                while True:
-                    chunk = os.read(fd, 65536)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-            finally:
-                os.close(fd)
-        except CorruptCheckpoint:
-            raise
-        except OSError as exc:
-            raise CheckpointError(f"读取状态文件失败: {self.state_path} ({exc})") from exc
-        try:
-            return data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise CorruptCheckpoint(f"状态文件不是 UTF-8: {self.state_path}") from exc
+        if len(entry.value.encode("utf-8")) > MAX_STATE_BYTES:
+            raise CorruptCheckpoint(f"Checkpoint 条目超过 {MAX_STATE_BYTES} 字节上限")
+        return entry.value
 
     def load_raw(self) -> tuple[dict[str, Any], ParseQuality]:
         text = self.read_text()
@@ -841,33 +556,52 @@ class CheckpointStore:
         except SubsetParseError:
             flat = scan_flat_scalars(text)
             if flat is None:
-                raise CorruptCheckpoint(f"状态文件不可解析: {self.state_path}")
+                raise CorruptCheckpoint("Checkpoint 条目不可解析")
             return flat, ParseQuality.DEGRADED
 
-    def snapshot(self) -> Snapshot:
-        text = self.read_text()
-        if text is None:
-            return Snapshot(fields=normalize_fields({}), raw={}, quality=ParseQuality.CORRUPT, exists=False)
-        try:
-            raw = parse_subset(text)
-            quality = ParseQuality.STRICT
-        except SubsetParseError:
-            flat = scan_flat_scalars(text)
-            if flat is None:
-                raise CorruptCheckpoint(f"状态文件不可解析: {self.state_path}")
-            raw, quality = flat, ParseQuality.DEGRADED
-        return Snapshot(fields=normalize_fields(raw), raw=raw, quality=quality, exists=True)
-
-    def _read_unlocked(self) -> Snapshot:
-        try:
-            return self.snapshot()
-        except CorruptCheckpoint:
+    def _snapshot_from_entry(self, entry: MemoryEntry | None) -> Snapshot:
+        if entry is None:
             return Snapshot(
                 fields=normalize_fields({}),
                 raw={},
                 quality=ParseQuality.CORRUPT,
-                exists=self.state_path.exists(),
+                exists=False,
             )
+        if len(entry.value.encode("utf-8")) > MAX_STATE_BYTES:
+            return Snapshot(
+                fields=normalize_fields({}),
+                raw={},
+                quality=ParseQuality.CORRUPT,
+                exists=True,
+            )
+        try:
+            raw = parse_subset(entry.value)
+            quality = ParseQuality.STRICT
+        except SubsetParseError:
+            flat = scan_flat_scalars(entry.value)
+            if flat is None:
+                return Snapshot(
+                    fields=normalize_fields({}),
+                    raw={},
+                    quality=ParseQuality.CORRUPT,
+                    exists=True,
+                )
+            raw, quality = flat, ParseQuality.DEGRADED
+        return Snapshot(fields=normalize_fields(raw), raw=raw, quality=quality, exists=True)
+
+    def snapshot(self) -> Snapshot:
+        text = self.read_text()
+        if text is None:
+            return Snapshot(
+                fields=normalize_fields({}),
+                raw={},
+                quality=ParseQuality.CORRUPT,
+                exists=False,
+            )
+        return self._snapshot_from_entry(MemoryEntry(key=self.memory_key, value=text))
+
+    def _read_unlocked(self) -> Snapshot:
+        return self._snapshot_from_entry(self._entry())
 
     # -- 写入 ------------------------------------------------------------
     def write(
@@ -880,28 +614,29 @@ class CheckpointStore:
     ) -> WriteResult:
         replace = set(replace_keys) | {k for k in _REPLACE_KEYS if k in fields}
         try:
-            warnings = self.ensure_layout()
-        except CheckpointError as exc:
-            return WriteResult(ok=False, code=exc.code, message=str(exc), next=vc_codes.next_action(exc.code))
-
-        try:
-            with _FileLock(self.resolved.lock_path):
-                current = self._read_unlocked()
+            with self.memory.transaction() as tx:
+                entry = tx.get(self.memory_key)
+                current = self._snapshot_from_entry(entry)
+                warnings: list[str] = []
                 if current.exists and current.quality is ParseQuality.CORRUPT:
-                    backup_file(
-                        self.state_path,
-                        "corrupt",
-                        move=(
-                            self.resolved.allow_move
-                            and self.state_path.parent == self.state_dir
-                        ),
-                    )
-                    return WriteResult(
-                        ok=False,
-                        rev=current.rev,
-                        code=vc_codes.CHECKPOINT_CORRUPT,
-                        message="状态文件损坏，已备份且拒绝覆盖",
-                        next=vc_codes.next_action(vc_codes.CHECKPOINT_CORRUPT),
+                    archived = None
+                    if entry is not None:
+                        archived = self._copy_to_archive(entry, "corrupt", tx=tx)
+                    if entry is not None and archived is None:
+                        return WriteResult(
+                            ok=False,
+                            rev=current.rev,
+                            code=vc_codes.CHECKPOINT_WRITE_FAILED,
+                            message="Checkpoint 条目损坏且隔离失败，拒绝覆盖",
+                            next=vc_codes.next_action(vc_codes.CHECKPOINT_WRITE_FAILED),
+                        )
+                    tx.delete(self.memory_key)
+                    warnings.append("corrupt_quarantined")
+                    current = Snapshot(
+                        fields=normalize_fields({}),
+                        raw={},
+                        quality=ParseQuality.CORRUPT,
+                        exists=False,
                     )
                 if current.exists and current.schema_invalid:
                     return WriteResult(
@@ -919,15 +654,10 @@ class CheckpointStore:
                         message=f"_schema={current.schema} 高于支持版本 {STATE_SCHEMA_VERSION}（只读不写）",
                         next=vc_codes.next_action(vc_codes.CHECKPOINT_SCHEMA_AHEAD),
                     )
-                if (
-                    expected_rev is not None
-                    and current.rev != expected_rev
-                    and not (
-                        archive_kind
-                        and self.resolved.allow_move
-                        and current.exists
-                        and str(current.fields.get("status", "")) == "complete"
-                    )
+                if expected_rev is not None and current.rev != expected_rev and not (
+                    archive_kind
+                    and current.exists
+                    and str(current.fields.get("status", "")) == "complete"
                 ):
                     return WriteResult(
                         ok=False,
@@ -973,14 +703,10 @@ class CheckpointStore:
                         ok=False,
                         rev=current.rev,
                         code=vc_codes.CHECKPOINT_DEGRADED,
-                        message="状态文件仅降级可读，拒绝覆盖；请先重建完整状态",
+                        message="Checkpoint 条目仅降级可读，拒绝覆盖；请先重建完整状态",
                         next=vc_codes.next_action(vc_codes.CHECKPOINT_DEGRADED),
                     )
-                if (
-                    current.exists
-                    and current.owner
-                    and current.owner != self.resolved.project_id
-                ):
+                if current.exists and current.owner and current.owner != self.resolved.project_id:
                     return WriteResult(
                         ok=False,
                         rev=current.rev,
@@ -988,17 +714,10 @@ class CheckpointStore:
                         message="_project_id 与当前项目不符，拒绝写入",
                         next=vc_codes.next_action(vc_codes.CHECKPOINT_FOREIGN),
                     )
-                if (
-                    archive_kind
-                    and current.exists
-                    and str(current.fields.get("status", "")) == "complete"
-                ):
-                    archived = backup_file(
-                        self.state_path,
-                        archive_kind,
-                        move=self.resolved.allow_move,
-                    )
-                    if archived is None:
+                if archive_kind and current.exists and str(
+                    current.fields.get("status", "")
+                ) == "complete":
+                    if entry is None or self._copy_to_archive(entry, archive_kind, tx=tx) is None:
                         return WriteResult(
                             ok=False,
                             rev=current.rev,
@@ -1006,13 +725,12 @@ class CheckpointStore:
                             message="完成任务归档失败，拒绝覆盖旧状态",
                             next=vc_codes.next_action(vc_codes.CHECKPOINT_WRITE_FAILED),
                         )
-                    if self.resolved.allow_move:
-                        current = Snapshot(
-                            fields=normalize_fields({}),
-                            raw={},
-                            quality=ParseQuality.CORRUPT,
-                            exists=False,
-                        )
+                    current = Snapshot(
+                        fields=normalize_fields({}),
+                        raw={},
+                        quality=ParseQuality.CORRUPT,
+                        exists=False,
+                    )
                 merged = self._merge(current.fields, fields, replace)
                 merged = normalize_fields(merged)
                 try:
@@ -1028,7 +746,9 @@ class CheckpointStore:
                 merged["_project_id"] = self.resolved.project_id
 
                 if current.exists and _semantic_equal(current.fields, merged):
-                    return WriteResult(ok=True, rev=current.rev, changed=False, warnings=warnings)
+                    return WriteResult(
+                        ok=True, rev=current.rev, changed=False, warnings=tuple(warnings)
+                    )
 
                 merged["_rev"] = current.rev + 1
                 merged["updated_at"] = now_to_minute()
@@ -1052,27 +772,99 @@ class CheckpointStore:
                         message=f"写入内容无法被严格解析，拒绝落盘: {exc}",
                         next=vc_codes.next_action(vc_codes.INVALID_ARGUMENT),
                     )
-                self._atomic_write(payload)
+                tx.set(self.memory_key, payload, metadata=self.metadata())
                 return WriteResult(
                     ok=True,
                     rev=int(merged["_rev"]),
                     changed=True,
-                    warnings=warnings,
+                    warnings=tuple(warnings),
                 )
-        except LockTimeout as exc:
+        except MemoryStoreError as exc:
             return WriteResult(
                 ok=False,
                 code=vc_codes.CHECKPOINT_WRITE_FAILED,
-                message=str(exc),
+                message=f"写入 Checkpoint 记忆失败: {exc}",
                 next=vc_codes.next_action(vc_codes.CHECKPOINT_WRITE_FAILED),
             )
-        except (OSError, UnicodeError) as exc:
-            return WriteResult(
-                ok=False,
-                code=vc_codes.CHECKPOINT_WRITE_FAILED,
-                message=f"写入状态失败: {exc}",
-                next=vc_codes.next_action(vc_codes.CHECKPOINT_WRITE_FAILED),
-            )
+
+    def _copy_to_archive(
+        self,
+        entry: MemoryEntry,
+        kind: str,
+        *,
+        tx: "_MemoryTransaction | None" = None,
+    ) -> str | None:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        key = f"{CHECKPOINT_QUARANTINE_PREFIX}{self.resolved.project_id}:{kind}:{ts}"
+        metadata = {
+            "title": f"{CHECKPOINT_TITLE} ({kind} archive)",
+            "layer": CHECKPOINT_LAYER,
+            "memory_category": "state",
+            "status": "archived",
+            "scope": "project",
+            "project_root": str(self.resolved.project_root),
+            "project_id": self.resolved.project_id,
+            "archived_from": self.memory_key,
+            "kind": kind,
+        }
+        try:
+            if tx is not None:
+                tx.set(key, entry.value, metadata=metadata, ttl_seconds=None)
+            else:
+                self.memory.set(key, entry.value, metadata=metadata, ttl_seconds=None)
+            return key
+        except MemoryStoreError:
+            return None
+
+    def archive_state(self, kind: str = "complete") -> str | None:
+        entry = self._entry()
+        if entry is None:
+            return None
+        return self._copy_to_archive(entry, kind)
+
+    def clear(self) -> None:
+        """清空主条目（调用方须先 archive_state 留下可回滚副本）。"""
+        try:
+            self.memory.delete(self.memory_key)
+        except MemoryStoreError as exc:
+            raise CheckpointError(f"清理 Checkpoint 条目失败: {exc}") from exc
+
+    # -- 兼容：旧版项目状态文件只读导入 -------------------------------
+    def maybe_import_legacy(self) -> dict[str, str] | None:
+        if not self.import_legacy or self._entry() is not None:
+            return None
+        candidate = self.resolved.legacy_state_path
+        try:
+            info = os.lstat(candidate)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                return None
+            if info.st_size > MAX_STATE_BYTES:
+                return None
+            text = candidate.read_bytes().decode("utf-8")
+        except (OSError, UnicodeError):
+            return None
+        try:
+            raw = parse_subset(text)
+        except SubsetParseError:
+            flat = scan_flat_scalars(text)
+            if flat is None:
+                return None
+            raw = flat
+        try:
+            if int(raw.get("_schema", STATE_SCHEMA_VERSION)) > STATE_SCHEMA_VERSION:
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+        legacy_fields = dict(raw)
+        legacy_fields.pop("_project_id", None)
+        result = self.write(legacy_fields)
+        if not result.ok:
+            return None
+        return {
+            "from": str(candidate),
+            "to": self.memory_key,
+            "note": "旧状态文件保留为审计（未改名、未删除）",
+        }
 
     def _merge(
         self,
@@ -1096,132 +888,6 @@ class CheckpointStore:
                 continue
             merged[key] = _clone(value)
         return merged
-
-    def _atomic_write(self, payload: str) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(self.state_dir), prefix=".state.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, self.state_path)
-            _fsync_dir(self.state_dir)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
-
-    def archive_state(self, kind: str = "complete") -> Path | None:
-        if not self.state_path.exists():
-            return None
-        return backup_file(self.state_path, kind, move=self.resolved.allow_move)
-
-    # -- 兼容：旧路径只读导入 -------------------------------------------
-    def maybe_import_legacy(self) -> dict[str, str] | None:
-        if not self.import_legacy or self.state_path.exists():
-            return None
-        for legacy in _installed_skill_dirs(self.env):
-            candidate = legacy / ".state.md"
-            if not candidate.exists() or candidate == self.state_path:
-                continue
-            try:
-                info = os.lstat(candidate)
-                if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                    continue
-                if info.st_size > MAX_STATE_BYTES:
-                    continue
-                text = candidate.read_bytes().decode("utf-8")
-            except (OSError, UnicodeError):
-                continue
-            try:
-                raw = parse_subset(text)
-            except SubsetParseError:
-                flat = scan_flat_scalars(text)
-                if flat is None:
-                    continue
-                raw = flat
-            try:
-                if int(raw.get("_schema", STATE_SCHEMA_VERSION)) > STATE_SCHEMA_VERSION:
-                    continue
-            except (TypeError, ValueError, OverflowError):
-                continue
-            legacy_fields = dict(raw)
-            legacy_fields.pop("_project_id", None)
-            result = self.write(legacy_fields)
-            if not result.ok:
-                continue
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-            target = candidate.with_name(f"{candidate.name}.legacy-{ts}")
-            with contextlib.suppress(OSError):
-                candidate.rename(target)
-            return {"from": str(candidate), "to": str(self.state_path), "legacy": str(target)}
-        return None
-
-
-def _write_private(path: Path, text: str) -> bool:
-    try:
-        info = os.lstat(path)
-    except FileNotFoundError:
-        info = None
-    except OSError:
-        return False
-    if info is not None and (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)):
-        return False
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if info is not None:
-                with contextlib.suppress(OSError):
-                    os.chmod(tmp, stat.S_IMODE(info.st_mode))
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
-        return True
-    except (OSError, UnicodeError):
-        return False
-
-
-def _read_small_text(path: Path, limit: int, label: str) -> str:
-    if "\x00" in str(path):
-        raise ValueError(f"{label} 路径含 NUL")
-    info = os.lstat(path)
-    if stat.S_ISLNK(info.st_mode):
-        raise ValueError(f"{label} 是软链")
-    if not stat.S_ISREG(info.st_mode):
-        raise ValueError(f"{label} 不是普通文件")
-    if info.st_size > limit:
-        raise ValueError(f"{label} 超过 {limit} 字节上限")
-    return path.read_bytes().decode("utf-8")
-
-
-def backup_file(path: Path, kind: str, *, move: bool = True) -> Path | None:
-    """备份状态文件；``move=False`` 时复制（用于项目外显式路径，绝不改名用户文件）。"""
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    target = path.with_name(f"{path.name}.{kind}-{ts}")
-    counter = 1
-    while target.exists():
-        target = path.with_name(f"{path.name}.{kind}-{ts}-{counter}")
-        counter += 1
-    try:
-        info = os.lstat(path)
-        if not move:
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                return None  # 只复制普通文件，避免读 /dev/zero 或 FIFO
-        if move:
-            os.replace(path, target)
-        else:
-            shutil.copy2(path, target)
-        return target
-    except OSError:
-        return None
 
 
 def _semantic_equal(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -1260,18 +926,3 @@ def _union(old: list[Any], new: list[Any]) -> list[Any]:
             seen.add(key)
             out.append(_clone(item))
     return out
-
-
-def _fsync_dir(directory: Path) -> None:
-    if os.name == "nt":  # pragma: no cover - Windows 无目录 fsync
-        return
-    try:
-        fd = os.open(str(directory), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)

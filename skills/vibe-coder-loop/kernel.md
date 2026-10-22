@@ -34,7 +34,7 @@ status: active
 | 语义 | 关键词 | turn 内（预缓冲） | **turn 间（真机常态）** |
 |---|---|---|---|
 | **steering** | "先…/改成…/别做…" | 当前 turn 后注入 | 下 turn **保持 phase/loop**，不重走 S1（改变目标范围则转新任务） |
-| **follow-up** | "做完后…/顺便…" | S13 前注入，回 S1 | 下 turn **= 新任务**：回 S1、**Loop 归 0**、先读 `.state.md` 恢复+核验 pending |
+| **follow-up** | "做完后…/顺便…" | S13 前注入，回 S1 | 下 turn **= 新任务**：回 S1、**Loop 归 0**、先读 Checkpoint 恢复+核验 pending |
 | 紧急 | "停止循环"/"接受当前代码"/SAFE MODE | 立即生效 | 立即生效 |
 
 **Loop 归属**：Loop = 当前目标的**重试预算** → 目标变更 = 新 Loop；同目标内修正 = 不重置。检查项见 `transition.md` S8/S9/S13。不得因"没等到队列消息"暂停。**重叠判定（E4 复跑 Test F 补充）**：steering 改**本轮回合产物**，follow-up 是**主循环结束后新目标**；"顺便做 X / 做完后做 Y" 按 **follow-up** 判。

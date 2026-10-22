@@ -2,7 +2,7 @@
 
 事实源：docs/design/mvp-1-workflow-core.md §7.3
 - ``ephemeral``：memory_tool.py 的 24h 会话缓存，允许过期。
-- ``pinned``：``<state_dir>/artifacts/``，Checkpoint 引用期间不删除。
+- ``pinned``：``~/.vibe-loop/artifacts/<project_id>/pinned/``，Checkpoint 引用期间不删除。
 - GC 永不删除被当前 Checkpoint 引用的 pinned 文件；``status=active`` 时拒绝 GC。
 """
 

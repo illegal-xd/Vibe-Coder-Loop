@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,40 +11,47 @@ from runtime.core.checkpoint import (
     StateResolver,
     now_to_minute,
 )
+from runtime.core.memory_store import CHECKPOINT_KEY_PREFIX, CHECKPOINT_TAGS
 from runtime.core.state_machine import STATE_LABELS
 
 from .util import CoreTest
 
 
 class CheckpointLocationTests(CoreTest):
-    def test_default_path_and_project_id(self) -> None:
+    def test_default_memory_key_and_project_id(self) -> None:
         self.seed()
-        self.assertEqual(self.state_path, self.root.resolve() / ".vibe-kernel" / ".state.md")
-        self.assertTrue(self.state_path.exists())
-        raw = self.state_path.read_text(encoding="utf-8")
+        project_real = str(self.root.resolve())
+        self.assertEqual(self.core.resolved.memory_key, f"{CHECKPOINT_KEY_PREFIX}{project_real}")
+        self.assertTrue(self.state_exists())
+        raw = self.raw_state()
         self.assertIn("_project_id", raw)
         self.assertEqual(self.core.get_state().rev, 1)
 
-    def test_directory_permissions_and_gitignore(self) -> None:
+    def test_no_project_directory_created(self) -> None:
         self.seed()
-        if os.name != "nt":
-            self.assertEqual(self.core.resolved.state_dir.stat().st_mode & 0o777, 0o700)
-        gitignore = (self.root / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn(".vibe-kernel/", gitignore)
-        # 二次写入不重复追加
+        self.assertFalse((self.root / ".vibe-kernel").exists())
+        self.assertFalse((self.root / ".gitignore").exists())
+
+    def test_entry_tags_and_l0_metadata(self) -> None:
         self.seed()
-        self.assertEqual((self.root / ".gitignore").read_text(encoding="utf-8").count(".vibe-kernel/"), 1)
+        entry = self.core.store.memory.get(self.state_key)
+        assert entry is not None
+        for tag in CHECKPOINT_TAGS:
+            self.assertIn(tag, entry.tags)
+        self.assertEqual(entry.metadata.get("layer"), "L0")
+        self.assertEqual(entry.metadata.get("scope"), "project")
+        self.assertEqual(entry.metadata.get("project_id"), self.core.resolved.project_id)
 
     def test_rev_conflict_preserves_other_writer(self) -> None:
         first = self.seed()
         stale_rev = first.rev
         other = self.core.store.write({"phase": STATE_LABELS["S2"]})
         self.assertTrue(other.ok)
-        before = self.state_path.read_bytes()
+        before = self.state_text()
         conflict = self.core.store.write({"phase": STATE_LABELS["S3"]}, expected_rev=stale_rev)
         self.assertFalse(conflict.ok)
         self.assertEqual(conflict.code, "STATE_REV_CONFLICT")
-        self.assertEqual(self.state_path.read_bytes(), before)
+        self.assertEqual(self.state_text(), before)
 
     def test_append_merge_is_ordered_union(self) -> None:
         self.seed(completed=["a"])
@@ -84,7 +89,7 @@ class CheckpointLocationTests(CoreTest):
             self.skipTest("平台不支持软链")
         try:
             other = WorkflowCore(link, env=self.env, import_legacy=False)
-            self.assertEqual(other.resolved.state_path, self.core.resolved.state_path)
+            self.assertEqual(other.resolved.memory_key, self.core.resolved.memory_key)
             self.assertEqual(other.resolved.project_id, self.core.resolved.project_id)
         finally:
             link.unlink()
@@ -94,9 +99,10 @@ class CheckpointLocationTests(CoreTest):
         special.mkdir()
         (special / ".git").mkdir()
         core = WorkflowCore(special, env=self.env, import_legacy=False)
-        result = core.store.write({"phase": "S0 Idle"})
+        result = core.store.write({"phase": "S0 Idle", "status": "active"})
         self.assertTrue(result.ok)
-        self.assertTrue(core.resolved.state_path.exists())
+        self.assertIsNotNone(core.store.memory.get(core.resolved.memory_key))
+        self.assertFalse((special / ".vibe-kernel").exists())
 
     def test_highest_project_marker_wins(self) -> None:
         child = self.root / "pkg"
@@ -104,26 +110,31 @@ class CheckpointLocationTests(CoreTest):
         (child / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         resolved = StateResolver(self.env).resolve(child)
         self.assertEqual(resolved.project_root, self.root.resolve())
-        self.assertEqual(resolved.state_path, self.root.resolve() / ".vibe-kernel" / ".state.md")
+        self.assertEqual(
+            resolved.memory_key,
+            f"{CHECKPOINT_KEY_PREFIX}{self.root.resolve()}",
+        )
 
-    def test_reject_state_inside_skill_dir(self) -> None:
-        skill = Path(self._tmp.name) / "fake-skill"
-        skill.mkdir()
-        (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
-        env = {"HOME": str(self.home), "VIBE_KERNEL_SKILL_DIR": str(skill)}
+    def test_reject_non_checkpoint_memory_key(self) -> None:
         with self.assertRaises(CheckpointLocationError) as ctx:
             WorkflowCore(
                 self.root,
-                env=env,
+                env=self.env,
                 import_legacy=False,
-                state_dir=skill / ".vibe-kernel",
+                memory_key="skill:elsewhere",
             )
         self.assertEqual(ctx.exception.code, "CHECKPOINT_LOCATION_UNRESOLVED")
 
-    def test_legacy_import_only_read_once(self) -> None:
-        skill = self.home / ".agents" / "skills" / "vibe-coder-loop"
-        skill.mkdir(parents=True)
-        legacy = skill / ".state.md"
+    def test_explicit_memory_db_override(self) -> None:
+        custom = Path(self._tmp.name) / "custom" / "memory.sqlite"
+        core = WorkflowCore(self.root, env=self.env, import_legacy=False, memory_db=custom)
+        self.assertTrue(core.store.write({"phase": "S0 Idle", "status": "active"}).ok)
+        self.assertTrue(custom.exists())
+
+    def test_legacy_import_keeps_file(self) -> None:
+        legacy_dir = self.root / ".vibe-kernel"
+        legacy_dir.mkdir()
+        legacy = legacy_dir / ".state.md"
         legacy.write_text(
             "---\n"
             f"_schema: {STATE_SCHEMA_VERSION}\n"
@@ -142,22 +153,22 @@ class CheckpointLocationTests(CoreTest):
             "resume: r\n",
             encoding="utf-8",
         )
-        core = WorkflowCore(self.root, env={"HOME": str(self.home)}, import_legacy=True)
+        core = WorkflowCore(self.root, env=self.env, import_legacy=True)
         result = core.load_checkpoint()
         self.assertEqual(result.mode, "resume")
         self.assertIsNotNone(result.legacy_import)
-        self.assertTrue(self.state_path.exists())
-        self.assertFalse(legacy.exists())
-        self.assertTrue(any(skill.glob(".state.md.legacy-*")))
+        self.assertTrue(core.store.memory.get(core.resolved.memory_key) is not None)
+        self.assertTrue(legacy.exists())
+        self.assertFalse(any(legacy_dir.glob(".state.md.legacy-*")))
 
-    def test_tracked_by_git_warning(self) -> None:
+    def test_second_write_reuses_entry(self) -> None:
         self.seed()
-        import subprocess
-
-        subprocess.run(["git", "-C", str(self.root), "init", "-q"], check=True)
-        subprocess.run(["git", "-C", str(self.root), "add", "-f", ".vibe-kernel/.state.md"], check=True)
-        result = self.core.store.write({"phase": STATE_LABELS["S1"]})
-        self.assertIn("STATE_TRACKED_BY_GIT", result.warnings)
+        first = self.core.store.memory.get(self.state_key)
+        self.seed()
+        second = self.core.store.memory.get(self.state_key)
+        assert first is not None and second is not None
+        self.assertEqual(first.created_at, second.created_at)
+        self.assertEqual(len(self.core.store.memory.keys(CHECKPOINT_KEY_PREFIX)), 1)
 
 
 if __name__ == "__main__":

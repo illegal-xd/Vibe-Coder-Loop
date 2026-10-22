@@ -808,9 +808,7 @@ def transition(
             updates[key] = defaults.get(key, [] if key != "resume" else "")
         updates["_resume_from"] = ""
     expected_for_write = (
-        (0 if store.resolved.allow_move else snapshot.rev)
-        if archived
-        else (snapshot.rev if expected_rev is None else expected_rev)
+        0 if archived else (snapshot.rev if expected_rev is None else expected_rev)
     )
     result = store.write(
         updates,

@@ -185,8 +185,8 @@ class WorkflowCore:
         self,
         cwd: str | os.PathLike[str],
         *,
-        state_dir: str | os.PathLike[str] | None = None,
-        state_path: str | os.PathLike[str] | None = None,
+        memory_key: str | None = None,
+        memory_db: str | os.PathLike[str] | None = None,
         env: Mapping[str, str] | None = None,
         import_legacy: bool = False,
         loop_max_override: int | None = None,
@@ -197,7 +197,7 @@ class WorkflowCore:
         if skill_dir is not None:
             env_map["VIBE_KERNEL_SKILL_DIR"] = str(skill_dir)
         self.resolver = StateResolver(env_map)
-        self.resolved = self.resolver.resolve(cwd, state_dir=state_dir, state_path=state_path)
+        self.resolved = self.resolver.resolve(cwd, memory_key=memory_key, memory_db=memory_db)
         self.store = CheckpointStore(self.resolved, import_legacy=import_legacy, env=env_map)
         self.artifacts = ArtifactStore(self.resolved.artifacts_dir, ephemeral_index=ephemeral_index)
         self.ephemeral_index = ephemeral_index
@@ -272,7 +272,7 @@ class WorkflowCore:
             return (
                 f"phase={phase} | loop={loop} | rev={rev} | "
                 f"next={_safe_text(fields.get('current_step', ''))} | "
-                f"source={_safe_text(self.resolved.state_path)}"
+                f"source={_safe_text(self.resolved.memory_key)}"
             )
         code = state_code(phase) or "S0"
         lines = [
@@ -286,7 +286,7 @@ class WorkflowCore:
             f"review: {_compact(fields.get('review'))}",
             f"user_decisions: {_compact(fields.get('user_decisions'))}",
             f"resume: {_compact(fields.get('resume'))}",
-            f"state: {_safe_text(self.resolved.state_path)}",
+            f"state: {_safe_text(self.resolved.memory_key)}",
         ]
         return "\n".join(lines)
 
@@ -675,7 +675,7 @@ class WorkflowCore:
                 mode="reference_only",
                 code=exc.code,
                 next=vc_codes.next_action(exc.code),
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
             )
         if not snapshot.exists:
             return StateView(
@@ -683,14 +683,14 @@ class WorkflowCore:
                 status="",
                 phase="S0 Idle",
                 rev=0,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
             )
         if snapshot.missing_required or not str(snapshot.raw.get("updated_at", "") or ""):
             return StateView(
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_DEGRADED,
                 next=vc_codes.next_action(vc_codes.CHECKPOINT_DEGRADED),
             )
@@ -699,7 +699,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_DEGRADED,
                 next="loop 必须 ≥0 且 level ∈ 0–4",
             )
@@ -708,7 +708,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_DEGRADED,
                 next=vc_codes.next_action(vc_codes.CHECKPOINT_DEGRADED),
             )
@@ -718,7 +718,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_DEGRADED,
                 next="status 必须是 active/paused/complete",
             )
@@ -727,7 +727,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_DEGRADED,
                 next="updated_at 不可解析",
             )
@@ -743,7 +743,7 @@ class WorkflowCore:
                 updated_at=str(snapshot.fields.get("updated_at", "")),
                 completed_count=len(snapshot.fields.get("completed", []) or []),
                 pending_count=len(snapshot.fields.get("pending", []) or []),
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 next="任务已结束；新输入请先归档旧状态",
             )
         if snapshot.schema_invalid:
@@ -751,7 +751,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_CORRUPT,
                 next=vc_codes.next_action(vc_codes.CHECKPOINT_CORRUPT),
             )
@@ -760,7 +760,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_SCHEMA_AHEAD,
                 next=vc_codes.next_action(vc_codes.CHECKPOINT_SCHEMA_AHEAD),
             )
@@ -769,7 +769,7 @@ class WorkflowCore:
                 mode="reference_only",
                 phase=str(snapshot.fields.get("phase", "")),
                 rev=snapshot.rev,
-                source=str(self.resolved.state_path),
+                source=str(self.resolved.memory_key),
                 code=vc_codes.CHECKPOINT_FOREIGN,
                 next=vc_codes.next_action(vc_codes.CHECKPOINT_FOREIGN),
             )
@@ -785,7 +785,7 @@ class WorkflowCore:
             updated_at=str(fields.get("updated_at", "")),
             completed_count=len(fields.get("completed", []) or []),
             pending_count=len(fields.get("pending", []) or []),
-            source=str(self.resolved.state_path),
+            source=str(self.resolved.memory_key),
         )
 
     # 便捷封装 -----------------------------------------------------------
