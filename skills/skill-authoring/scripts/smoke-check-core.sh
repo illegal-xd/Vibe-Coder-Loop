@@ -455,16 +455,23 @@ if [ "$SMOKE_TABLE" -eq 1 ]; then
 import sys, re
 f = sys.argv[1]
 rows = []
+
+def bad(block):
+    # 单元格内转义竖线 `\|` 是字面竖线，不是列分隔符 → 计数前先剔除（否则误报列数不一致）
+    cols = {len(r.replace('\\|', '').split('|')) for r in block if not re.match(r'^\|[\s:|-]+\|$', r)}
+    return len(cols) > 1
+
 for line in open(f, encoding='utf-8'):
     s = line.rstrip('\n')
     if s.startswith('|') and s.endswith('|'):
         rows.append(s)
     else:
-        if rows:
-            cols = {len(r.split('|')) for r in rows if not re.match(r'^\|[\s:|-]+\|$', r)}
-            if len(cols) > 1:
-                sys.exit(1)
-            rows = []
+        if rows and bad(rows):
+            sys.exit(1)
+        rows = []
+# 文件以表格结尾时缓冲区在循环后未结算 → 补结算一次（否则 EOF 表格永不检查）
+if rows and bad(rows):
+    sys.exit(1)
 PY
   done
   [ "$bad_tables" -eq 0 ] && { [ "$SMOKE_QUIET" -eq 1 ] || echo "  ✓ 表格列数一致"; }
