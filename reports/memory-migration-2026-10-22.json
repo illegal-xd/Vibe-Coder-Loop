@@ -1,0 +1,63 @@
+{
+  "migration_id": "l0l7-backfill-v1",
+  "verify": {
+    "ok": true,
+    "problems": [],
+    "original_fingerprint": "659166e2f53b3cb8ba535e4f944684222927cbdc6a46a534ee311dbb0c757238",
+    "original_fingerprint_expected": "659166e2f53b3cb8ba535e4f944684222927cbdc6a46a534ee311dbb0c757238",
+    "total_records": 347,
+    "derived_records": 130,
+    "expected_derived": 130,
+    "bad_layer_enum": [],
+    "bad_review_enum": [],
+    "records_without_evidence": 14,
+    "dangling_evidence": [],
+    "l7_count": 1,
+    "approved_but_candidate": [],
+    "fts_derived_hits": 11
+  },
+  "state": {
+    "total_records": 347,
+    "original_records": 217,
+    "derived_records": 130,
+    "originals_without_metadata": 0,
+    "knowledge_records": 196,
+    "non_knowledge_records": 21,
+    "layer_distribution": {
+      "L3": 94,
+      "L4": 63,
+      "L5": 9,
+      "L6": 29,
+      "L7": 1,
+      "None": 21
+    },
+    "category_distribution": {
+      "navigation": 7,
+      "knowledge": 196,
+      "identity": 2,
+      "environment": 5,
+      "state": 4,
+      "preference": 3
+    },
+    "status_distribution": {
+      "active": 160,
+      "archived": 9,
+      "candidate": 48
+    },
+    "review_distribution": {
+      "pending": 207,
+      "approved": 10
+    },
+    "evidence_level_distribution": {
+      "E0": 18,
+      "E1": 1,
+      "E2": 141,
+      "E3": 9,
+      "E4": 48
+    },
+    "original_fingerprint": "659166e2f53b3cb8ba535e4f944684222927cbdc6a46a534ee311dbb0c757238",
+    "l7_count": 1,
+    "derived_obs": 119,
+    "derived_episode": 11
+  }
+}

@@ -65,3 +65,6 @@ docs/audits/*.local.jsonl
 
 # External tool artifacts (Aspire Code etc.)
 .aspirecode/
+# 生成型审计/提炼 JSON（可由 scripts/memory/{audit_memory,distill}.py 复现，入库会造成数据噪声）
+reports/memory-audit-*.json
+reports/memory-distill-*.json
