@@ -23,6 +23,48 @@
 | 3 | 落地 | 本轮改动文件先合规 | 9 文件 21 处导入改为全路径 + 后缀（resource-group 详情/编辑/列表公共 + 告警指定对象组件 + 新建列配置）；残留违规扫描为空、SFC 编译全过、eslint 0 error | `src/views/management-center/**` |
 | 4 | 已知缺口 | 项目入口指针未同步新规则 | `project:jtkl-mgmt-module-index` 的「可执行规则入口」清单仍列 5 条（未含 `rule:jtkl-import-full-path`）；因 preflight 已能列出全部 `rule:*`，暂不改写 5KB 入口条目 | delx-memory |
 
+### 同版本第十八批 — 记忆体积治理第二批（剩余 5 条 5–10K 全拆）
+
+> 触发：用户「全部都拆分」。承接第十七批剩余 5 条（7.4K / 5.9K / 5.0K / 5.0K / 4.9K），全部按「入口 + 分片」拆分。
+
+| 原条目 | 前 | 入口后 | 拆出分片 |
+|---|---|---|---|
+| `project:jtkl-module-compress` | 7,338 | 2,911 | `-compress-ops`（操作矩阵 + 源模型可选性判据）、`-compress-env`（v3.2.0 资源组上限 / 日志纳管 / v3.2.1 标签 / 弹层 / API 清单） |
+| `project:jtkl-module-tuning-template` | 5,823 | 3,706 | `-tuning-template-detail`（API / goHrefOpen / 组件要点 / v321 调整 / 弹层） |
+| `project:delx-memory-web-overview` | 4,884 | 2,690 | `-delx-memory-web-ui`（标签分类筛选 / 关系图谱 / 分布图表 / JsonViewer / 技术债） |
+| `project:vue-ui-architecture` | 4,837 | 4,514 | `-architecture-config`（config_folder 聚合流程 + 覆盖优先级 + 关键配置项） |
+| `project:vue-ui-child-apps` | 4,864 | 2,225 | `-child-apps-cases`（dept 模块 / 面包屑 title / 主题布局 / vue2-demo / workflow 五条经验） |
+
+**导航同步**：`reference:memory-nav-projects-other`（vue-ui 双分片 + delx-memory-web-ui）、`-projects-jtkl`（compress 两分片 + tuning-template 分片）。
+
+**量化**：总字符 365,985 → **365,633**；条数 359 → **365**（+6 分片）；**5–10K 条目 2 → 0**；3–5K 20 条；最大单条 7,338 → **4,249**（`java-vibe-code-module-memory-stats`）。`p_critical` 维持 18,032 / 9 条（本批不涉及常驻预算）。
+
+### 同版本第十七批 — 记忆体积治理（按 5 项建议全量执行）
+
+> 触发：用户「按顺序全部都处理」。全库 356 条 / 377,176 字符，存在 6 条 5–10K 与 18 条 3–5K，且 `p_critical` 常驻 23,672 字符（其中 archived 条目占位）。
+
+| # | 动作 | 结果 |
+|---|---|---|
+| 1 | `project:webbas-engine-overview`（p_critical）拆分 | 5904 → ~1.7K；包/API → `project:webbas-engine-packages`（同步修正 10→11 包，补 bigfile）；产物与产物 package.json + 三个发布雷区 → 新建 `project:webbas-engine-build-artifacts` |
+| 2 | `project:obsidian-vault` 摘 p_critical | 2418 → ~1.2K，`p_critical` → `p_high`（archived 不占预算）；入口导航预算表 10/10 → **9/10**，释放 1 个名额 |
+| 3 | `project:jtkl-modules`（archived 8.1K）压缩 | 8080 → ~2K，只留模块一览 / 告警双侧差异 / 资源池权限体系，其余指向 archive 原文 |
+| 4 | `project:jtkl-mgmt-module-pool`（8.5K）拆分 | 入口 ~1.5K + 新建 `project:jtkl-mgmt-pool-config`（接口/功能树/DISABLE_CONFIG）+ `project:jtkl-mgmt-pool-files`（文件结构/常量 i18n/变更史） |
+| 5 | `skill:learning/memory:query-router` 去重瘦身 | 5082 → ~2.3K：Task→Router 表以 `retrieval.md` 为主源只留指针；保留仅存于本条的 Step0-4、工具能力表与两条差异条款（`rule:*` 召回、`memory_search` 不可用回退） |
+| 6 | 导航分片同步 | `reference:memory-nav-projects-other`（obsidian 降级 + webbas 新分片）、`-projects-jtkl`（pool 两个新分片 + modules 压缩说明） |
+
+**量化**：总字符 377,176 → **365,985**（−3.0%）；`p_critical` 常驻 23,672 → **18,032**（−24%，9/10）；5–10K 条目 6 → **2**（剩 `project:jtkl-module-compress` 7.4K、`project:jtkl-module-tuning-template` 5.9K，未在本次清单内）。
+
+### 同版本第十六批 — 记忆导航拆分按需加载 + v330 条目删除收口
+
+> 背景：`reference:memory-navigation` 为 11.5KB 单体导航，每次 S2/首次进入项目全量注入；且其内仍指向已删除的 `project:jtkl-mgmt-v330-4417-monopoly`。
+
+| # | 项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | 导航拆分 | 单体 → **入口路由（1.2KB）+ 5 分片**：`reference:memory-nav-conventions`（tag/key 命名，写入前必读）/ `-nav-projects-jtkl`（双仓网络）/ `-nav-projects-other`（其余项目）/ `-nav-principles`（原则+pattern 树+常驻经验）/ `-nav-workflow`（自身记忆/SKILL 条目/工具/维护/协作事实）。入口表写明「何时读哪个」，并规定"默认只读路由表、命中场景再 get 一个分片、不并集" | delx-memory |
+| 2 | 陈旧指针 | v330-4417-monopoly 已删 → 分片内改为 `project:jtkl-mgmt-v400-monopoly-state`，并保留一行删除留痕（非悬空指针） | delx-memory |
+| 3 | 技能内指针同步 | `learning/memory/architecture.md` 前缀规范指针 → `reference:memory-nav-conventions`；`rules/orchestration.md` 子 agent 导航项改为"只读路由表 + 按需取分片" | skill 文件 |
+| 4 | 预算 | 入口仍 `p_critical`（不占新预算），5 分片均 `p_high` | delx-memory |
+
 ### 同版本第十四批 — 规则召回闭环（协议层 + 入口层）
 
 > 接第十三批：工具层已让 `rule:*` 进入 preflight 候选，本批补齐「按任务类型强制召回」与「项目入口指针」，形成闭环。

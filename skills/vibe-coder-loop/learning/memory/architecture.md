@@ -25,7 +25,7 @@ status: active
 
 ## 实例特化（本 skill 绑定）
 
-- **前缀规范完整版**：lesson 主题式命名 / `experience:{主题}` / `global:{主题}` 等前缀细则以 `reference:memory-navigation` 记忆为准。
+- **前缀规范完整版**：lesson 主题式命名 / `experience:{主题}` / `global:{主题}` 等前缀细则以 `reference:memory-nav-conventions` 记忆为准（导航已拆分为入口 `reference:memory-navigation` + 5 分片，按需加载）。
 - **scope 归属实例**：技能维护类规则 = `scope:project/<project>` + `scope:task`，绝不升级为全局 p_critical（其他项目无需加载）；全局核心（红线/身份）才用 `scope:global` + `p_critical`。
 - **命名空间冲突实证**：`skill:system:*` 无 owner 致多 skill 互相覆盖——见 `../skill-metrics.md`「系统状态仪表盘」D8 注。
 - **自动提升执行**（阈值触发逻辑/系统侧输出）见 `promotion.md`「自动提升逻辑」节——概念定义在 protocol.md §三层记忆体系，执行绑定在 promotion.md。

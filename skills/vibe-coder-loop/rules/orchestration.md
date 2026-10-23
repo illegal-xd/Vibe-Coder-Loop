@@ -50,7 +50,7 @@ status: active
 【设计上下文】<Design 阶段该模块的职责/接口/数据流，摘录>
 【接口契约】<函数签名/导出/依赖的其他模块接口>
 【记忆继承】首步用 delx-memory_memory_get 读取以下 key 获取项目上下文：
-  - reference:memory-navigation（导航，必读）
+  - reference:memory-navigation（导航入口，只读路由表；按需再取分片 reference:memory-nav-*）
   - project:xxx-module-<对应模块>（按任务选）
   - project:xxx-frontend-conventions（编码约定）
   若 key 不存在则跳过，不阻塞
