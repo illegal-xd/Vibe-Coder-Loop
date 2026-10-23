@@ -14,6 +14,38 @@
 | 2 | 批次归属 | 第八批（预算 4200）、第九批（references 权威同步）→ commit `749a9ed`；第十批（转义竖线）、第十一批（EOF 漏检）→ commit `ff07ad2`；记忆分层工具链与报告 → commit `8f63b11` | `CHANGELOG.md` |
 | 3 | 快照同步 | `backup/snapshots/*` 与 `backup/rules/*` 内的 `skill_version` 由 `memory_tool.py backup` 重建时刷新（不入库，无需手改） | `backup/` |
 
+### 同版本第十五批 — 沉淀「规则存而不用」经验 + 新增导入全路径规则
+
+| # | 层 | 项 | 处置 | 落点 |
+|---|---|---|---|---|
+| 1 | 经验 | 三重断点事故条目化 | 新建 `lesson:rule-recall-triple-breakpoint`：preflight 前缀 / 路由表缺 `rule:` 域 / `memory_search` 缺失三断点 + 三层修复 + 唯一可判指标（候选出现且 access+1）+ 4 条反模式；TTL 1 年 | delx-memory |
+| 2 | 规则 | 新增导入规范 | 新建 `rule:jtkl-import-full-path`：本地导入必须写文件级全路径 + 后缀（`@/apis/index.js`、`@/auth.js`、`./x.vue`），禁 `@/apis`/`@/utils`/`./components`；第三方包例外；**存量不批量替换**（`@/locales` 170 / `@/utils` 102 / `@/apis` 102 / `@/auth` 68 / `@/request` 59 / `@/config` 56 处省略写法，需用户明确指令） | delx-memory |
+| 3 | 落地 | 本轮改动文件先合规 | 9 文件 21 处导入改为全路径 + 后缀（resource-group 详情/编辑/列表公共 + 告警指定对象组件 + 新建列配置）；残留违规扫描为空、SFC 编译全过、eslint 0 error | `src/views/management-center/**` |
+| 4 | 已知缺口 | 项目入口指针未同步新规则 | `project:jtkl-mgmt-module-index` 的「可执行规则入口」清单仍列 5 条（未含 `rule:jtkl-import-full-path`）；因 preflight 已能列出全部 `rule:*`，暂不改写 5KB 入口条目 | delx-memory |
+
+### 同版本第十四批 — 规则召回闭环（协议层 + 入口层）
+
+> 接第十三批：工具层已让 `rule:*` 进入 preflight 候选，本批补齐「按任务类型强制召回」与「项目入口指针」，形成闭环。
+
+| # | 层 | 项 | 处置 | 落点 |
+|---|---|---|---|---|
+| 1 | 协议层 | 路由表缺 `rule:` 域 | 编码/调试行改为先 `memory_list(prefix="rule:")`（样式变量/注释/i18n/弹窗约定），再 `memory_search` lesson/reflection + 项目网络 | `learning/memory/retrieval.md` |
+| 2 | 协议层 | `memory_search` 在本环境不存在 | 新增 1a 条款：改用 `memory_list(prefix=...)` + `memory_get` 按同一清单执行，输出标注 `[memory_search 不可用 · prefix 回退]`，不得跳过清单 | 同上 |
+| 3 | 协议层 | 可执行副本未同步 | `skill:learning/memory:query-router` 同步上述两处（编码/调试行 + 1a 条款），完整 metadata + tags 回传、计数 +1 | delx-memory |
+| 4 | 入口层 | `project:jtkl-conventions` 已 archived，「rule:jtkl-* 系列」指针失效 | 改为在 `project:jtkl-mgmt-module-index`（p_critical 项目入口）头部补「可执行规则入口（必读）」清单：`rule:jtkl-style-less-convention` / `-code-comment-` / `-i18n-enum-computed` / `antdv-popup-container` / `-immutable-tip-banner`；不动 archived 的合并记录，避免破坏 consolidation 语义 | delx-memory |
+| 5 | 验证 | 端到端 | `preflight` 输出含 `rule:*` 段且 exit=0；`rule:jtkl-style-less-convention` access 2/hit 1；两个记忆条目 metadata 三件套 + tags 完整 | 实测 |
+
+### 同版本第十三批 — Preflight 规则候选补 `rule:*`（项目级规则存而不用修复）
+
+> **现象**：`rule:jtkl-style-less-convention`（jtkl 两仓样式规范：先读 var.less / mixis.less）长期不生效，代码中持续出现硬编码颜色/字号/间距。
+> **根因**：`preflight` 的规则候选 SQL 只查 `skill:rules/%`（`memory_tool.py`），项目/任务级 `rule:*` 从未进入候选清单；叠加 `retrieval.md` 路由表编码类强制召回清单无 `rule:` 域、且该环境 delx-memory 无 `memory_search` 工具，三处叠加导致规则零召回路径。
+
+| # | 项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | 规则候选 | `rule_keys` 保持 `skill:rules/%`（fail-closed 判据不变）；新增 `scoped_rule_keys` 查 `rule:%`，独立输出「项目/任务级规则 · 命中域才 memory_get」段 | `backup/memory_tool.py` |
+| 2 | 兼容性 | `[RULE_STORE_MISSING]` 仍只由 `skill:rules/*` 触发，exit code 不变（实测 0） | 同上 |
+| 3 | 后续待办 | 协议层：`retrieval.md` 编码/调试行补 `memory_list(prefix="rule:")`（本环境无 `memory_search`）；入口层：`project:jtkl-conventions` 仍为 archived，其"rule:jtkl-* 系列"指针需恢复或在模块索引显式引用 | 未实施 |
+
 ### 同版本第十二批 — Checkpoint 迁移到 delx-memory（协议不落项目目录）
 
 > **背景**：`.vibe-kernel/.state.md` 会在每个项目目录产生一份运行态文件（且需 gitignore/锁/权限/git 跟踪检查等一整套文件语义）。改为 **以项目绝对地址为唯一 ID 存 delx-memory** 后，跨项目隔离仍成立，但不再污染工作区，读写与大模型记忆走同一套能力。

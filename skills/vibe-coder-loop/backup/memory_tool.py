@@ -1690,6 +1690,15 @@ def cmd_preflight(args, db):
                 "SELECT key FROM memory WHERE key LIKE ? ORDER BY key", ("skill:rules/%",)
             ).fetchall()
         ]
+        # 项目/任务级规则（rule:*）独立成组：与 skill:rules/* 语义不同（前者为项目约定，
+        # 后者为 skill 骨架化规则）。此前仅查 skill:rules/% 导致 rule:jtkl-* 永远进不了候选，
+        # 项目规则长期"存而不用"。
+        scoped_rule_keys = [
+            r[0]
+            for r in conn.execute(
+                "SELECT key FROM memory WHERE key LIKE ? ORDER BY key", ("rule:%",)
+            ).fetchall()
+        ]
         counts = {}
         for prefix in ("lesson", "reflection", "pattern", "principle", "experience", "project"):
             counts[prefix] = conn.execute(
@@ -1710,6 +1719,16 @@ def cmd_preflight(args, db):
             print("  [next] 执行 memory_tool.py restore <规则快照> 恢复规则库后重跑 preflight；不得以骨架摘要继续。")
             return 3
         print("  （无 skill:rules/* 条目 —— 骨架化规则不可用，按文件内摘要降级并标注）")
+    print()
+
+    print("【项目/任务级规则 · 命中域才 memory_get】")
+    if scoped_rule_keys:
+        for k in scoped_rule_keys[:PREFLIGHT_KEY_CAP]:
+            print(f"  - {k}")
+        if len(scoped_rule_keys) > PREFLIGHT_KEY_CAP:
+            print(f"  … 另有 {len(scoped_rule_keys) - PREFLIGHT_KEY_CAP} 条（超出显示上限，用 memory_list(prefix=\"rule:\") 取全量）")
+    else:
+        print("  （无 rule:* 条目）")
     print()
 
     print("【经验候选 · 按 retrieval.md 路由表命中才 memory_search，勿全量拉取】")

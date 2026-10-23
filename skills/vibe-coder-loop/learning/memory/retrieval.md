@@ -29,7 +29,7 @@ status: active
 |---------|---------|-------------|---------|
 | 技能/文档维护 | 修改 vibe-coder-loop skill 文件、Vibe Coder Kernel、本仓库文档 | `rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue` | `memory_get` 精确 key（已知） |
 | 记忆/回写/指标 | 任务涉及 access_count、仪表盘、Metrics、记忆协议 | `pattern:memory-writeback-integrity` + `reference:memory-access-tracking` + `lesson:memory-metadata-overwrite` | `memory_get` 精确 key |
-| 编码/调试 | 功能开发、bug 修复（vue/antd/通用） | `memory_search "lesson:{技术栈}"` + `memory_search "reflection:{领域}"` + 项目网络入口 | `memory_search`（≤2 次，取前 5） |
+| 编码/调试 | 功能开发、bug 修复（vue/antd/通用） | **`memory_list(prefix="rule:")` 项目/任务级规则（样式变量 / 注释 / i18n / 弹窗等约定，命中域才 get）** + `memory_search "lesson:{技术栈}"` + `memory_search "reflection:{领域}"` + 项目网络入口 | `memory_list` + `memory_search`（≤2 次，取前 5） |
 | 架构/重构 | 模块拆分、接口变更 | `codegraph_impact` + 项目网络 p_high + `memory_list(prefix="pattern:")` | codegraph + memory 组合 |
 | 跨项目任务 | 涉及 ≥2 项目共享文件 | `memory_list(tag="stale")` + `memory_list(prefix="principle:")` + 跨项目关联 | 先 stale 验证再加载 |
 | 调研/审查 | E 类只读任务 | 项目网络 + 相关 lesson/reflection | `memory_search` 关键词 |
@@ -37,6 +37,7 @@ status: active
 **执行规则（最小充分召回 / Progressive Retrieval）**：
 
 1. **S1 Intent 后判定任务类型**；S2 Preflight 执行对应**最小召回清单**——已知 key 用 `memory_get` 精确取值（不经 search，避免 snippet 截断且保证必中）；经验域按表用 `memory_search`（关键词，≤2 次、取前 5）。`memory_get` 不计入检索次数。
+1a. **`memory_search` 不可用时**（部分 MCP 装配只暴露 `list/get/set/forget`）：改用 `memory_list(prefix=...)` 取 key 列表 + `memory_get` 取值，按同一清单顺序执行，并在输出标注 `[memory_search 不可用 · prefix 回退]`；**不得因工具缺失跳过清单**。
 2. **一次只取最相关的那一类**；类型模糊时**选最可能的一类**起步 —— **不取并集**（旧的「并集召回」策略已废弃）
 3. 执行中发现信息不足 → **按需二次检索**（先说明缺口，再 `memory_search` 关键词）；仍不足 → 第三次
 4. **排序原则**：Relevance > Specificity > Freshness > Frequency；边缘相关的一律不注入
