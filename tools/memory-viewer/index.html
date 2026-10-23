@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>delx-memory · 记忆查看器</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <h1>delx-memory</h1>
+    <span class="sub">记忆数据列表</span>
+  </div>
+
+  <div class="stats" id="stats" aria-live="polite"></div>
+
+  <div class="actions">
+    <label class="btn primary">
+      载入 JSON
+      <input type="file" id="fileInput" accept=".json,application/json" hidden>
+    </label>
+    <button class="btn" id="exportCsv" type="button">导出当前结果</button>
+    <button class="btn ghost" id="resetBtn" type="button">重置</button>
+  </div>
+</header>
+
+<div class="notice" id="notice" hidden></div>
+
+<section class="toolbar" aria-label="筛选与排序">
+  <div class="field grow">
+    <label for="search">搜索</label>
+    <input id="search" type="search" autocomplete="off"
+           placeholder="搜索 key / 正文 / 标签，空格 AND，支持 type: tag: status:"
+           title="key / 正文 / 标签，空格分隔按 AND 组合；支持 type: tag: status: layer: frag: weight:">
+  </div>
+  <div class="field">
+    <label for="typeFilter">类型</label>
+    <select id="typeFilter"></select>
+  </div>
+  <div class="field">
+    <label for="weightFilter">权重</label>
+    <select id="weightFilter"></select>
+  </div>
+  <div class="field">
+    <label for="layerFilter">层级</label>
+    <select id="layerFilter"></select>
+  </div>
+  <div class="field">
+    <label for="statusFilter">状态</label>
+    <select id="statusFilter"></select>
+  </div>
+  <div class="field">
+    <label for="fragFilter">分片</label>
+    <select id="fragFilter"></select>
+  </div>
+  <div class="field">
+    <label for="ttlFilter">TTL</label>
+    <select id="ttlFilter"></select>
+  </div>
+  <div class="field narrow">
+    <label for="minSize">最小字符</label>
+    <input id="minSize" type="number" min="0" step="100" placeholder="0">
+  </div>
+  <div class="field">
+    <label for="sortBy">排序</label>
+    <select id="sortBy"></select>
+  </div>
+  <div class="field narrow">
+    <label for="pageSize">每页</label>
+    <select id="pageSize"></select>
+  </div>
+</section>
+
+<section class="chips" id="activeFilters" aria-label="已启用的筛选"></section>
+
+<main>
+  <table class="grid" id="grid">
+    <thead>
+      <tr>
+        <th data-sort="key" scope="col">键</th>
+        <th data-sort="type" scope="col">类型</th>
+        <th data-sort="size" scope="col" class="num">字符</th>
+        <th scope="col">标签</th>
+        <th data-sort="updated_at" scope="col">更新时间</th>
+        <th data-sort="status" scope="col">状态</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <p class="empty" id="empty" hidden>没有匹配的记忆</p>
+  <div class="pager">
+    <button class="btn ghost" id="loadMore" type="button" hidden>加载更多</button>
+    <span id="pagerInfo"></span>
+  </div>
+</main>
+
+<div class="drawer-mask" id="drawerMask"></div>
+
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="drawerTitle" tabindex="-1">
+  <div class="drawer-head">
+    <div class="drawer-title">
+      <h2 id="drawerTitle">—</h2>
+      <div class="badges" id="drawerBadges"></div>
+    </div>
+    <button class="icon-btn" id="closeDrawer" type="button" aria-label="关闭">✕</button>
+  </div>
+
+  <div class="drawer-tools">
+    <button class="btn ghost" id="copyKey" type="button">复制 key</button>
+    <button class="btn ghost" id="copyValue" type="button">复制正文</button>
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="text" role="tab" type="button">正文</button>
+      <button class="tab" data-tab="meta" role="tab" type="button">metadata</button>
+    </div>
+  </div>
+
+  <div class="drawer-relations" id="drawerRelations"></div>
+
+  <pre class="drawer-body" id="drawerText"></pre>
+  <pre class="drawer-body" id="drawerMeta" hidden></pre>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

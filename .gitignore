@@ -68,3 +68,6 @@ docs/audits/*.local.jsonl
 # 生成型审计/提炼 JSON（可由 scripts/memory/{audit_memory,distill}.py 复现，入库会造成数据噪声）
 reports/memory-audit-*.json
 reports/memory-distill-*.json
+
+# 记忆查看器数据快照（含本机路径与记忆正文，禁止入库；用 scripts/memory/export_viewer_data.py 生成）
+tools/memory-viewer/memory-data.json

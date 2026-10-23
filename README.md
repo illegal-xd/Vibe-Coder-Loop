@@ -19,6 +19,7 @@ Vibe-Coder-Loop/
 ├── scripts/
 │   ├── audit.sh               # 公开面审计工具（只读；含运行状态 gitignore 机检）
 │   ├── verify-symlinks.sh     # 仓库/宿主软链校验
+│   ├── memory/                # 记忆审计/提炼/迁移 + 查看器数据导出（均只读）
 │   └── tests/
 │       ├── test-audit.sh      # 审计工具自测
 │       ├── test-runtime-core.sh
@@ -29,6 +30,8 @@ Vibe-Coder-Loop/
 ├── tests/
 │   ├── core/                  # runtime/core 单测
 │   └── exec/                  # runtime/exec 单测
+├── tools/
+│   └── memory-viewer/         # delx-memory 静态查看器（HTML/CSS/JS，零依赖、无构建）
 ├── docs/
 │   ├── installation.md        # 安装、宿主集成、配置
 │   ├── migration.md           # 迁移与回滚记录（已脱敏）
@@ -51,6 +54,7 @@ Vibe-Coder-Loop/
 | 记忆工具 / 自检脚本 | Python 3.8+；`memory_tool.py` 仅标准库，完整 smoke-check 另需 PyYAML（缺失时显式跳过 YAML 校验） |
 | 规则库（**必填**） | `delx-memory` 中的 `skill:*` 规则条目（私有通道恢复）。缺失 → `[RULE_STORE_MISSING]` **停止**，不降级继续 |
 | 可选集成 | `delx-memory` 记忆后端（回写/检索/仪表盘）、`codegraph`（代码图谱）；缺失时对应能力标注降级，**不影响规则库的必填性** |
+| 记忆查看器（可选） | 现代浏览器；仅导出数据需 Python 3.8+（`scripts/memory/export_viewer_data.py`） |
 | 不支持 | Windows 原生 CMD / PowerShell 直接执行 `.sh`；请使用 Git Bash/WSL，或用 PowerShell 完成安装步骤 |
 
 完整说明见 [docs/installation.md](docs/installation.md) 与 [docs/audits/compatibility.md](docs/audits/compatibility.md)。
@@ -134,6 +138,19 @@ bash scripts/tests/test-audit.sh              # 工具自测（使用虚构路�
 ```
 
 规则、退出码、已知误报与限制见 [docs/audits/audit-tool.md](docs/audits/audit-tool.md)。发布前流程见 [docs/audits/release-checklist.md](docs/audits/release-checklist.md)。
+
+## 记忆查看器（可选）
+
+`tools/memory-viewer/` 是零依赖静态页（HTML + CSS + JS，无构建、无网络请求），用于浏览本机 delx-memory 数据：搜索（key/正文/标签，支持 `type:` `tag:` `status:` 等字段语法）、筛选（类型/权重/层级/状态/分片/TTL/字符数）、排序、详情抽屉（父条目 ↔ 分片互相跳转）、CSV 导出。
+
+```bash
+python3 scripts/memory/export_viewer_data.py            # 只读导出 → tools/memory-viewer/memory-data.json
+cd tools/memory-viewer && python3 -m http.server 8765   # 浏览器打开 http://localhost:8765/
+```
+
+- 导出脚本以只读方式打开 SQLite（`mode=ro`），不写库；生成的 `memory-data.json` 含本机路径与记忆正文，已在 `.gitignore` 中，**不要提交**
+- 直接双击 `index.html` 也可用：`file://` 下浏览器禁止读取同目录 JSON，需在页面里手动选择文件
+- 数据过期后重跑导出脚本并刷新页面即可
 
 ## 文档
 
