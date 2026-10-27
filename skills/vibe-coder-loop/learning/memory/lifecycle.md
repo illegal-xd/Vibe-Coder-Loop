@@ -159,7 +159,7 @@ python3 scripts/memory/memory_feedback.py record --task-id <T> \
 
 - 长条目拆分只走 `memops.py split`；父条目为 router，分片带 `fragment` + `layer:<L>` tag，继承 layer/evidence/scope。
 - 默认召回排除 `fragment` tag 与 `#` key；需要细节时按分片 key `memory_get`。
-- `memory_search` 不可用时，优先 `python3 scripts/memory/memops.py search "<关键词>" --limit 5`（FTS，默认排除分片），再退回 `memory_list(prefix=...) + memory_get`。
+- `memory_search` 不可用时，优先 `python3 backup/memory_tool.py search "<关键词>" --limit 5`（FTS5，默认排除分片；以 skill 根为基准），再退回 `memory_list(prefix=...) + memory_get`。仓库根的 `scripts/memory/memops.py search` 仅在 cwd = 技能仓库根时可用，不作为默认路径。
 - 经验/模式召回失败或超时 → 标注 `⚠️ 记忆召回降级` 后继续；规则库（`skill:rules/*`）仍 fail-closed。
 
 **协议文档记忆**：`reference:memory-access-tracking`（TTL 365 天）

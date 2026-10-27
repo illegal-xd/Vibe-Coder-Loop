@@ -63,7 +63,8 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 > **Level 0 轻量 S2 范围**：Level 0（Quick Loop）的 S2 仅执行第 1 项（Task→Memory Router 最小召回 Step 0-1）+ 消费清单记录；其余检查项（代码向检查）由 Level 1+ 执行。Level 0 与 S2 的职责边界见 `engine/complexity-gate.md`「Level 0 细分」（唯一事实源）。
 
 **出口条件**：
-- [ ] **Task→Memory Router 已执行（强制）**：S1 判定任务类型后，按 `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」执行对应**强制召回清单**（已知 key 用 `memory_get` 精确取值，不经 search；经验域用 `memory_search`，均须最小充分——防 snippet 截断 + 保证必中）。**路由表唯一事实源 = `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节**（`skill:learning/memory:query-router` 条目为其可执行副本），本文件不重复清单内容。**此项为状态机强制动作，不依赖 Agent 自发检索**
+- [ ] **Task→Memory Router 已执行（强制）**：S1 判定任务类型后，按 `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」执行对应**强制召回清单**（已知 key 用 `memory_get` 精确取值，不经 search；经验域用 `memory_search`，本环境无该工具时用 `python3 backup/memory_tool.py search "<关键词>" --limit 5`，均须最小充分——防 snippet 截断 + 保证必中）。**路由表唯一事实源 = `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节**（`skill:learning/memory:query-router` 条目为其可执行副本），本文件不重复清单内容。**此项为状态机强制动作，不依赖 Agent 自发检索**
+- [ ] **规则召回证据已输出（可校验）**：列出本轮实际 `memory_get` 的 `rule:*` / `lesson:*` key；无命中写 `[Rule 命中: 无]` + 一句判定依据（须引用本轮任务类型；不得空写）。未输出或空写 → `[RULE_RECALL_MISSING]` 回退 S2（Level 0 同样适用）
 - [ ] 上下文感知路由已执行（按用户输入特征选择 memory/codegraph 路径，清单外条目按需加载）
 - [ ] CodeGraph 新鲜度检查已标注
 - [ ] 版本号一致性检查已标注
@@ -271,6 +272,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 | 码 | 触发 | `[next]` | fail-closed |
 |---|---|---|---|
 | `RULE_NOT_LOADED` | 进入某阶段但该阶段必读文件未加载 | 加载对应文件后重跑本阶段出口 | 否（回退） |
+| `RULE_RECALL_MISSING` | S2 出口未见 `[Rule 命中]` 行，或「无命中」未给判定依据 | 重跑 preflight 候选段 → 命中域 `memory_get` → 回填证据后重跑 S2 出口 | 否（回退） |
 | `RULE_NOT_FOUND` | 加载清单内文件在磁盘缺失 | 从 git 恢复该文件，或修正 `load_plan.json` | **是** |
 | `LOAD_PLAN_MISSING` | `load_plan.json` 缺失或不可解析（≠ 规则条目缺失） | 从 git 恢复；临时应急用 `--files` 显式给出清单 | **是** |
 | `RULE_STORE_MISSING` | 规则已下沉但 `skill:*` 条目不可用，且快照未恢复 | 执行 `memory_tool.py restore`；仍不可用 → **停止** | **是** |

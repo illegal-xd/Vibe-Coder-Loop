@@ -14,6 +14,21 @@
 | 2 | 批次归属 | 第八批（预算 4200）、第九批（references 权威同步）→ commit `749a9ed`；第十批（转义竖线）、第十一批（EOF 漏检）→ commit `ff07ad2`；记忆分层工具链与报告 → commit `8f63b11` | `CHANGELOG.md` |
 | 3 | 快照同步 | `backup/snapshots/*` 与 `backup/rules/*` 内的 `skill_version` 由 `memory_tool.py backup` 重建时刷新（不入库，无需手改） | `backup/` |
 
+### 同版本第二十一批 — 规则召回链修复（死指针 / manifest / review 维度 / S2 证据）
+
+> 触发：项目规则（`rule:jtkl-style-less-convention`）在写码时持续被漏用。定位结论：preflight 候选段已能列出 `rule:*`（断点 1/2 已修），但「候选 → 读取 → 落到代码」无闭环；同时 `memory_search` 在本环境不存在，兜底路径 `scripts/memory/memops.py` 相对项目 cwd 不可达。
+
+| # | 项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | 死指针 | `memory_tool.py` 新增 `search`（FTS5；逐词引号 + 前缀通配，`.`/`-` 不再被当语法；默认排除分片与过期条目；只回 key + 摘要）。`retrieval.md` 与 `lifecycle.md` 的兜底路径改为 `python3 backup/memory_tool.py search`（以 skill 根为基准；仓库根 `scripts/memory/memops.py` 只在 cwd = 仓库根时可达，降为备选说明） | `backup/memory_tool.py`、`learning/memory/retrieval.md`、`learning/memory/lifecycle.md`、`skill:learning/memory:query-router` |
+| 2 | 契约 | `manifest.yaml` 的 `memory.read` 补 `rule`——此前 preflight 的 `rule:*` 段只是代码补丁，机器契约未声明读规则 | `manifest.yaml` |
+| 3 | Review 维度 | 新增第 9 维「项目规则符合性」：核对 S2 `[Rule 命中]` 清单；`[Rule 命中: 无]` 而 preflight 已列候选 → 判召回失守并回 S2 | `rules/review.md`、`skill:rules/review:eight-dimensions` |
+| 4 | S2 证据链 | S2 出口新增「规则召回证据已输出」检查项 + `RULE_RECALL_MISSING` 错误码（回退，不 fail-closed）；Code 前置检查第 2 步同步要求 `memory_list(prefix="rule:")` → `memory_get` → 输出证据 | `engine/transition.md`、`learning/memory/retrieval.md`、`skill:rules/code:prechecks` |
+| 5 | 测试 | 新增 `SearchCase` 3 例（分片/过期排除、`.` 查询、空关键词），回归 60 → 63 | `backup/test_memory_tool.py` |
+
+**验证（E4，本机）**：`test_memory_tool.py` 63/63 OK；`smoke-check.sh --quiet` rc=0（HARD 0，规则 4045 行）；`preflight --level 2 --task coding` rc=0 且 `rule:*` 段完整；真实库 `search "var.less"` 命中 `rule:jtkl-style-less-convention`；`backup` 45 条 / `export-rules` 45 条 rc=0；`metrics` rc=0；`verify` 45 条一致。
+**仪表盘归一**：`skill:vibe-coder-loop:metrics` 的 value 由二次编码字符串（`typeof=text`，首字符 `"`）改为单层 JSON 对象文本，`memory_tool.py metrics` 复跑 rc=0（此前 rc=1 拒写）；metadata 仅 `access_count` +1，tags 未变。回滚点 `~/.delx-memory/archive/pre-metrics-normalize-20261027.json`（保留原始二次编码值）。
+
 ### 同版本第二十批 — 经验进化闭环（P1-1 / P1-2 / P1-3）
 
 > 触发：用户要求把 Reflection 从固定阶段升级为信号驱动，并建立记忆效用观测与 Skill 草稿生成闭环。**不改 L0–L7 语义、不改晋升阈值、不新增表/列、不引入常驻服务**。

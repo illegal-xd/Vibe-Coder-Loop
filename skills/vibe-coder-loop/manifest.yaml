@@ -50,6 +50,7 @@ dependencies:
 
 memory:
   read:
+    - rule
     - project
     - lesson
     - reflection

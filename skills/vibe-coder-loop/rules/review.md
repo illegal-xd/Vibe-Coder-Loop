@@ -36,12 +36,13 @@ Test 在前 Review 在后。**Test 失败不进 Review**，直接回退 Code[N+1
 
 ## 第二步：维度审查（硬性约束全部通过后执行）
 
-8 项维度（可读性/结构与分层/注释/可维护性/坏味道优先级/记忆一致性/用户资产保护/资产生命周期合规）完整定义见 `skill:rules/review:eight-dimensions`（level:domain, permanent——加载全文执行）。
+9 项维度（8 项通用 + **项目规则符合性**）完整定义见 `skill:rules/review:eight-dimensions`（level:domain, permanent；键名沿用历史，内容为 9 项——加载全文执行）。
 
 **关键判定要点**（条目未取时按此执行）：
 - 注释维度：**归档旧代码必须 `@Iteration` 标注，禁止无标记注释代码块**
 - 坏味道优先级：空错误处理 → 硬编码 → 深层嵌套 → 长函数 → 长文件 → 长参数 → 隐式副作用
 - 记忆一致性：旧记忆正确 → 改代码对齐；旧记忆过时 → 更新记忆；判定标 Confidence
+- 项目规则符合性：逐条核对 S2 输出的 `[Rule 命中]` 清单（样式变量 / 注释格式 / 导入全路径 / i18n key / 弹层容器）；命中但代码未遵守 → 计入维度层问题数（不走 Hard 短路）；`[Rule 命中: 无]` 而 preflight 已列出 `rule:*` 候选 → 判召回失守，回 S2 补读并标 `[RULE_RECALL_MISSING]`
 - 资产生命周期：禁止跨阶段跳级（Active→Archived 视为违反）
 - **结论类判定**：零引用 / 死代码 / 未使用导出 —— 口径分档见 `skill:references/dead-code-audit`（扫描范围须含 examples 与文档站；三档结论分开给）
 - **子 agent 产出**：整合阶段的结论级复核是 Review 前提（见 `rules/orchestration.md`「整合阶段」第 3 项 + `skill:rules/orchestration:subagent-reverify`）；Review 只审已复核过的产出

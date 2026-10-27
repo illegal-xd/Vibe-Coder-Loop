@@ -8,6 +8,9 @@ vibe-coder-loop 记忆 Tool（纯标准库；macOS / Linux / Windows）
     metrics [--delta ...] [--counts] [--note T]
                                   仪表盘 upsert（完整回写；hit_rate=预算内完成率，
                                   memory_hit_rate=召回命中率，语义不同不可混用）
+    search <关键词> [--limit N] [--include-fragments]
+                                  FTS5 关键词检索：只回 key + 摘要（Memory ≠ Context），
+                                  默认排除分片；MCP memory_search 不可用时的确定性兜底
     preflight [--level N] [--task T] [--stage S8|^S3] [--files a,b]
                                   加载计划：清单 + 按阶段裁剪的命中节（实测行号）+ 成本 + 记忆候选。
                                   `--stage S8` 只保留所列，`^S3` 从默认集排除；只回 key 不回 value。
@@ -1181,6 +1184,73 @@ def cmd_check_keys(args, db):
 
 
 # ============================================================================
+# runtime: search —— FTS5 关键词检索（MCP memory_search 不可用时的确定性兜底）
+# ============================================================================
+
+SEARCH_DEFAULT_LIMIT = 5
+SEARCH_LIMIT_CAP = 50
+
+
+def _fts_query(text):
+    """逐词加引号 + 前缀通配：CJK 整段成词（`样式` 需 `样式*` 才命中 `样式变量`），
+    `.` `-` 等符号留在引号内按短语处理，避免被 FTS5 当成语法（`var.less` / `style-less`）。"""
+    if any(ch in text for ch in ('"', "*", "(", ")")):
+        return text
+    return " ".join(f'"{tok}"*' for tok in text.split() if tok)
+
+
+def cmd_search(args, db):
+    """关键词检索：只回 key + 摘要（Memory ≠ Context），默认排除分片与过期条目。"""
+    query = (args.query or "").strip()
+    fts_query = _fts_query(query)
+    if not fts_query:
+        print("[INVALID_ARGUMENT] search 需要关键词")
+        return 3
+    limit = max(1, min(args.limit, SEARCH_LIMIT_CAP))
+    now = int(time.time() * 1000)
+    conn = connect(db)
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT m.key, m.value, m.tags, m.ttl_expires_at"
+                " FROM memory_fts f JOIN memory m ON m.rowid = f.rowid"
+                " WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+                (fts_query, limit * 4),
+            ).fetchall()
+        except sqlite3.OperationalError as e:
+            print(f"[SEARCH_UNAVAILABLE] FTS5 检索失败：{e}")
+            print("[next] 改用 memory_list(prefix=...) + memory_get 按同一清单召回。")
+            return 3
+    finally:
+        conn.close()
+
+    hits = []
+    for key, value, tags, ttl in rows:
+        if ttl and ttl <= now:
+            continue
+        try:
+            tag_list = json.loads(tags) if tags else []
+        except (TypeError, json.JSONDecodeError):
+            tag_list = []
+        if not args.include_fragments and ("fragment" in tag_list or "#" in key):
+            continue
+        snippet = re.sub(r"\s+", " ", str(value or ""))[:120]
+        hits.append((key, snippet))
+        if len(hits) >= limit:
+            break
+
+    print(f'🔎 检索: "{query}"（{len(hits)} 条，FTS5；只回 key + 摘要）')
+    for key, snippet in hits:
+        print(f"  - {key}")
+        print(f"    {snippet}")
+    if not hits:
+        print("  （无命中；可放宽关键词，或 --include-fragments 含分片）")
+    print()
+    print("【下一步】对实际消费的 key 执行: python3 backup/memory_tool.py touch <key>...")
+    return 0
+
+
+# ============================================================================
 # runtime: preflight —— 加载计划（替代 N 次导航读取）
 # ============================================================================
 # 章节索引运行时扫描（不写死行号）；输出有界且显式标注；只回 key 不回 value。
@@ -2164,7 +2234,18 @@ def main():
     p_metrics.add_argument("--counts", action="store_true", help="机械重算 memory.* 条目计数")
     p_metrics.add_argument("--note", default="", help="写入仪表盘顶层 note（本轮摘要）")
 
-    # ---- runtime: preflight（加载计划） ----
+    # ---- runtime: search / preflight（加载计划） ----
+    p_search = sub.add_parser(
+        "search", help="FTS5 关键词检索（只回 key + 摘要，默认排除分片）"
+    )
+    p_search.add_argument("query", help="检索词（自动加前缀通配；显式 FTS 语法原样传入）")
+    p_search.add_argument(
+        "--limit", type=int, default=SEARCH_DEFAULT_LIMIT, help=f"最多条数（上限 {SEARCH_LIMIT_CAP}）"
+    )
+    p_search.add_argument(
+        "--include-fragments", action="store_true", dest="include_fragments",
+        help="包含分片（key 含 # 或 tag=fragment）",
+    )
     p_pre = sub.add_parser(
         "preflight", help="打印加载计划 + 成本 + 章节索引 + 记忆候选（一次调用替代 N 次导航读取）"
     )
@@ -2231,6 +2312,7 @@ def main():
         "touch": cmd_touch,
         "metrics": cmd_metrics,
         "preflight": cmd_preflight,
+        "search": cmd_search,
         "check-keys": cmd_check_keys,
     }
     return handlers[args.command](args, db)

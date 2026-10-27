@@ -1231,5 +1231,66 @@ class PreflightAndArtifactCase(unittest.TestCase):
                          f"CHANGELOG 批次顺序应为新→旧单调递减，实际 {numbers}")
 
 
+class SearchCase(unittest.TestCase):
+    """search（FTS5）回归：只回 key + 摘要，默认排除分片与过期条目。
+
+    覆盖的失效模式：CJK 前缀（样式* 命中 样式变量）、`.`/`-` 被当 FTS 语法、
+    分片 key（含 #）与 TTL 过期条目混入召回、空关键词静默成功。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp(prefix="vcl-search-"))
+        cls.tool = cls.root / "memory_tool.py"
+        shutil.copy(TOOL_SRC, cls.tool)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def setUp(self):
+        self.db = self.root / "db.sqlite"
+        if self.db.exists():
+            self.db.unlink()
+        con = sqlite3.connect(self.db)
+        con.execute(DDL)
+        con.execute(
+            "CREATE VIRTUAL TABLE memory_fts USING fts5(key, value, tags,"
+            " content='memory', content_rowid='rowid',"
+            " tokenize='porter unicode61 remove_diacritics 2')"
+        )
+        con.executemany("INSERT INTO memory VALUES (?,?,?,?,?,?,?)", [
+            ("rule:demo-style", "样式变量必须复用 var.less", 1, 1, None, "[]", "{}"),
+            ("rule:demo-style#1-规则", "样式变量分片", 1, 1, None, "[]", "{}"),
+            ("rule:demo-expired", "样式变量过期", 1, 1, 1, "[]", "{}"),
+        ])
+        con.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')")
+        con.commit()
+        con.close()
+
+    def run_tool(self, *args):
+        p = subprocess.run(
+            [sys.executable, str(self.tool), "--db", str(self.db)] + [str(a) for a in args],
+            capture_output=True, text=True,
+        )
+        return p.returncode, (p.stdout + p.stderr)
+
+    def test_search_returns_key_and_excludes_fragment_and_expired(self):
+        rc, out = self.run_tool("search", "样式")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("  - rule:demo-style\n", out)
+        self.assertNotIn("rule:demo-style#1-规则", out)
+        self.assertNotIn("rule:demo-expired", out)
+
+    def test_search_tolerates_dot_in_query(self):
+        rc, out = self.run_tool("search", "var.less")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("  - rule:demo-style\n", out)
+
+    def test_search_empty_query_is_argument_error(self):
+        rc, out = self.run_tool("search", "  ")
+        self.assertEqual(rc, 3, out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

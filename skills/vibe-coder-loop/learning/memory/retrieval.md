@@ -15,7 +15,7 @@ status: active
 
 > 已下沉：`skill:learning/memory:query-router`（level:domain, permanent, reference——加载全文执行）。包含工具能力表/限制、取值约定、codegraph 工具适配、实际渐进加载路径。
 >
-> **本机兜底**：`python3 scripts/memory/memops.py search "<关键词>" --limit 5`（FTS5，默认排除分片）。`memory_search` 未暴露或不可用时优先用它，再退回 `memory_list(prefix=...) + memory_get`。
+> **本机兜底**：`python3 backup/memory_tool.py search "<关键词>" --limit 5`（FTS5，只回 key + 摘要，默认排除分片；相对路径以 skill 根为基准）。`memory_search` 未暴露或不可用时优先用它，再退回 `memory_list(prefix=...) + memory_get`。
 
 ## 上下文感知路由表
 
@@ -39,7 +39,7 @@ status: active
 **执行规则（最小充分召回 / Progressive Retrieval）**：
 
 1. **S1 Intent 后判定任务类型**；S2 Preflight 执行对应**最小召回清单**——已知 key 用 `memory_get` 精确取值（不经 search，避免 snippet 截断且保证必中）；经验域按表用 `memory_search`（关键词，≤2 次、取前 5）。`memory_get` 不计入检索次数。
-1a. **`memory_search` 不可用时**（部分 MCP 装配只暴露 `list/get/set/forget`）：先跑 `python3 scripts/memory/memops.py search "<关键词>" --limit 5`（FTS5，默认排除分片），仍不可用再改 `memory_list(prefix=...) + memory_get`，并在输出标注 `[memory_search 不可用 · FTS/prefix 回退]`；**不得因工具缺失跳过清单**。
+1a. **`memory_search` 不可用时**（部分 MCP 装配只暴露 `list/get/set/forget`）：先跑 `python3 backup/memory_tool.py search "<关键词>" --limit 5`（FTS5，默认排除分片），仍不可用再改 `memory_list(prefix=...) + memory_get`，并在输出标注 `[memory_search 不可用 · FTS/prefix 回退]`；**不得因工具缺失跳过清单**。
 2. **一次只取最相关的那一类**；类型模糊时**选最可能的一类**起步 —— **不取并集**（旧的「并集召回」策略已废弃）
 3. 执行中发现信息不足 → **按需二次检索**（先说明缺口，再 `memory_search` 关键词）；仍不足 → 第三次
 4. **排序原则**：Relevance > Specificity > Freshness > Frequency；边缘相关的一律不注入
@@ -47,6 +47,7 @@ status: active
 6. **分层过滤**：需要按层取用时用 `memory_list(tag="layer:L3")`；不要拉全量后在上下文里筛。
 7. Level 0/1 只做「任务类型判定 + 清单首项」；Level 2+ 用清单全项
 8. 复杂度高 / 跨模块任务**允许 Agent 自行扩大召回** —— 本规则不设硬上限，仅要求「扩大召回须能说出理由」
+9. **召回证据（可校验）**：S2 出口必须输出 `[Rule 命中: <key…>]`；无命中写 `[Rule 命中: 无]` + 一句判定依据（引用本轮任务类型，不得空写）。未输出或空写 → `[RULE_RECALL_MISSING]` 回退 S2（定义见 `engine/transition.md`「VC 错误码族」）
 
 > 目标：减少 Context Pollution。**减少召回不是新的硬阈值规则** —— 召回量由任务复杂度与缺口决定。
 
