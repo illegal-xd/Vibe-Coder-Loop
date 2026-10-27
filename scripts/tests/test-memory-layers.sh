@@ -63,6 +63,20 @@ sqlite3 "$DB" "VACUUM INTO '$TMP/memops.sqlite'" || bad "memops 快照创建失�
 "$PY" "$ROOT/scripts/memory/memops.py" --db "$TMP/memops.sqlite" search '记忆' --limit 1 >/dev/null 2>&1 \
   && ok "memops search 可用" || bad "memops search 失败"
 
+printf '== 2c) 经验进化闭环：真实库只读检查 ==\n'
+"$PY" "$ROOT/scripts/memory/reflection_signals.py" evaluate --db "$DB" --json >"$TMP/reflection.json" 2>"$TMP/reflection.err" \
+  && grep -q '"schema": "reflection-gate/v1"' "$TMP/reflection.json" \
+  && ok "reflection evaluate 只读可用" || { bad "reflection evaluate 失败"; cat "$TMP/reflection.err"; }
+"$PY" "$ROOT/scripts/memory/memory_feedback.py" report --db "$DB" --json >"$TMP/feedback.json" 2>"$TMP/feedback.err" \
+  && grep -q '"schema": "memory-feedback-report/v1"' "$TMP/feedback.json" \
+  && ok "memory feedback report 只读可用" || { bad "memory feedback report 失败"; cat "$TMP/feedback.err"; }
+"$PY" "$ROOT/scripts/memory/memory_feedback.py" verify --db "$DB" --json >"$TMP/feedback-verify.json" 2>"$TMP/feedback-verify.err" \
+  && grep -q '"schema": "memory-feedback-verify/v1"' "$TMP/feedback-verify.json" \
+  && ok "memory feedback verify 只读可用" || { bad "memory feedback verify 失败"; cat "$TMP/feedback-verify.err"; }
+"$PY" "$ROOT/scripts/memory/skill_draft.py" scan --db "$DB" --json >"$TMP/drafts.json" 2>"$TMP/drafts.err" \
+  && "$PY" -c 'import json,sys; json.load(open(sys.argv[1]))' "$TMP/drafts.json" \
+  && ok "skill draft scan 只读可用" || { bad "skill draft scan 失败"; cat "$TMP/drafts.err"; }
+
 printf '== 3) 快照演练：dry-run / apply ×2 / verify / restore ==\n'
 sqlite3 "$DB" "VACUUM INTO '$TMP/snap.sqlite'" || bad "快照创建失败"
 

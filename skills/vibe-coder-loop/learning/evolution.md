@@ -21,6 +21,10 @@ status: active
 禁止路径：Agent → 直接修改 SKILL.md 或任何 Skill 文件。
 ```
 
+## 草稿生成（P1-3，候选而非发布）
+
+L5 Pattern 达到复用条件时，可先用 `python3 scripts/memory/skill_draft.py generate` 生成结构化草稿（默认 `reports/skill-drafts/`）。草稿固定 `status=draft`，不进入正式 `skills/<name>/`、不写 delx-memory、不完成 L6 晋升；已有正式 Skill 覆盖时只生成改进提案。正式发布仍走本文件 Patch Proposal + Human Approve。
+
 ## 演化流程（强制）
 
 ```text

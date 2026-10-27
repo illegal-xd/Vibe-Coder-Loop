@@ -43,12 +43,20 @@ SCOPES = ("global", "project", "task", "session")
 # 本工具链自产的衍生记录前缀：审计/蒸馏**必须忽略**它们，
 # 否则二次运行会把衍生记录当成原始语料 → 计划漂移（破坏幂等）。
 DERIVED_PREFIXES = ("obs:", "episode:")
+# 运行观测账本：不属于原始语料，一次性分层回填必须跳过（否则会被改成 candidate/review）。
+OBSERVATION_PREFIXES = ("signal:", "feedback:")
 
 
 def is_derived_key(key: str) -> bool:
     """派生记录：obs:/episode: 切片，或 ``#`` 分片。不参与原始语料指纹/一次性回填。"""
     key = str(key or "")
     return key.startswith(DERIVED_PREFIXES) or "#" in key
+
+
+def is_observation_key(key: str) -> bool:
+    """运行观测账本（signal/feedback）：不是知识语料，不参与分层回填/蒸馏。"""
+    return str(key or "").startswith(OBSERVATION_PREFIXES)
+
 
 STATUSES = ("candidate", "active", "superseded", "archived")
 
@@ -86,6 +94,8 @@ PREFIX_RULES = {
     "reference":  ("L4", "knowledge", False, "reference 前缀 = 参考资料"),
     "skill":      ("L6", "knowledge", True, "skill 前缀 = 技能知识镜像，权威源在 skill 文件"),
     "skill-metrics": (None, "state", False, "周期指标快照，非知识条目"),
+    "signal":     (None, "state", False, "反思信号账本（运行观测，非知识层）"),
+    "feedback":   (None, "state", False, "记忆效用反馈账本（运行观测，非知识层）"),
     "env":        (None, "environment", False, "机器/安装环境事实"),
     "tooling":    (None, "environment", False, "工具链可用性与兜底手段"),
     "user":       (None, "identity", False, "用户画像/人格，非知识条目"),

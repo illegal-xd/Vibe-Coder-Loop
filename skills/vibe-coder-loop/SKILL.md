@@ -75,8 +75,8 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 | **S8 Code** | `engine/transition.md` S8→S9 + `rules/code.md` + `policy/safety.md` + `policy/lifecycle.md`；**出现能力缺口或需切换时读 `engine/skill-routing.md`**；**存在不确定判断时读 `policy/confidence.md`** | 编写代码+前置检查+安全约束+生命周期+（按需）Confidence/Evidence |
 | **S9 Test** | `engine/transition.md` S9→S10 + `rules/test.md` | 测试验证+Verifier 角色+task spec+降级条款 |
 | **S10 Review** | `engine/transition.md` S10→S11 + `rules/review.md` + `policy/safety.md` | 代码审查+Critic 角色+约束检查（Hard 短路 / Signal 计问题数）+情况 A/B/C 模板 |
-| **S11 Reflection** | 先按 `engine/transition.md` S11 触发清单判定（**门控在 engine**；未命中 → 跳过本阶段、**不加载** `learning/reflection.md`）；命中才读 `learning/reflection.md` | 经验反思+Reflection Card（含 Pattern Fingerprint） |
-| **S12 Memory Evolution** | `learning/memory/promotion.md` + `learning/memory/lifecycle.md`（回写契约）+ `learning/evolution.md`（**门控**：仅 [2] 经验沉淀出现 Skill Patch Proposal 候选时才读，未出现跳过）+ `learning/skill-metrics.md`；**触发式协议命中才加读 `learning/memory/advanced.md`**（跨项目迁移 / Relevance / supersession / Consolidation / 失效传播 / 周期 Metrics 输出模板） | 执行内容见 `promotion.md`「S12 收尾（2 步）」（唯一事实源，此处不重述） |
+| **S11 Reflection** | 先按 `engine/transition.md` S11 信号门控判定（脚本 + 静态兜底；**门控在 engine**；未命中 → 跳过本阶段、**不加载** `learning/reflection.md`）；命中才读 `learning/reflection.md` | 经验反思+Reflection Card（含 Pattern Fingerprint） |
+| **S12 Memory Evolution** | `learning/memory/promotion.md` + `learning/memory/lifecycle.md`（回写契约 + 记忆效用反馈）+ `learning/evolution.md`（**门控**：仅 [2] 经验沉淀出现 Skill Patch Proposal 候选时才读，未出现跳过）+ `learning/skill-metrics.md`；**触发式协议命中才加读 `learning/memory/advanced.md`**（跨项目迁移 / Relevance / supersession / Consolidation / 失效传播 / 周期 Metrics 输出模板） | 执行内容见 `promotion.md`「S12 收尾（2 步）」（唯一事实源，此处不重述） |
 | **子 agent 首步** | `kernel.md` + `policy/safety.md` + `policy/lifecycle.md` + `policy/confidence.md` | 四件套加载包（定义见 policy/safety.md 第 5 节）；兜底 `delx-memory_memory_get` key=`agent:vc_constraints` |
 | **输出格式疑问** | `references/output-format.md`（**文件即完整规则**；`skill:references/output-format` 为全文镜像） | 按需参考 |
 | **多 Skill 布局疑问** | `references/layout.md`（多 skill 生态 + 委托分治 + 新增 skill 检查清单） | 按需参考 |

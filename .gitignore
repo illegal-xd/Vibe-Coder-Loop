@@ -71,3 +71,6 @@ reports/memory-distill-*.json
 
 # 记忆查看器数据快照（含本机路径与记忆正文，禁止入库；用 scripts/memory/export_viewer_data.py 生成）
 tools/memory-viewer/memory-data.json
+
+# Skill 草稿（来自本机记忆的候选产物；默认不入库，评审后再人工移入 skills/）
+reports/skill-drafts/

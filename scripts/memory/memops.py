@@ -49,6 +49,8 @@ TTL_DEFAULTS: dict[str, int] = {
     "archive": 90 * 86400,
     "skill-metrics": 180 * 86400,
     "vc": 30 * 86400,
+    "signal": 90 * 86400,
+    "feedback": 180 * 86400,
 }
 
 REQUIRED_FRAGMENT_FIELDS = (

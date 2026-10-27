@@ -14,6 +14,23 @@
 | 2 | 批次归属 | 第八批（预算 4200）、第九批（references 权威同步）→ commit `749a9ed`；第十批（转义竖线）、第十一批（EOF 漏检）→ commit `ff07ad2`；记忆分层工具链与报告 → commit `8f63b11` | `CHANGELOG.md` |
 | 3 | 快照同步 | `backup/snapshots/*` 与 `backup/rules/*` 内的 `skill_version` 由 `memory_tool.py backup` 重建时刷新（不入库，无需手改） | `backup/` |
 
+### 同版本第二十批 — 经验进化闭环（P1-1 / P1-2 / P1-3）
+
+> 触发：用户要求把 Reflection 从固定阶段升级为信号驱动，并建立记忆效用观测与 Skill 草稿生成闭环。**不改 L0–L7 语义、不改晋升阈值、不新增表/列、不引入常驻服务**。
+
+| # | 能力 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | P1-1 自主反思 | `signal:reflection:*` 记录真实事件（用户纠正 / 验证失败 / 重复失败 / 高代价返工）；脚本按 fingerprint 去重聚合，输出 `reflect/skip/insufficient/unavailable`；`promotion_authorized=false`；失败降级不阻塞 | `scripts/memory/reflection_signals.py`、`engine/transition.md` S11、`learning/reflection.md` |
+| 2 | P1-2 记忆效用 | `feedback:memory:*` 独立记录 retrieved / usage / outcome / attribution / confidence / evidence；同一 `(task, memory)` 幂等；报告只聚合不评分，不自动降权/归档/删除 | `scripts/memory/memory_feedback.py`、`learning/memory/lifecycle.md`、`promotion.md` S12 [1] |
+| 3 | P1-3 Skill 草稿 | 从 L5 Pattern 识别候选；证据不足/冲突/未达阈值 → deferred；已有 Skill → 改进提案；已有草稿更新、人工修改不覆盖；`skill-authoring` core 自检，失败如实报错 | `scripts/memory/skill_draft.py`、`skills/skill-authoring/governance-protocol.md`、`learning/evolution.md` |
+| 4 | 共享存储 | 复用现有 `memory` 表 + FTS5；新增前缀归 `layer=null` / `category=state`，不进入 L0–L7 统计 | `scripts/memory/evolution_store.py`、`scripts/memory/layers.py`、`docs/memory-layers.md §6.8` |
+| 5 | 测试 | A/B/C 三类场景 + 幂等/只读/不覆盖/自检失败；`tests/memory` 21 → **63** | `tests/memory/test_evolution_loop.py`、`scripts/tests/test-memory-layers.sh` |
+| 6 | 兼容 | 无 schema 迁移（`migrate.py` 仅新增 signal/feedback 跳过，既有语料回填逻辑不变，apply×2 幂等复验）；`preflight` / `memory_search` / `touch` / `metrics` 未改；当前版本**无 `memory_pack` 实现**，效用反馈以「进入上下文的 retrieved 清单」为准 | 本批验证 |
+
+**验证（E4，本机）**：`tests/memory` 63/63；`unittest discover -s tests` 287/287；`test-memory-layers.sh` 16/16（含真实库前后指纹一致）；`test-runtime-core.sh` 6/6；`test-runtime-exec.sh` 7/7；`smoke-check --table` HARD 0（规则 4040 行 / 预算 4200）；`skill-authoring/smoke-check --table` HARD 0；`audit.sh check` rc=0；`verify-symlinks.sh` 15/15。
+
+> **版本策略**：本批未提交 git，按规则保持 `manifest.yaml` 版本不变；提交后按 minor 递增并同步本节归属。
+
 ### 同版本第十九批 — 记忆分层运维修复（checkpoint / 分片 / TTL / 检索）
 
 | # | 层 | 项 | 处置 | 落点 |

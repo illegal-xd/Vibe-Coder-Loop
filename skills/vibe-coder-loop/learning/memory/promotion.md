@@ -21,6 +21,7 @@ status: active
 ```text
 [1] 收尾回写（Tool 承担，一条命令）
     memory_tool.py touch <本轮消费 keys> [--hit]  +  memory_tool.py metrics <delta> --counts
+    + 若本轮消费过记忆：memory_feedback.py record ...（见 lifecycle.md「记忆效用反馈」）
     → 输出：📌 访问计数回写：<keys> ｜ 📊 系统仪表盘：<简表>
 
 [2] 经验沉淀（有则写，无则明说）

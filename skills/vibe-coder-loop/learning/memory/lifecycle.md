@@ -127,6 +127,26 @@ value: {
 2. **出口兜底 = 仅对未回写残留**——回写义务**不依赖是否走到出口**：Quick Loop 在 S8 出口（Level 0）/ S10 出口（Level 1）；S12 [1]；**S13 Complete（含"停止循环"/"接受当前代码"直达）必须检查 S2 消费残留**。欠账队列只覆盖"回写执行失败"，**不覆盖"从未执行回写"**（后者由 S13 兜底——反复事故：读取了记忆但 access_count 全为 0，见 `lesson:memory-metadata-overwrite`）
 3. **报告 + 降级**——每次回写**必须输出报告**（不可观测 = 未执行）：`📌 访问计数回写（<出口>）：<keys>`；失败 → `📌 计数回写欠账：<keys>` 随下轮补写。**Tool 不可用** → 手工 `memory_get` 取完整值 → 叠加 → `memory_set`（约束见下节）；**授权恒成立**（常驻授权，见上「记忆写入」）→ 直接执行，**无"待确认"分支**。
 
+#### 记忆效用反馈（P1-2，任务收尾）
+
+回写计数回答「是否被消费」；效用反馈另记「是否被采用 + 任务结果」，供后续评估，**不替代** `touch`。
+
+```bash
+python3 scripts/memory/memory_feedback.py record --task-id <T> \
+  --retrieved <k1,k2> --used <k1> [--not-used <k2>] \
+  --outcome success|failure|neutral|unknown \
+  --attribution direct|partial|none|unknown \
+  --confidence high|medium|low|unknown \
+  --evidence file:<path>#L<n> --evidence anchor:<task>#<event>
+```
+
+- `<T>` 为 S1 任务标识（`task:<yyyymmddThhmm>-<goal-slug>`，见 `../reflection.md`）。
+- `retrieved` = 进入本轮上下文的 key（通常等于 `touch` 清单）；`used` 必须有证据，否则记 `unknown`；无法判断一律 `unknown`。
+- 同一 `(task_id, memory_key)` 唯一，重复注入只增加 `updates`，报告仍按 1 个任务样本计。
+- 存储 `feedback:memory:*`（`layer=null` / `category=state`，TTL 180 天）；不改被观测记忆的 value/tags/metadata。
+- **只采集，不自动淘汰**：不得因一次失败、检索次数或未使用次数自动降权/归档/删除；报告用 `memory_feedback.py report`，完整性用 `verify`。
+- 失败 → 标注 `[FEEDBACK_DEGRADED]` 后继续；不阻塞循环。
+
 #### Agent 直接调用 `memory_set` 时的约束（用于：新增记忆 / 非计数类更新 / 合并；**计数路径不需要**）
 
 1. 新增记忆：`memory_set(key, value, metadata={title, access_count:0, cache_hit_count:0, …}, tags, ttl_seconds)`
@@ -171,7 +191,7 @@ Test subagent 报告失败时，主 agent 在回退 Code[N+1] 前执行：
 
 **闭环动作（Quick Loop 出口，随计数回写执行）**：
 
-1. **消费清单回写**（已有协议，见上「回写契约」）
+1. **消费清单回写 + 效用反馈**（回写见上「回写契约」；反馈见上「记忆效用反馈」）
 2. **去重 / Merge 归系统**：Dedup / Merge 由 Memory 系统承担（协议见 `promotion.md`），**Agent 不显式执行**；本轮若产生 lesson/reflection 候选，直接进入下步即时写入
 3. **即时写入 + 回执**：识别到值得保存的内容（Test 失败 lesson / Reflection 触发 / 新 pattern 候选）→ 过质量闸门后**直接写入**，出口输出 `🧠 已沉淀：<keys>`；无 → `本轮无沉淀`
 4. **仪表盘更新**（已有协议，每轮必更，见 `skill-metrics.md`「系统状态仪表盘」节）

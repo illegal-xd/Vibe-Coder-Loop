@@ -180,6 +180,7 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 - [ ] 报告引用了 Code 阶段的函数/类名
 - [ ] 报告含验证结论；涉及不确定判断时含 Confidence + Evidence
 - [ ] **Metrics 记账**：`{cycle:N, test_passed, failure_type, degradation}` 记入内存清单（收尾出口一次提交，聚合由 Tool 承担）
+- [ ] **失败信号已记录**（仅真实失败）：`verification_failure` 写入 `signal:reflection:*`（参数见 S11「信号记录」）
 - [ ] **steering 队列检查**：若存在 steering 消息 → 注入后回到 S8 Code 继续（同一轮，不递增计数）
 - [ ] **Hard 项不豁免**：回退前判 Hard 违规（清单见 `safety.md` §3）→ 命中则**不得以"测试失败"名义修补**，改走 S10 情况 B（回 `S6[0]`），违规修复合并其中
 
@@ -207,14 +208,28 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 **S10出口操作**：
 - [ ] **Metrics 记账**：`{cycle:N, result:A/B/C, issue_count, structural, hard_violation}` 记入内存清单
+- [ ] **返工/纠正信号已记录**（仅真实事件）：情况 B → `high_cost_rework`；用户纠正 → `user_correction`（参数见 S11「信号记录」）
 - [ ] **早期预警检查**（仅情况 C）：若本轮循环数 > avg_loops * 1.5 或失败类型占比 ≥15% → 触发早期 Reflection + 输出预警报告
 
 ## S11 Reflection → S12 Memory Evolution
 
-**强制触发**（任一命中；本清单为 S11 门控事实源，与 `complexity-gate.md`「Loop Depth」矩阵同属 engine 层 gate）：
-- 用户主动纠正 Agent
-- 本轮曾发生 Review 情况 B（结构性回退）
-- 同一类问题重复出现 ≥2 次（含 lesson 命中同根因）
+**信号驱动判定（首选）**：`python3 scripts/memory/reflection_signals.py evaluate --task-id <T> --json`
+- `reflect` → 按 `learning/reflection.md` 输出**一个聚合 Reflection Card**（groups 列出全部同类信号）
+- `skip` / `insufficient` → 不蒸馏，只保留信号；`unavailable` 或非零退出 → 标注 `[REFLECTION_DEGRADED]` 并回退下方静态清单，**不阻塞循环**
+- 触发 ≠ 晋升：输出 `promotion_authorized=false`；长期记忆晋升仍按 `learning/memory/promotion.md` 独立判定
+
+**信号记录（只在真实事件发生时；猜测一律 `--unverified`）**：
+
+| 事件 | `record` 参数 |
+|---|---|
+| 用户明确纠正 | `--type user_correction --source user` |
+| S9 验证失败 | `--type verification_failure --source test` |
+| 同类问题再次出现 | `--type repeated_failure --source test` |
+| S10 情况 B / 显著返工 | `--type high_cost_rework --source review` |
+
+同一 `(task, type, fingerprint, dedupe_token)` 由脚本去重；不同 token 才计为独立轮次。首次失败默认只记录；重复失败、已验证经验失效或用户纠正才触发。明细见 `learning/reflection.md`「信号驱动判定」。记录失败 → 标注 `[REFLECTION_DEGRADED]` 并继续，**不阻塞 S9/S10 出口**。
+
+**静态强制清单（兜底；与脚本取并集）**：用户主动纠正 Agent / 本轮曾发生 Review 情况 B（结构性回退）/ 同一类问题重复出现 ≥2 次（含 lesson 命中同根因）。
 
 **可选信号**（Agent 判断「确有可沉淀的规律」才做，不做不违规）：完成跨模块功能 / 架构调整 / 复杂 Bug / 高复用经验 / 高风险域 / 达最大循环 / Code Confidence=Low。明细见 `learning/reflection.md` + `skill:learning/reflection:triggers`。
 

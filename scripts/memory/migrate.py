@@ -143,7 +143,7 @@ def _is_migration_target(key: str, raw_meta: str | None) -> bool:
     迁移后新建条目（无 ``migration_id`` 且已有 layer）不应被旧计划重新分类，
     否则会把 memops 的分片继承/语义修复覆盖回 prefix 初判。
     """
-    if "#" in key or key.startswith("vc:checkpoint"):
+    if "#" in key or key.startswith("vc:checkpoint") or L.is_observation_key(key):
         return False
     try:
         meta = json.loads(raw_meta) if raw_meta else {}

@@ -110,6 +110,26 @@ Vibe-Coder-Loop/
 
 Kernel Prompt 只负责身份、安全与调度，不复制 Skill 内部流程。三者均不要求固定绝对路径；发现机制优先，`$HOME/.agents/skills/...` 仅作兜底。
 
+## 经验进化闭环（P1）
+
+```bash
+# 1) 反思门控：只在真实事件（用户纠正 / 验证失败 / 重复失败 / 高代价返工）后判定
+python3 scripts/memory/reflection_signals.py evaluate --task-id <T> --json
+
+# 2) 记忆效用观测：检索 / 实际使用 / 任务结果独立记录，不评分
+python3 scripts/memory/memory_feedback.py record --task-id <T> \
+  --retrieved <k1,k2> --used <k1> --outcome success --evidence file:<path>#L<n>
+python3 scripts/memory/memory_feedback.py report --json
+
+# 3) Skill 草稿：从 L5 Pattern 生成候选；默认只读扫描 / dry-run
+python3 scripts/memory/skill_draft.py scan --json
+python3 scripts/memory/skill_draft.py generate --dry-run --json
+```
+
+- `signal:` / `feedback:` 复用 delx-memory 现有表，`layer=null` / `category=state`，不进入 L0–L7 统计。
+- 草稿默认写 `reports/skill-drafts/`（gitignore），不进入正式 `skills/<name>/`，不自动完成 L6 晋升。
+- 触发反思 ≠ 晋升长期记忆；正式发布仍走人工 Review 与现有晋升门槛。
+
 ## 配置
 
 | 变量 | 用途 | 缺省 |

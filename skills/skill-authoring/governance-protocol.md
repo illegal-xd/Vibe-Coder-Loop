@@ -64,3 +64,14 @@ skill-authoring/scripts/smoke-check-core.sh      ← 逻辑唯一事实源
 
 > core 定位由模板/实例内的多候选列表吸收跨 Skill 布局差异（含 `$HOME/.agents/skills/...` 兜底）；
 > 候选全失效时显式报 `STRUCTURAL_INCONSISTENT` 并给 `[next]`，**不静默跳过检查**。
+
+## 草稿生成与自检（P1-3）
+
+`vibe-coder-loop` 的 `scripts/memory/skill_draft.py` 从 L5 Pattern 生成草稿时遵循本协议：
+
+1. **草稿不是正式 Skill**：默认写入 `reports/skill-drafts/`，固定 `status: draft` + `draft: true`；不得放入正式 `skills/<name>/`（确需暂存仅用 `skills/_drafts/`），不得注册到路由器或 `manifest.yaml`。
+2. **必备章节**：名称与用途 / 触发条件与适用范围 / 前置条件与输入 / 推荐执行步骤 / 验证标准与预期结果 / 常见失败与恢复 / 不适用条件与已知反例 / 经验来源与证据 / 验证状态与待解决。
+3. **证据与状态**：保留来源 Pattern、实例/证据引用与 `verification: pending`；证据不足、存在未解决冲突或未达复用阈值 → 只报告 `deferred`，不生成确定性规则。
+4. **去重**：已有正式 Skill 覆盖 → 生成改进提案，不新建重复技能；已有草稿 → 更新同一目录，不重复创建；人工修改过的草稿不覆盖。
+5. **自检**：生成后调用 `scripts/smoke-check-core.sh`（存在时），失败如实记录 `verification: self-check-failed` 并以非零退出码报告；**不得把 skipped / failed 写成 pass**。
+6. **晋升**：草稿 → 人工 Review → 正式 L6 / Skill 目录；本阶段不改变 L6 晋升门槛。

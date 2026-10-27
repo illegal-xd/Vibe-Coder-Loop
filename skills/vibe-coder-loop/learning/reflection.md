@@ -18,7 +18,7 @@ status: active
 - **时机**：S11，在 Review 情况 C 通过后、S12 Memory Evolution 之前
 - **执行者**：主 agent，**子 agent 不参与**（子 agent 失败 → 走 Test 回退 Code[N+1]，由主 agent 在 Review 后判断）
 
-## 触发判定（S11 出口）
+## 触发判定（S11 出口，静态兜底）
 
 ```text
 [Phase: Reflection]
@@ -34,6 +34,25 @@ status: active
 ```
 
 **其余信号属可选**（完成跨模块功能 / 架构调整 / 解决复杂 Bug / 高复用经验 / 高风险域 / 达到最大循环 / Code Confidence=Low）：Agent 判断"确有值得沉淀的规律"才做，**不做不违规**。完整条表（含 tag 体系）见 `skill:learning/reflection:triggers`——**仅在准备写 Card 时查阅**。
+
+## 信号驱动判定（P1-1）
+
+S11 首选运行 `python3 scripts/memory/reflection_signals.py evaluate --task-id <T>`（仓库根目录）。脚本读取 `signal:reflection:*`（复用 delx-memory `memory` 表；`layer=null` / `category=state`），只做**聚合判定**，不做晋升。**能力边界**：不实现后台监听；信号由 Agent 在 S9/S10 事件点写入，S11 读取判定。
+
+| decision | 含义 | 动作 |
+|---|---|---|
+| `reflect` | 至少一个 group 命中触发 | 输出一个聚合 Reflection Card，groups 列出各 fingerprint |
+| `skip` | 只有偶发/低价值信号 | 不蒸馏；信号保留供后续重复检测 |
+| `insufficient` | 信号未验证或证据不足 | 只记录；不生成 Lesson/Pattern |
+| `unavailable` | 记忆库不可用 | 标注 `[REFLECTION_DEGRADED]`，回退静态清单，继续 S12 |
+
+**任务标识**：`<T>` = S1 生成的 `task:<yyyymmddThhmm>-<goal-slug>`，同一任务跨轮复用，不同任务不得复用。
+
+**信号类型**：`user_correction` / `verification_failure` / `repeated_failure` / `high_cost_rework`。记录必须带证据（`file:` / `memory:` / `anchor:`）；模型猜测用 `--unverified`，不进入强制反思。
+
+**聚合与分类**：同一 fingerprint 合并为一个 group；同一 `(task, type, fingerprint, dedupe_token)` 只算一次。分类为 `lesson_not_followed`（已有经验未被采用）/ `lesson_ineffective`（用了仍失败）/ `lesson_stale`（经验失效/冲突）/ `new_experience` / `sporadic` / `insufficient_evidence`。已有相似经验时优先 `supplement` 或 `correct`，不新增重复记录。
+
+**触发 ≠ 晋升**：脚本固定输出 `promotion_authorized=false`。是否写入 L3/L5、是否提升，仍由本文件 Card 质量审计 + `learning/memory/promotion.md` 阈值独立决定。反思判定失败不阻塞编码/测试/恢复；按 `[REFLECTION_DEGRADED]` 降级。
 
 ## Reflection Card 产出
 

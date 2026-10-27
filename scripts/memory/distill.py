@@ -359,6 +359,8 @@ def main() -> int:
     # ---------------- 回填字段预览（只预览，不写） ----------------
     backfill = []
     for rec in records:
+        if L.is_observation_key(rec["key"]):
+            continue  # 运行观测账本不属于 L0–L7 回填/蒸馏语料
         status = "active"
         if rec["archived_at"]:
             status = "archived"

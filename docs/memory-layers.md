@@ -50,6 +50,7 @@
 | `skill:` | 非阶梯 | L6 **仅七字段齐全**；规则镜像 → `layer=null` | 须记 `mirror_of`；无指针的镜像归 `category=skill_mirror` |
 | `obs:` `episode:` | 非阶梯 | L1 / L2 **按需视图** | 默认不落库；落库须 `derived` + candidate + TTL ≤30 天 |
 | `vc:checkpoint:*` | 非阶梯 | `layer=null` + `category=state` | runtime checkpoint，不属于 L0 |
+| `signal:` `feedback:` | 非阶梯 | `layer=null` + `category=state` | P1 经验进化闭环的运行观测账本；不进入 L0–L7 统计（见 §6.8） |
 | `user:` `preference:` `env:` `tooling:` `skill-metrics:` `agent:` | 非阶梯 | `layer=null` | 见 §4 |
 
 `scope` 与 `layer` **正交**：`pattern` 可以 `scope:project`；`lesson` 可以 `scope:global`。层号不决定作用域，作用域也不决定层号。
@@ -72,6 +73,7 @@
 | `content:project-knowledge` | `project:`/`reference:` 且无规范标记 | `layer=null` + `category=project_knowledge`（或 `navigation`） |
 | `l6:field-gate` | `skill:` 且七字段不足 | `layer=null` + `category=skill_mirror` + `needs_review=true` |
 | `runtime:checkpoint` | key 以 `vc:checkpoint` 开头 | `layer=null` + `category=state` + tag `runtime-state` |
+| `prefix:signal` / `prefix:feedback` | 运行观测账本 | `layer=null` + `category=state`（不进入 L0–L7） |
 | 未匹配 | — | `layer=null` + `needs_review=true`（**不强行归类**） |
 
 ### 禁止
@@ -98,7 +100,7 @@
 
 | `memory_category` | 内容 | 例 |
 |---|---|---|
-| `state` | 周期指标快照 / runtime checkpoint | `skill-metrics:vibe-coder-loop:2026-08`、`vc:checkpoint:*` |
+| `state` | 周期指标快照 / runtime checkpoint / 反思信号 / 反馈账本 | `skill-metrics:vibe-coder-loop:2026-08`、`vc:checkpoint:*`、`signal:reflection:*`、`feedback:memory:*` |
 | `environment` | 机器/工具链事实 | `env:system`、`tooling:github-network-proxy` |
 | `identity` | 用户/Agent 身份与画像 | `user:persona`、`user:profile` |
 | `preference` | 用户偏好 | `preference:user:memory-autonomy` |
@@ -202,6 +204,52 @@
 - **启用 capture 时**：`derived` + `candidate` + TTL ≤30 天；只作为提炼 L3 的原料，不直接回答用户；到期后归档而非续期。
 - **禁止**：为了“层级完整”批量生成 L1/L2；同一内容同时以 L2 与 L3 常驻。
 
+## 6.8 经验进化闭环（P1：signal / feedback / draft）
+
+> 目标：让「反思触发 → 记忆效用观测 → Skill 草稿」形成可验证闭环；**复用现有 `memory` 表，不新增表/列**。三类记录都是运行观测或候选产物，不改变 L0–L7 语义与晋升门槛。
+
+| 记录 | key | 内容 | TTL | 写入方 |
+|---|---|---|---|---|
+| 反思信号 | `signal:reflection:<digest>` | 信号类型 / task / fingerprint / 证据 / 是否已验证 / 聚合次数 | 90 天 | `scripts/memory/reflection_signals.py record` |
+| 记忆效用 | `feedback:memory:<digest>` | task / memory_key / retrieved / usage / outcome / attribution / confidence / 证据 | 180 天 | `scripts/memory/memory_feedback.py record` |
+| Skill 草稿 | `reports/skill-drafts/<slug>/` | `SKILL.md`（`status=draft`）+ `draft.json` | 文件，不入库 | `scripts/memory/skill_draft.py generate` |
+
+**字段语义**：
+
+| 记录 | 字段 | 取值 / 语义 |
+|---|---|---|
+| signal | `signal_type` | `user_correction` / `verification_failure` / `repeated_failure` / `high_cost_rework` |
+| signal | `task_id` / `fingerprint` / `dedupe_token` | 本轮任务标识 / 同类问题指纹 / 同任务内区分轮次（决定幂等 key） |
+| signal | `verified` / `evidence_ids` | 是否确认真实事件；verified=true 必须有证据（`file:` / `memory:` / `anchor:`） |
+| signal | `occurrence_count` / `report_count` | 独立事件数（决定是否重复失败）/ 同事件重复上报次数（不放大样本） |
+| feedback | `task_id` / `memory_key` / `memory_layer` | 任务 / 被观测记忆 / 记录时层级 |
+| feedback | `retrieved` / `usage` | 是否进入上下文 / `used` / `not_used` / `unknown`（usage=used 必须有证据） |
+| feedback | `outcome` | `success` / `failure` / `neutral` / `unknown`（任务结果，独立于 usage） |
+| feedback | `attribution` / `confidence` | `direct` / `partial` / `none` / `unknown`；归因可信度 `high` / `medium` / `low` / `unknown` |
+| feedback | `memory_value_hash` / `last_value_hash` | 首次记录 / 最近记录时的记忆内容 sha256，用于只读漂移检测 |
+| feedback | `recorded_at_ms` / `updated_at_ms` / `updates` | 首次记录 / 最近更新 / 同一样本更新次数 |
+
+**硬约束**：
+
+- 两类记录固定 `layer=null` / `memory_category=state`，不进 L4–L7 覆盖率，也不参与升层/淘汰统计。
+- 幂等：signal 按 `(task, type, fingerprint, dedupe_token)`、feedback 按 `(task, memory_key)` 生成确定性 key；重复执行只更新同一条记录。
+- 效用反馈只采集 `retrieved` / `used` / `not_used` / `unknown` 与任务结果；**不合并为单一分数**，不因一次失败自动降权/归档/删除。
+- 草稿只写文件，不写记忆、不改正式 `skills/<name>/`（仅允许显式 `skills/_drafts/` 暂存）、不完成 L6 晋升；已有正式 Skill 覆盖时只生成改进提案。
+- 原始记忆的 value/tags/metadata 不被上述工具改写；`memory_feedback.py verify` 只读校验并报告内容漂移。
+- 当前版本**无独立 `memory_pack` 实现**；`retrieved` 以 S2 preflight 候选 + 实际 `memory_get` 消费清单为准，不虚构未发生的注入。
+
+**命令**：
+
+```bash
+python3 scripts/memory/reflection_signals.py record --task-id <T> --type <type> --source <src> --fingerprint <fp> --evidence <ref>
+python3 scripts/memory/reflection_signals.py evaluate --task-id <T> --json
+python3 scripts/memory/memory_feedback.py record --task-id <T> --retrieved <keys> --used <keys> --outcome <enum> --evidence <ref>
+python3 scripts/memory/memory_feedback.py report --json
+python3 scripts/memory/memory_feedback.py verify --json
+python3 scripts/memory/skill_draft.py scan --json
+python3 scripts/memory/skill_draft.py generate --dry-run --json
+```
+
 ## 7. 降级与归档
 
 - 默认逻辑归档（`status=archived` / `archived_at`）；仅 Relevance 淘汰/用户显式要求时按 protocol 的删除义务执行（先备份、核验归属与可回滚证据），文件/代码资产仍**永不物理删除**。
@@ -230,6 +278,13 @@ python3 scripts/memory/memops.py search "关键词" --limit 5
 python3 scripts/memory/memops.py repair --ttl --apply          # metadata-only，自动备份
 python3 scripts/memory/memops.py split <key> --max-chars 1800 --apply
 
+# 经验进化闭环（只读 / dry-run 优先）
+python3 scripts/memory/reflection_signals.py evaluate --task-id <T> --json
+python3 scripts/memory/memory_feedback.py report --json
+python3 scripts/memory/memory_feedback.py verify --json
+python3 scripts/memory/skill_draft.py scan --json
+python3 scripts/memory/skill_draft.py generate --dry-run --json
+
 # 门禁
 bash scripts/tests/test-memory-layers.sh
 ```
@@ -244,3 +299,4 @@ bash scripts/tests/test-memory-layers.sh
 | Phase 4 L4–L7 候选治理 | L5/L6/L7 候选已产出，**待人工评审**（未升层、未发布） | `reports/memory-distill-2026-10-22.json` 的 `l5/l6/l7_candidates` |
 | Phase 5 质量复核 | **完成**（17 单元测试 + 8 项门禁全过） | `reports/memory-quality-2026-10-22.md`、`tests/memory/`、`scripts/tests/test-memory-layers.sh` |
 | Phase 6 运维修复 | **完成**：`memops.py`（validate/search/repair/split）+ 单测；真实库 metadata-only 修复 328 条（114 分片继承、209 条 `layer:*` tag、203 条 TTL、1 条 checkpoint 归 state、5 条悬空证据移入 `evidence_missing`）；`validate` PASS（仅 L6 无指针 / L4 项目知识 / review backlog 告警） | `scripts/memory/memops.py`、`tests/memory/test_memops.py`、`~/.delx-memory/db.sqlite`（备份 `db.sqlite.bak-memops-repair-*`） |
+| Phase 7 经验进化闭环（P1） | **完成**：反思信号门控 / 记忆效用反馈 / Skill 草稿生成；复用现有表，无 schema 迁移；42 项单测 | `scripts/memory/{evolution_store,reflection_signals,memory_feedback,skill_draft}.py`、`tests/memory/test_evolution_loop.py` |
