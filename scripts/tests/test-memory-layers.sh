@@ -64,7 +64,7 @@ sqlite3 "$DB" "VACUUM INTO '$TMP/memops.sqlite'" || bad "memops 快照创建失�
   && ok "memops search 可用" || bad "memops search 失败"
 
 printf '== 2c) 经验进化闭环：真实库只读检查 ==\n'
-"$PY" "$ROOT/scripts/memory/reflection_signals.py" evaluate --db "$DB" --json >"$TMP/reflection.json" 2>"$TMP/reflection.err" \
+"$PY" "$ROOT/scripts/memory/reflection_signals.py" evaluate --db "$DB" --task-id "task:selftest-readonly" --json >"$TMP/reflection.json" 2>"$TMP/reflection.err" \
   && grep -q '"schema": "reflection-gate/v1"' "$TMP/reflection.json" \
   && ok "reflection evaluate 只读可用" || { bad "reflection evaluate 失败"; cat "$TMP/reflection.err"; }
 "$PY" "$ROOT/scripts/memory/memory_feedback.py" report --db "$DB" --json >"$TMP/feedback.json" 2>"$TMP/feedback.err" \

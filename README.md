@@ -129,6 +129,7 @@ python3 scripts/memory/skill_draft.py generate --dry-run --json
 - `signal:` / `feedback:` 复用 delx-memory 现有表，`layer=null` / `category=state`，不进入 L0–L7 统计。
 - 草稿默认写 `reports/skill-drafts/`（gitignore），不进入正式 `skills/<name>/`，不自动完成 L6 晋升。
 - 触发反思 ≠ 晋升长期记忆；正式发布仍走人工 Review 与现有晋升门槛。
+- 上述命令的参数、副作用与退出码约定见 [docs/tooling.md](docs/tooling.md)（`--help` 为准）。
 
 ## 配置
 
@@ -175,6 +176,7 @@ cd tools/memory-viewer && python3 -m http.server 8765   # 浏览器打开 http:/
 ## 文档
 
 - [安装与宿主集成](docs/installation.md)
+- [工具入口与调用约定](docs/tooling.md)
 - [跨平台兼容矩阵](docs/audits/compatibility.md)
 - [审计报告（2026-10-19）](docs/audits/2026-10-19-open-source-readiness.md)
 - [变更清单](docs/audits/change-list.md)

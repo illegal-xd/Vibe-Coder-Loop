@@ -51,11 +51,12 @@ assert_rc 0 "$?" 'CLI exec run 成功输出'
 assert_rc 4 "$?" 'CLI exec run rm -rf fail-closed（exit 4）'
 
 # 6) CLI 冒烟：exec diff（非 git 降级建基线）
-"$PY" -m runtime.exec.cli diff --cwd "$TMP" 2>/dev/null | grep -q 'degraded'
+# 基线写在 ~/.vibe-loop/baseline/ → 用临时 HOME 隔离，避免污染真实用户目录
+HOME="$TMP/home" "$PY" -m runtime.exec.cli diff --cwd "$TMP" 2>/dev/null | grep -q 'degraded'
 assert_rc 0 "$?" 'CLI exec diff 非 git 降级'
 
 # 7) CLI 冒烟：exec baseline
-"$PY" -m runtime.exec.cli baseline --cwd "$TMP" 2>/dev/null | grep -q '"ok":true'
+HOME="$TMP/home" "$PY" -m runtime.exec.cli baseline --cwd "$TMP" 2>/dev/null | grep -q '"ok":true'
 assert_rc 0 "$?" 'CLI exec baseline 建立快照'
 
 printf '\nPASS=%s FAIL=%s\n' "$PASS" "$FAIL"

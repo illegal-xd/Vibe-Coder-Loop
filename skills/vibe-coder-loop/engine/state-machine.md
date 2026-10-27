@@ -220,7 +220,7 @@ S14 Safe Mode
 
 | 通道 | 用法 | 适用 |
 |---|---|---|
-| 机器端（首选） | `python3 runtime/core/cli.py <cmd> --cwd <project_root>`（`get-state` / `load-checkpoint` / `transition` / `state check`） | 有 `_rev` 乐观锁 + 字段校验 + 事务；阶段出口写状态 |
+| 机器端（首选） | `python3 -m runtime.core <cmd> --cwd <project_root>`（`get-state` / `load-checkpoint` / `transition` / `state check`），在仓库根目录执行 | 有 `_rev` 乐观锁 + 字段校验 + 事务；阶段出口写状态。**勿用 `python3 runtime/core/cli.py`**（相对导入失败，ImportError） |
 | Agent 端 | `delx-memory_memory_get` / `delx-memory_memory_set`，key 同上 | 机器端不可用时的降级；**`memory_set` 必须整条回传 value + tags + metadata + ttl**（三列整体替换，漏传即清空） |
 
 - **并发**：写路径在 SQLite `BEGIN IMMEDIATE` 事务内完成读-改-写；`expected_rev` 不匹配 → `STATE_REV_CONFLICT`，**不覆盖**。

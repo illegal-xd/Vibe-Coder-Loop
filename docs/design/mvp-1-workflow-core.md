@@ -373,7 +373,7 @@ def load_raw(self) -> tuple[dict, ParseQuality]:
 - 单一渲染器 `_render()`；**不保留**输入里的任意 YAML 特性，只输出子集内形式。
 - 所有字符串标量**一律加引号**（规避 `state-machine.md` 已记录的陷阱：列表项以 `**`/`*` 开头会被 YAML 当别名）；多行只允许出现在 `resume`（用 `|`）。
 - 输出幂等：`render(parse(render(x))) == render(x)`，作为单元测试不变量（V16）。
-- 提供 `core state check` 子命令：LLM 手写后先校验再交付，避免写坏文件。
+- 提供 `python3 -m runtime.core state check` 子命令：LLM 手写后先校验再交付，避免写坏文件。
 
 **schema 读取（统一存储方式）**：
 
@@ -699,10 +699,10 @@ tests/core/
 
 | 命令 | 作用 |
 |---|---|
-| `core check-protocol` | 校验程序化映射与 Skill 事实源一致（`PROTOCOL_DRIFT`，exit 3） |
-| `core state check --cwd` | 校验状态文件语法 + schema（LLM 手写后先用它） |
-| `core state gc --cwd` | 清理不被引用的 pinned artifact（`status=active` 时拒绝执行） |
-| `core get-state --cwd` | 只读快照（JSON） |
+| `python3 -m runtime.core check-protocol` | 校验程序化映射与 Skill 事实源一致（`PROTOCOL_DRIFT`，exit 3） |
+| `python3 -m runtime.core state check --cwd <root>` | 校验状态文件语法 + schema（LLM 手写后先用它） |
+| `python3 -m runtime.core state gc --cwd <root> [--dry-run]` | 清理超过保留期且未被 pinned 引用的 `.log` artifact（`status=active` 时拒绝；默认执行） |
+| `python3 -m runtime.core get-state --cwd <root>` | 只读快照（JSON） |
 
 > **注意**：本设计只给布局与接口草案，**不实现**。文件路径是建议，实际实现时按验证脚本可达性调整。
 

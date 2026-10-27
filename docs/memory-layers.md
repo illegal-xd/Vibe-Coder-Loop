@@ -238,16 +238,12 @@
 - 原始记忆的 value/tags/metadata 不被上述工具改写；`memory_feedback.py verify` 只读校验并报告内容漂移。
 - 当前版本**无独立 `memory_pack` 实现**；`retrieved` 以 S2 preflight 候选 + 实际 `memory_get` 消费清单为准，不虚构未发生的注入。
 
-**命令**：
+**命令**：入口、副作用与退出码唯一事实源 = `docs/tooling.md`；治理/迁移命令示例见 §8。参数以 `--help` 为准：
 
 ```bash
-python3 scripts/memory/reflection_signals.py record --task-id <T> --type <type> --source <src> --fingerprint <fp> --evidence <ref>
-python3 scripts/memory/reflection_signals.py evaluate --task-id <T> --json
-python3 scripts/memory/memory_feedback.py record --task-id <T> --retrieved <keys> --used <keys> --outcome <enum> --evidence <ref>
-python3 scripts/memory/memory_feedback.py report --json
-python3 scripts/memory/memory_feedback.py verify --json
-python3 scripts/memory/skill_draft.py scan --json
-python3 scripts/memory/skill_draft.py generate --dry-run --json
+python3 scripts/memory/reflection_signals.py record --help
+python3 scripts/memory/memory_feedback.py record --help
+python3 scripts/memory/skill_draft.py generate --help
 ```
 
 ## 7. 降级与归档

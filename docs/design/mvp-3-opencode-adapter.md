@@ -138,7 +138,7 @@ export interface Hooks {
 │  │    Phase 0（LLM 手动驱动）            │    │
 │  └──────────────────────────────────────┘    │
 └───────▲───────────────────────────────────────┘
-        │ subprocess: python3 runtime/core/cli.py / runtime/exec/cli.py
+        │ subprocess: python3 -m runtime.core / python3 -m runtime.exec（cwd=仓库根或 PYTHONPATH=<repo>）
 ┌───────┴───────────────────────────────────────┐
 │  Core (MVP-1) / Exec (MVP-2) —— Python，零宿主依赖 │
 │  Core 调 memory_tool.py（记忆回写，复用）          │
@@ -524,25 +524,27 @@ Core 挂了就记不上 Core 的 metrics——这是循环依赖。因此 Adapte
 
 ## 七、与 Core 的协议端口（host-agnostic）
 
-Core 的 6 个方法（MVP-1 §八）经 CLI 暴露，Adapter 用 subprocess 调：
+Core 的 6 个方法（MVP-1 §八）经 CLI 暴露，Adapter 用 subprocess 调。下表为**当前实现签名**（事实源 = `docs/tooling.md` + `<cmd> --help`）；入口须在仓库根执行或设 `PYTHONPATH=<repo>`：
 
 | Core 方法 | CLI | Adapter 调用时机 |
 |---|---|---|
-| `load_checkpoint` | `core load-checkpoint --cwd` | `session.created`（事件） |
-| `transition` | `core transition --cwd --to S [--loop N] --exit-checklist <json> [--expected-rev R] [--force --reason R]` | `vc_transition` 工具 |
-| `snapshot_task_zone` | `core snapshot-task-zone --cwd [--detail full\|pointer]` | `session.compacting` / `chat.system.transform`（Hook） |
-| `feed_exec` | `core feed-exec --cwd --exec-id ID --result-file F` | `tool.execute.after`（Hook）/ `vc_exec` |
-| `repeat_check` | `core repeat-check --cwd --fp H` | `feed_exec` 内部联动 |
-| `get_state` | `core get-state --cwd` | `vc_state` 工具 |
+| `load_checkpoint` | `python3 -m runtime.core load-checkpoint --cwd <root> [--expected-age-minutes N] [--no-verify-pending] [--import-legacy]` | `session.created`（事件） |
+| `transition` | `python3 -m runtime.core transition --cwd <root> --to <S> [--loop N] [--rev R] [--checklist <json>\|--checklist-file <f>] [--force --reason <r>] [--level N] [--current-step <s>] [--plan-files a,b] [--vc-violation <fact>]` | `vc_transition` 工具 |
+| `snapshot_task_zone` | `python3 -m runtime.core snapshot-task-zone --cwd <root> [--detail full\|pointer]` | `session.compacting` / `chat.system.transform`（Hook） |
+| `feed_exec` | `python3 -m runtime.core feed-exec --cwd <root> --result <json>\|--result-file <f>` | `tool.execute.after`（Hook）/ `vc_exec` |
+| `repeat_check` | `python3 -m runtime.core repeat-check --cwd <root> --fingerprint <fp>` | `feed_exec` 内部联动 |
+| `get_state` | `python3 -m runtime.core get-state --cwd <root>` | `vc_state` 工具 |
 
-**额外运维命令**：`core check-protocol`（CI 门禁）、`core state check`（LLM 手写后自检）、`core state gc`。
+公共参数：`--memory-key`（Checkpoint key，缺省 `vc:checkpoint:<项目绝对路径>`）、`--memory-db`、`--pretty`。
 
-**CLI 契约**（原 U17 定案）：
+**额外运维命令**：`python3 -m runtime.core check-protocol`（CI 门禁）、`python3 -m runtime.core state check`（LLM 手写后自检）、`python3 -m runtime.core state gc`（清理过期 artifact）。
 
-- 输出**单行** JSON 到 stdout：`{"ok":bool, "code":str|null, "next":str|null, "data":{...}, "degraded":false}`
-- 错误也走 stdout + **exit code 语义**：`0` 成功 / `3` 状态或协议错误（可自纠）/ `4` 环境错误（需人工）。**不把错误打到 stderr 就返回 0**。
-- 超长入参（如 `exit_checklist`、工具输出）用 `--*-file <path>` 传文件，避免 argv 长度上限（Windows 32767）。
-- `--cwd` 必填，**不回落 `process.cwd()`**。
+**CLI 契约（实现现状；原 U17 的目标形态未落地，勿按旧 envelope 解析）**：
+
+- 输出：`runtime.core` 除 `snapshot-task-zone`（文本）外均为 JSON，成功/失败带 `ok` + `code`；`runtime.exec run` 的失败信封字段是 `vc_code`；`exec diff` 计划漂移用退出码 4 表达，输出是 `DiffSummary`。
+- 退出码：`0` 成功 / `2` 参数错误 / `3` `check-protocol` 不一致 / `4` 运行时错误或 fail-closed 拒绝。**不以 stderr 报错后返回 0**。
+- 超长入参（`checklist`、执行结果）用 `--checklist-file <path>` / `--result-file <path>`，避免 argv 长度上限（Windows 32767）。
+- `--cwd`：`runtime.core` 必填；`runtime.exec` 缺省 `process.cwd()`——Adapter 必须显式传。
 
 **为什么用 CLI subprocess 而非 TS 重写 Core**：
 1. Core 是 Python（零依赖）——TS 重写 = 双源漂移。

@@ -2088,9 +2088,21 @@ def cmd_artifact_release(args, db):
     return 0
 
 
+EXIT_CODES_HELP = """\
+退出码：
+  0  成功（含 no-op / dry-run）
+  1  校验失败 / 无源数据 / 恢复被拒 / 写库失败
+  2  参数错误，或记忆库路径不可用（artifact 组不依赖库）
+  3  规则库缺失、参数值非法（--level/--stage/名称/正则）、artifact 读写失败
+  4  artifact ref 不存在或已过期；check-keys 缺 key；export-rules 脱敏残留或漂移（fail-closed）
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="vibe-coder-loop 技能相关记忆 备份/更新工具（跨平台）"
+        description="vibe-coder-loop 技能相关记忆 备份/更新工具（跨平台）",
+        epilog=EXIT_CODES_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--db",

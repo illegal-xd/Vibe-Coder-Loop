@@ -319,6 +319,13 @@ class ReflectionSignalTests(Base):
         self.assertEqual(rc, 2)
         self.assertEqual(S.list_entries(self.db, S.SIGNAL_PREFIX), [])
 
+    def test_evaluate_requires_task_id(self) -> None:
+        """CLI 缺 --task-id 必须报参数错误；静默 skip 会被误读为「无需反思」。"""
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                reflection_signals.main(["evaluate", "--db", str(self.db)])
+        self.assertEqual(ctx.exception.code, 2)
+
     def test_missing_db_degrades_without_blocking(self) -> None:
         report = reflection_signals.evaluate(self.dir / "missing.sqlite", task_id="task:a")
         self.assertEqual(report["decision"], "unavailable")

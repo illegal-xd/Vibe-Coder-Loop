@@ -203,7 +203,7 @@ MVP-2 Execution & Verification
 | 13 字段 | 语义字段集固定；保留键 `_schema`/`_rev`/`_project_id` 与保留子键 `review.failure_state` **不计入** |
 | 未知字段 | 读写往返**必须原样保留**（Skill 先增字段、Core 后升级不互相破坏） |
 | 错误码 | 两族分离：**协议码**（`transition.md` 已有，语义不改） vs **运行时扩展码**（`STATE_*`/`CHECKPOINT_*`，输出带 `[runtime]` 标识） |
-| CLI 契约 | 单行 JSON + exit code 语义（0/3/4）；大入参走 `--*-file` |
+| CLI 契约 | 单行 JSON + exit code 语义（0 成功 / 2 参数 / 3 协议不一致 / 4 运行时拒绝，事实源 = `docs/tooling.md`）；大入参走 `--*-file` |
 
 ---
 
@@ -254,7 +254,7 @@ Phase 4（未来）: Pi Adapter —— 复用 Core/Exec + 统一协议
 | 模板 | `.state.template.md` | 新增 `_schema: 1`；注释说明项目本地路径、保留键、字符串引号纪律 |
 | 其他 | `SKILL.md` 加载时机索引 / `load_plan.json` `_core_note` | 指向项目本地路径，避免回到 Skill 目录的旧口径 |
 
-> **不算完成的**：`check-protocol` 与 `core state check` 尚未实现，因此当前只是「契约已就位、门禁未上线」。Phase 1 必须把校验器写出来并接入 CI，否则机器块仍会漂移。
+> **不算完成的**：`check-protocol` 与 `core state check` 尚未实现（截至 2026-10-20 的设计时点；现均已落地，命令见 `docs/tooling.md`），因此当时只是「契约已就位、门禁未上线」。Phase 1 必须把校验器写出来并接入 CI，否则机器块仍会漂移。
 
 ---
 

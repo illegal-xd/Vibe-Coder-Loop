@@ -32,6 +32,10 @@ cd "$ROOT" || exit 2
 "$PY" -m runtime.core.cli check-protocol >/dev/null 2>&1
 assert_rc 0 "$?" 'core check-protocol 一致'
 
+# 文档（docs/tooling.md、engine/state-machine.md）给出的入口形式 = python3 -m runtime.core
+"$PY" -m runtime.core check-protocol >/dev/null 2>&1
+assert_rc 0 "$?" '文档入口 python3 -m runtime.core 可用'
+
 "$PY" -m unittest discover -s tests -t . -q >/dev/null 2>&1
 assert_rc 0 "$?" 'tests/core 全量通过'
 

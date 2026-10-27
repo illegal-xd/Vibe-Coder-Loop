@@ -401,10 +401,14 @@ def build_parser() -> argparse.ArgumentParser:
     check = state_sub.add_parser("check", help="校验状态文件语法 + schema")
     add_common(check)
     check.set_defaults(func=cmd_state_check)
-    gc = state_sub.add_parser("gc", help="清理未被引用的 pinned artifact")
+    gc = state_sub.add_parser(
+        "gc",
+        help="清理超过保留期且未被 pinned 引用的 .log artifact（默认执行，--dry-run 预览；status=active 拒绝）",
+        description="清理超过保留期且未被 pinned 引用的 .log artifact。默认执行；status=active 时拒绝。",
+    )
     add_common(gc)
-    gc.add_argument("--retention-days", type=int, default=7)
-    gc.add_argument("--dry-run", action="store_true")
+    gc.add_argument("--retention-days", type=int, default=7, help="保留天数（按 mtime 判定，默认 7）")
+    gc.add_argument("--dry-run", action="store_true", help="只列出将删除的文件，不删除")
     gc.set_defaults(func=cmd_state_gc)
 
     p = sub.add_parser("get-state", help="只读状态快照")

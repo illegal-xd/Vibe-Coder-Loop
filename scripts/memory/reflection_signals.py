@@ -410,7 +410,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ev = sub.add_parser("evaluate", help="聚合本任务信号并判定是否反思")
     ev.add_argument("--db", default=None)
-    ev.add_argument("--task-id", default=None)
+    ev.add_argument(
+        "--task-id",
+        required=True,
+        help="本轮任务标识（必填；缺省会跨任务聚合，导致误判 skip）",
+    )
     ev.add_argument("--json", action="store_true")
 
     show = sub.add_parser("list", help="列出已记录信号（只读）")

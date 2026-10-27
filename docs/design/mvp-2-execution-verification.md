@@ -472,7 +472,7 @@ def _collect_git(cwd, base) -> DiffSummary:
 
 ```text
 基线位置（现行）：~/.vibe-loop/baseline/<sha256(project_root)[:16]>.json（历史设计曾用 <project_root>/.vibe-kernel/baseline.json）
-建立时机：S8 Code 入口首次调用 summarize_diff 时（无基线则创建），或显式 `exec diff baseline`
+建立时机：S8 Code 入口首次调用 summarize_diff 时（无基线则创建），或显式 `exec baseline`
 内容：{created_at, root, entries: {relpath: {mtime_ns, size, sha256?}}}
 比较规则：
   - 基线与现在的路径集合差 → added / deleted
@@ -584,7 +584,7 @@ runtime/exec/                # Exec 实现（新建，零第三方依赖）
 ├── diff.py                 # summarize_diff + six-class 覆盖 + 基线快照
 ├── pathnorm.py             # 跨平台路径归一化 + 大小写探测
 ├── artifact_io.py          # memory_tool.py artifact put/page 薄适配 + 回读校验
-└── cli.py                  # exec run / exec diff / exec baseline / exec kill
+└── cli.py                  # exec run / exec diff / exec baseline（kill 未实现）
 tests/exec/
 ├── test_runner.py          # 执行/超时/取消/命令不存在/内存有界
 ├── test_proc_tree.py       # 孙进程被终止；tree_leaked 记账
