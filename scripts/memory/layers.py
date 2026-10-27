@@ -33,6 +33,8 @@ CATEGORIES = (
     "identity",       # 用户/Agent 身份与画像（user:）
     "preference",     # 用户偏好（preference:）
     "navigation",     # 索引/跳转页/加载包（reference: 导航页、module-index）
+    "project_knowledge",  # 项目模块/文档事实（非规范，layer=null）
+    "skill_mirror",   # Skill 规则镜像（指针，layer=null）
     "evidence",       # L0 证据引用
 )
 
@@ -41,6 +43,12 @@ SCOPES = ("global", "project", "task", "session")
 # 本工具链自产的衍生记录前缀：审计/蒸馏**必须忽略**它们，
 # 否则二次运行会把衍生记录当成原始语料 → 计划漂移（破坏幂等）。
 DERIVED_PREFIXES = ("obs:", "episode:")
+
+
+def is_derived_key(key: str) -> bool:
+    """派生记录：obs:/episode: 切片，或 ``#`` 分片。不参与原始语料指纹/一次性回填。"""
+    key = str(key or "")
+    return key.startswith(DERIVED_PREFIXES) or "#" in key
 
 STATUSES = ("candidate", "active", "superseded", "archived")
 

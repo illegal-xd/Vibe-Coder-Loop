@@ -6,8 +6,10 @@
 
 设计约束：
 - **不在项目目录创建任何文件**：状态以记忆条目承载，key = ``vc:checkpoint:<项目绝对地址>``。
-- **L0 独立 tag**：条目固定携带 `vc-checkpoint` / `L0` / `scope:project`，与 L1–L7
-  经验/规则记忆分开召回，不被 Preflight 当规则条目加载。
+- **runtime-state 独立 tag**：条目固定携带 `vc-checkpoint` / `runtime-state` / `scope:project`，
+  与 L1–L7 经验/规则记忆分开召回，不被 Preflight 当规则条目加载。
+  **Checkpoint 不是 L0**：`metadata.layer=null`、`metadata.memory_category=state`；
+  L0 只保留给原始证据（见 `docs/memory-layers.md`）。
 - 与 ``skills/vibe-coder-loop/backup/memory_tool.py`` 使用同一个 SQLite 库与表结构
   （``memory`` + FTS5 触发器），因此 MCP 的 ``memory_get`` / ``memory_set`` 与本层
   看到的是同一条记录。
@@ -26,8 +28,8 @@ from typing import Any, Iterable, Mapping
 
 CHECKPOINT_KEY_PREFIX = "vc:checkpoint:"
 CHECKPOINT_QUARANTINE_PREFIX = "vc:checkpoint-quarantine:"
-CHECKPOINT_TAGS = ("vc-checkpoint", "L0", "scope:project")
-CHECKPOINT_LAYER = "L0"
+CHECKPOINT_TAGS = ("vc-checkpoint", "runtime-state", "scope:project")
+CHECKPOINT_LAYER = None
 CHECKPOINT_TITLE = "vibe-kernel workflow checkpoint"
 CHECKPOINT_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 天；每次写入重新锚定
 MAX_KEY_LENGTH = 512

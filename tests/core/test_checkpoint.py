@@ -32,13 +32,15 @@ class CheckpointLocationTests(CoreTest):
         self.assertFalse((self.root / ".vibe-kernel").exists())
         self.assertFalse((self.root / ".gitignore").exists())
 
-    def test_entry_tags_and_l0_metadata(self) -> None:
+    def test_entry_tags_and_runtime_state_metadata(self) -> None:
         self.seed()
         entry = self.core.store.memory.get(self.state_key)
         assert entry is not None
         for tag in CHECKPOINT_TAGS:
             self.assertIn(tag, entry.tags)
-        self.assertEqual(entry.metadata.get("layer"), "L0")
+        self.assertNotIn("L0", entry.tags)
+        self.assertIsNone(entry.metadata.get("layer"))
+        self.assertEqual(entry.metadata.get("memory_category"), "state")
         self.assertEqual(entry.metadata.get("scope"), "project")
         self.assertEqual(entry.metadata.get("project_id"), self.core.resolved.project_id)
 

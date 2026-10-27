@@ -43,10 +43,11 @@ MIGRATION_ID = "l0l7-backfill-v1"
 
 # 迁移自有字段：若旧 metadata 已带 migration_id（本工具写过），这些字段以**计划为准**覆盖，
 # 否则每次重算计划都会因自身写入的字段产生伪冲突。
+# 只允许“结构字段”自愈；质量字段（confidence/evidence_level/review_status/
+# evidence_ids）一旦已存在就保留，避免迁移计划用启发式值覆盖人工校准。
 MIGRATION_OWNED = {
     "layer", "memory_category", "scope", "scope_unknown", "legacy_layer", "legacy_scope",
-    "status", "review_status", "confidence", "legacy_confidence", "evidence_level",
-    "needs_review", "evidence_ids", "legacy_id", "layer_basis", "migration_id",
+    "legacy_confidence", "layer_basis", "migration_id",
 }
 DERIVED_PREFIXES = L.DERIVED_PREFIXES
 
@@ -72,7 +73,7 @@ def fingerprint(conn: sqlite3.Connection, only_original: bool = True) -> str:
     sql = "SELECT key, value FROM memory ORDER BY key"
     rows = conn.execute(sql).fetchall()
     if only_original:
-        rows = [r for r in rows if not str(r[0]).startswith(DERIVED_PREFIXES)]
+        rows = [r for r in rows if not L.is_derived_key(r[0])]
     return hashlib.sha256(
         "\n".join(f"{r[0]}:{hashlib.sha256(norm(r[1]).encode()).hexdigest()}" for r in rows).encode()
     ).hexdigest()
@@ -136,13 +137,44 @@ def backup(db: Path, out_dir: Path, tag: str) -> Path:
 # ---------------------------------------------------------------------------
 # 计划装配
 # ---------------------------------------------------------------------------
-def build_targets(plan: dict, existing_keys: set[str]) -> tuple[list[dict], list[dict], list[dict]]:
+def _is_migration_target(key: str, raw_meta: str | None) -> bool:
+    """一次性迁移只处理原始语料：跳过分片/checkpoint/迁移后新建条目。
+
+    迁移后新建条目（无 ``migration_id`` 且已有 layer）不应被旧计划重新分类，
+    否则会把 memops 的分片继承/语义修复覆盖回 prefix 初判。
+    """
+    if "#" in key or key.startswith("vc:checkpoint"):
+        return False
+    try:
+        meta = json.loads(raw_meta) if raw_meta else {}
+    except (TypeError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    if meta.get("migration_id") == MIGRATION_ID:
+        return True
+    # 含旧口径 layer（非 L.LAYERS 枚举）或尚未分类的条目仍允许补分类；
+    # 已有合法 layer 且无 migration_id 的条目视为迁移后新建，跳过。
+    layer = meta.get("layer")
+    if layer and layer in L.LAYERS:
+        return False
+    return True
+
+
+def build_targets(
+    plan: dict,
+    existing_keys: set[str],
+    existing_meta: dict[str, str] | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
     """返回 (updates, inserts, skipped)。"""
     updates, inserts, skipped = [], [], []
     for item in plan["backfill_preview"]:
         key, add = item["key"], dict(item["add"])
         if key not in existing_keys:
             skipped.append({"key": key, "reason": "计划中的记录已不存在（库被并发修改）"})
+            continue
+        if existing_meta is not None and not _is_migration_target(key, existing_meta.get(key)):
+            skipped.append({"key": key, "reason": "分片/checkpoint/迁移后新建条目，不属于一次性回填范围"})
             continue
         add.pop("last_migrated_at", None)
         add["migration_id"] = MIGRATION_ID
@@ -232,6 +264,10 @@ def merge_metadata(old_raw: str | None, add: dict) -> tuple[dict, list[str]]:
                 old[k] = v          # 自产字段：以计划为准（幂等/自愈）
                 continue
             conflicts.append(f"{k}: keep={old[k]!r} want={v!r}")
+    # 安全不变量：candidate 不得同时 approved（不受 add-only / self-heal 影响）
+    if old.get("status") == "candidate":
+        old["review_status"] = "pending"
+        old["needs_review"] = True
     return old, conflicts
 
 
@@ -245,8 +281,9 @@ def apply_plan(db: Path, plan: dict, batch_size: int, progress_path: Path | None
     conn = open_rw(db)
     stats = {"updated": 0, "inserted": 0, "skipped": 0, "conflicts": [], "batches": 0}
     try:
-        existing = {r[0] for r in conn.execute("SELECT key FROM memory")}
-        updates, inserts, skipped = build_targets(plan, existing)
+        existing_meta = {r[0]: r[1] for r in conn.execute("SELECT key, metadata FROM memory")}
+        existing = set(existing_meta)
+        updates, inserts, skipped = build_targets(plan, existing, existing_meta)
         stats["skipped"] += len(skipped)
         stats["planned_updates"] = len(updates)
         stats["planned_inserts"] = len(inserts)
@@ -498,8 +535,13 @@ def render_state_md(st: dict, verify_res: dict | None, plan: dict, db: Path, bac
 
 
 def dry_run(db: Path, plan: dict, batch_size: int) -> dict:
-    existing = {r[0] for r in sqlite3.connect(f"file:{db}?mode=ro", uri=True).execute("SELECT key FROM memory")}
-    updates, inserts, skipped = build_targets(plan, existing)
+    conn_ro2 = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        existing_meta = {r[0]: r[1] for r in conn_ro2.execute("SELECT key, metadata FROM memory")}
+    finally:
+        conn_ro2.close()
+    existing = set(existing_meta)
+    updates, inserts, skipped = build_targets(plan, existing, existing_meta)
     ops = []
     for item in updates[:10]:
         ops.append({"op": "update-metadata", "key": item["key"], "fields": sorted(item["add"])})

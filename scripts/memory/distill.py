@@ -320,7 +320,7 @@ def main() -> int:
         "SELECT key, value, created_at, updated_at, ttl_expires_at, tags, metadata FROM memory ORDER BY key"
     ).fetchall()
     # 只分析原始语料（自产 obs:/episode: 不入分析范围，保证计划可重复）
-    rows = [r for r in rows if not str(r["key"]).startswith(L.DERIVED_PREFIXES)]
+    rows = [r for r in rows if not L.is_derived_key(r["key"])]
     fingerprint_before = corpus_fingerprint(rows)
 
     records, by_key = [], {}
@@ -643,8 +643,8 @@ def main() -> int:
 
     # 零副作用断言（同一进程内二次采样）
     rows_after = conn.execute("SELECT key, value FROM memory ORDER BY key").fetchall()
-    # 与 before 同口径：排除自产衍生记录（否则二次运行会误报副作用）
-    rows_after = [r for r in rows_after if not str(r["key"]).startswith(L.DERIVED_PREFIXES)]
+    # 与 before 同口径：排除自产衍生记录/分片（否则二次运行会误报副作用）
+    rows_after = [r for r in rows_after if not L.is_derived_key(r["key"])]
     fingerprint_after = corpus_fingerprint(rows_after)
     assert fingerprint_before == fingerprint_after, "dry-run 产生了数据副作用，中止"
     conn.close()

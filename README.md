@@ -19,7 +19,7 @@ Vibe-Coder-Loop/
 ├── scripts/
 │   ├── audit.sh               # 公开面审计工具（只读；含运行状态 gitignore 机检）
 │   ├── verify-symlinks.sh     # 仓库/宿主软链校验
-│   ├── memory/                # 记忆审计/提炼/迁移 + 查看器数据导出（均只读）
+│   ├── memory/                # 记忆审计/提炼/迁移/运维（validate/search/repair/split）+ 查看器数据导出
 │   └── tests/
 │       ├── test-audit.sh      # 审计工具自测
 │       ├── test-runtime-core.sh
@@ -164,7 +164,7 @@ cd tools/memory-viewer && python3 -m http.server 8765   # 浏览器打开 http:/
 
 ## 安全与隐私
 
-- 仓库不包含真实凭证；**Workflow Checkpoint 存 delx-memory**（key `vc:checkpoint:<项目绝对地址>`，L0 独立 tag），项目目录不落状态文件；legacy `.vibe-kernel/` 与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
+- 仓库不包含真实凭证；**Workflow Checkpoint 存 delx-memory**（key `vc:checkpoint:<项目绝对地址>`，`runtime-state` 独立 tag，`category=state`、`layer=null`），项目目录不落状态文件；legacy `.vibe-kernel/` 与记忆快照（`backup/snapshots/*`）已被忽略，禁止提交。
 - `runtime/exec` 是**防手滑**，不是权限沙箱：allowlist 只拦截显式的危险命令（`rm -rf`、`git push` 等）；`python3 -c`、`npm` 脚本等仍可执行任意操作。不要把 exec 当作对抗性隔离边界，不可逆操作仍须走 `policy/safety.md` 的 Conflict Card 仲裁。
 - **机检兜底**：`bash scripts/audit.sh check` 的 **C012** 检查「Checkpoint 存储契约」——协议必须声明 delx-memory key 前缀 `vc:checkpoint:`，且 runtime 不得创建项目内状态目录，防止协议与实现各写一套。
 - **规则内容不入库**：运行状态、记忆快照与脱敏规则集（`backup/snapshots/*`、`backup/rules/*`）均被忽略。仓库只分发协议骨架，规则内容由本机 delx-memory 生成，跨机器只经安全私有通道传输。

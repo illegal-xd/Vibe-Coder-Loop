@@ -14,7 +14,9 @@ status: active
 ## S12 收尾（2 步）
 
 > **设计原则：Memory 为 Agent 服务，而不是 Agent 为 Memory 服务。**
-> Promotion / Dedup / Merge / Consolidation / Relevance / supersession / 观察期 / 失败类型分类 / Metrics 聚合与落库 —— 全部属 **Memory 系统（Tool / Runtime）职责**，**Agent 不在循环内逐项执行**。下文各节保留为**实现方参考协议**，不构成 Agent 的每轮动作清单。
+> Promotion / Dedup / Merge / Consolidation / Relevance / supersession / 观察期 / 失败类型分类 / Metrics 聚合与落库 —— 优先由 **Memory Tool** 承担；**没有对应工具命令的项，不得假设“系统会自动完成”**，由 Agent 按需执行或明确留待人工。
+>
+> 现有工具面：`memory_tool.py touch/metrics/backup/restore`、`scripts/memory/audit_memory.py` / `distill.py` / `migrate.py`、`scripts/memory/memops.py validate/search/repair/split`。Dedup / Merge / Consolidation / 自动提升**尚无独立运行时**；相关协议保留为实现参考，S12 只做 [1][2]。
 
 ```text
 [1] 收尾回写（Tool 承担，一条命令）
@@ -42,6 +44,8 @@ status: active
 4. 同类 ≥5 且涉及 ≥2 项目 → 自动创建 `principle:{name}`，tag=p_critical，TTL=无限
 5. Pattern/Principle 的 value 包含：fingerprint、实例引用列表、适用场景、反模式、提升日期
 6. 聚合时同步扫描 `trigger:high-reuse` 标记条目（写入方已判定「高复用」）与 `recurrence_count ≥ 2` 条目 → **优先进入提升评审**（提前评审 ≠ 降低阈值：仍需其指纹同类实例 ≥3 才建 pattern）
+7. **提升源只来自 L3**：L1/L2 默认不落库（见 `docs/memory-layers.md §6.7`）；L4 是规范类、L6 是指针类，均不参与 L3→L5→L7 阶梯
+8. **审核分层**：L3/L4 有 `evidence_level E2+` 且无 `content:conflict-marker` → 可 `approved`；L5/L6/L7、用户显式修正、安全/失败证据 → 保持 `pending` 人工评审。L6 规则镜像不是 L6，归 `category=skill_mirror` / `layer=null`
 
 **提升阶梯是双轴正交**（勿混淆——两轴相互独立）：
 

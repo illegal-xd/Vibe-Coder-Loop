@@ -65,7 +65,7 @@ S2 Preflight → `memory_list(prefix="pattern:")`（全局 namespace）
 | 5 提升检查 | ≥3 同类 → pattern；≥5 且 ≥2 项目 → principle | `promotion.md` 自动提升逻辑 |
 | 6 CodeGraph 验证 | 涉及代码路径/签名 → 验证 → 更新或标记过期 | — |
 | 7 到期检查 | 仅 TTL 到期前 30 天算 relevance_score | 本文件 §Relevance 评分 |
-| 8 待淘汰清理 | < 0.3 且已到期 → 输出淘汰提示（**不自动删除，人工确认**） | 本文件 §Relevance 评分 |
+| 8 待淘汰清理 | < 0.3 且已到期 → 按「记忆操作授权模型」**自主删除**（义务：归属为本方 + 可回滚证据；≥5 条先输出淘汰清单） | 本文件 §Relevance 评分 + `policy/lifecycle.md` |
 
 输出格式：
 ```text

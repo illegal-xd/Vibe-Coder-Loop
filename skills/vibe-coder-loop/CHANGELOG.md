@@ -14,6 +14,17 @@
 | 2 | 批次归属 | 第八批（预算 4200）、第九批（references 权威同步）→ commit `749a9ed`；第十批（转义竖线）、第十一批（EOF 漏检）→ commit `ff07ad2`；记忆分层工具链与报告 → commit `8f63b11` | `CHANGELOG.md` |
 | 3 | 快照同步 | `backup/snapshots/*` 与 `backup/rules/*` 内的 `skill_version` 由 `memory_tool.py backup` 重建时刷新（不入库，无需手改） | `backup/` |
 
+### 同版本第十九批 — 记忆分层运维修复（checkpoint / 分片 / TTL / 检索）
+
+| # | 层 | 项 | 处置 | 落点 |
+|---|---|---|---|---|
+| 1 | 运行态 | Checkpoint 不再占用 L0 | `vc:checkpoint:*` 改 `category=state` / `layer=null`，tags `vc-checkpoint` / `runtime-state` / `scope:project`；L0 只保留原始证据 | `runtime/core/memory_store.py`、`runtime/core/checkpoint.py`、`engine/state-machine.md`、`SKILL.md`、`.state.template.md`、`load_plan.json`、`tests/core/` |
+| 2 | 工具 | 新增 `memops.py` | `validate`（只读检查分层/分片/TTL/证据）、`search`（FTS，默认排除分片）、`repair`（metadata-only 回填 + 自动备份）、`split`（H2 分片 + 父 router + 归档 + 继承元数据） | `scripts/memory/memops.py`、`tests/memory/test_memops.py` |
+| 3 | 迁移 | 一次性迁移加固 | 跳过分片/checkpoint/迁移后新建条目；质量字段不再被启发式计划覆盖；`candidate` 不得 approved；二次 apply 幂等 | `scripts/memory/migrate.py`、`tests/memory/` |
+| 4 | 协议 | L0–L7 与写入契约 | 两轴模型（L3→L5→L7 / L4·L6 正交 / L0–L2 采集轴）；L1/L2 默认不落库；L4 仅规范；L6 指针优先；分片继承协议；写入强制/TTL/隐私/授权门禁/召回 fail-open | `docs/memory-layers.md`、`skills/delx-memory-protocol/protocol.md`、`learning/memory/{architecture,lifecycle,retrieval,promotion,advanced}.md` |
+| 5 | 数据 | 真实库 metadata-only 修复 | 328 条计划更新：114 分片继承 layer/evidence、209 条补 `layer:*` tag、203 条补默认 TTL、1 条 checkpoint 归 state、5 条悬空 evidence 移入 `evidence_missing`；从快照恢复治理映射缺失的 `skill:rules/review:doc-structure-recheck` | `~/.delx-memory/db.sqlite`（备份 `db.sqlite.bak-memops-repair-*`） |
+| 6 | 验证 | 门禁 | `test-memory-layers.sh` 12/12；`test-runtime-core.sh` 6/6；`unittest discover -s tests -t .` 287 OK；`test-audit.sh` 51/51；`smoke-check --table` HARD 0；`memops validate` PASS（仅 L6 无指针 / L4 项目知识 / review backlog 告警） | 命令输出见本轮交接 |
+
 ### 同版本第十五批 — 沉淀「规则存而不用」经验 + 新增导入全路径规则
 
 | # | 层 | 项 | 处置 | 落点 |

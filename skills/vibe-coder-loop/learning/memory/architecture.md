@@ -23,6 +23,8 @@ status: active
 | Tag 权重体系（p_critical/p_high/p_medium/stale/skill-evolved/preference） | §Tag 权重体系 |
 | scope 维度（scope:global/project/task · 渐进加载时机） | §Tag 权重体系 |
 
+> **分层模型（实例约束）**：L0–L7 的完整定义、两轴模型、分片协议、L1/L2 策略见 `docs/memory-layers.md`。要点：默认可写层 = L3–L7；L4 仅规范、L6 指针优先；L1/L2 默认不落库；非 null layer 必须同步 `layer:<L>` tag。
+
 ## 实例特化（本 skill 绑定）
 
 - **前缀规范完整版**：lesson 主题式命名 / `experience:{主题}` / `global:{主题}` 等前缀细则以 `reference:memory-nav-conventions` 记忆为准（导航已拆分为入口 `reference:memory-navigation` + 5 分片，按需加载）。

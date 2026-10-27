@@ -35,14 +35,18 @@ class MemoryStoreTests(unittest.TestCase):
 
     def test_set_get_roundtrip_and_tags(self) -> None:
         created = self.store.set(
-            "vc:checkpoint:x", "value: 1\n", metadata={"layer": "L0"}
+            "vc:checkpoint:x",
+            "value: 1\n",
+            metadata={"layer": None, "memory_category": "state"},
         )
         self.assertTrue(created)
         entry = self.store.get("vc:checkpoint:x")
         assert entry is not None
         self.assertEqual(entry.value, "value: 1\n")
         self.assertEqual(entry.tags, CHECKPOINT_TAGS)
-        self.assertEqual(entry.metadata.get("layer"), "L0")
+        self.assertNotIn("L0", entry.tags)
+        self.assertIsNone(entry.metadata.get("layer"))
+        self.assertEqual(entry.metadata.get("memory_category"), "state")
         self.assertIsNotNone(entry.ttl_expires_at)
 
     def test_second_set_preserves_created_at_and_merges_metadata(self) -> None:

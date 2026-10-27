@@ -193,7 +193,7 @@ S14 Safe Mode
 > **性质**：**Checkpoint ≠ Memory ≠ Context Manager**。它是 📌 TASK 区（字段定义见上「压缩后状态延续契约」表）的**持久化形式**，唯一用途是**跨会话恢复**。**不保存长期经验**（经验归 delx-memory 的 L1–L7，走 S11/S12），**不承担压缩**（压缩归 Runtime），**不参与规则仲裁**。
 > **存储**：delx-memory 记忆条目，**项目目录不创建任何状态文件**（不建 `.vibe-kernel/`、不写 Checkpoint 条目）。
 > **唯一 ID**：key = `vc:checkpoint:<项目绝对地址 realpath>` —— 项目在系统中的地址即身份，天然区分同名目录、子目录与 worktree。
-> **L0 独立 tag**：条目固定 `tags = vc-checkpoint / L0 / scope:project`，`metadata.layer = "L0"`。`L0` = **运行实例态**（不是经验/规则层）；独立 tag 的作用是让 Preflight 召回规则/经验时**排除** Checkpoint，只有恢复协议按 key 精确读取。
+> **runtime-state 独立 tag**：条目固定 `tags = vc-checkpoint / runtime-state / scope:project`，`metadata.layer = null`、`metadata.memory_category = state`。Checkpoint 是**运行实例态**，不属于 L0–L7 知识层（L0 只保留给原始证据，见 `docs/memory-layers.md`）；独立 tag 的作用是让 Preflight 召回规则/经验时**排除** Checkpoint，只有恢复协议按 key 精确读取。
 > **位置解析**：① `--memory-key` / `VIBE_KERNEL_CHECKPOINT_KEY`（测试/运维覆盖，须以 `vc:checkpoint:` 开头）→ ② 缺省 `vc:checkpoint:<realpath(project_root)>`。记忆库：`--memory-db` / `DELX_MEMORY_DB` → 缺省 `~/.delx-memory/db.sqlite`（与 `memory_tool.py` 同库同表）。
 > **project_root** = 显式 `--cwd`，或从 cwd 向上首个含项目标记（`.git` / `pyproject.toml` / `package.json` / `go.mod`）的目录；旧 `.vibe-kernel/` 仅作 legacy 标记与一次性导入来源。路径一律 `realpath` 归一——软链指向同一目录即**同一项目**（期望行为），不同目录各自隔离。
 > **创建**：首次写入即 upsert；值骨架见 `<skill>/.state.template.md`（模板本身不改写）。

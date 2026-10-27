@@ -17,11 +17,33 @@
 | 删 | `memory_forget` 单条或批量 | ① **归属为本方**（他方 `owner:*` / 跨 skill 键不删）② **可回滚证据已核验**（快照 / git / 内容已迁移）③ 批量 ≥5 条先输出清单再执行（可观测，**不阻塞**） |
 | 查 | `memory_get` / `memory_list` / `memory_search` | 无（只读） |
 
-- **`explicit_user_intent=true` 语义**：本条常驻授权即构成"用户要求 Agent 管理记忆"——增/删/改调用携带该标志**合法**，无需每次重新取得同轮用户指令。
+- **`explicit_user_intent=true` 语义**：本协议常驻授权只覆盖**项目内受控写入路径**（`memory_tool.py` / `memops.py`）；对要求“当前用户消息显式要求”的 MCP 工具，常驻授权**不自动满足**该标志——见下方「工具门禁优先」。
 - **删除后义务**：输出 `🗑 已删除：<keys>` → 做**引用扫描**（FTS 反查旧 key，修导航/规则条目里的陈旧指针）→ 重建备份快照（使 `verify` 一致）。
 - **唯一保留的用户确认项（不在本协议范围）**：**文件 / 代码删除** —— Agent 不执行物理删除，输出「🗑 待删除清单」由用户执行。记忆条目删除**不属于**此类。
 - **`rule:` 条目同属自主范围**：其增 / 改 / 删由 Agent 执行——守门机制 = 宿主 `policy/priority.md` §3.6 的**准入四条件 + 结构红线**（不得覆盖 R0/R1 与 `engine/` 流程）+ **观察期转正**（`auto_generated` + `pending_review`，3 次成功触发转正），**不是用户审批**。
 - **`level:core` 亦由 Agent 授予**：义务 = 在条目内记授予依据，且 core 只表示「`skill:*` 条目内的加载优先级」，不改变记忆的 Advisory 地位（不得否决文件规则）。
+
+> **工具门禁优先**：若宿主 MCP 要求 `explicit_user_intent=true` 且限定「当前用户消息显式要求」，该硬门禁**高于**本协议的常驻授权——不得把常驻授权解释成可以伪造该标志。无法满足时：① 请用户在会话开始时给一次显式授权；或 ② 使用项目内受控写入路径（`memory_tool.py` / `memops.py`，带备份与脱敏）；**不得**绕过工具做静默写入。
+
+## 写入侧最小契约（v2）
+
+> 动机：字段规范写在文档里、Agent 仍会漏写（实测 114 条分片无 `layer`、TTL 覆盖率仅 67/350、209 条分层条目无 `layer:*` tag）。把不变量下沉到写入路径，而不是靠每次提醒。
+
+**每条新写入/更新至少满足**：
+
+| 项 | 要求 |
+|---|---|
+| 分层 | `layer` + `memory_category`；非 null layer 同步 tag `layer:<L>`；无法分类 → `layer=null` + `needs_review=true` |
+| 作用域 | `scope` 三选一（global/project/task/session）；与 layer 正交 |
+| 生命周期 | `status`；L5–L7 / 自动生成条目 `review_status=pending`；L3/L4 有 E2+ 证据且无冲突可 `approved` |
+| 证据 | `evidence_ids` 至少 1 条（`file:` / `memory:` / `anchor:`）；缺失 → `needs_review=true`，不得伪造 |
+| TTL | 按类型给出（lesson 90d / reflection 180d / experience 180d / pattern 365d / project 365d / qa 30d / archive 90d / skill-metrics 180d / vc 30d）；永久类显式不设 |
+| 隐私 | 写入前剥离 `<private>...</private>`；命中凭据/密钥形状 → 拒绝写入；不得把工具输出原样入库 |
+| 长度 | 实例层 ≤40 行/2000 字；超限先 `memops.py split`，不得手工复制 |
+
+**更新语义**：`memory_set` 的 value/tags/metadata 三列整体替换；更新前先 `memory_get`，或使用 `memory_patch`（若宿主提供）。计数回写走 `memory_tool.py touch`，Agent 不手写计数。
+
+**分片**：见 `docs/memory-layers.md §6.6`；分片必须继承父条目 `layer/category/scope/status/evidence_ids`，带 `fragment` + `layer:<L>` tag，默认召回排除。生成/修复命令：`python3 scripts/memory/memops.py split|repair`。
 
 ## 三层记忆体系
 
@@ -94,6 +116,16 @@
 4. **回收**：本轮取回但未使用的条目，不写入任何"已读"状态 —— **不产生幽灵引用**。
 
 > **与宿主的关系**：宿主 Skill 规定"在哪个出口执行召回"（时机）；本节规定"召回时取多少"（粒度）。两者不重叠。
+
+## 召回过滤与失败策略
+
+1. **canonical 过滤**：默认召回排除 `fragment` tag 与 key 含 `#` 的分片；只有需要细节时才按 `parent_key` / 分片 key 精确 `memory_get`。`memops.py search` 默认已排除；MCP `memory_list` 不支持排除时由 Agent 按 tag/key 过滤。
+2. **分层过滤**：需要按层召回时用 `memory_list(tag="layer:L3")`（写入时已回填）；不要拉全量再在上下文里筛。
+3. **失败分级**：
+   - **规则库（`skill:rules/*`）**：不可用 → `[RULE_STORE_MISSING]` 停止（fail-closed，不降级推断）。
+   - **经验/模式/偏好召回**：失败或超时（建议 ≤3s）→ 标记 `⚠️ 记忆召回降级` 后继续；不得因记忆后端不可用阻塞工程循环。
+   - **不重路由**：失败后不得自动改到其他 API/远端记忆服务；保持本地优先。
+4. **会话去重**：同一会话已注入的 key 不重复注入；除非本轮任务显式要求复核。
 
 ## Relevance 评分（懒计算）
 
@@ -169,6 +201,7 @@ relevance_score = hit_count×0.25 + recency×0.20 + codegraph_verified×0.30
 3. **允许超限的例外**：`rule:*` / `skill:*` 规则条目（其正文即规则本体，本就要全文执行）；`principle:*`（抽象层级高、通常很短）。
 4. **规则条目的反向纪律**：`skill:*` 规则条目不得内嵌大段**示例代码 / 完整日志 / 整篇文档** —— 那些走外置（见上第 2 条）。规则条目只承载**规则 + 判定口径 + 最小反例**。
 5. **检查时机**：写入时（超限即外置，不等事后清理）；周期 Consolidation 时复核（仅提示，不自动改写正文）。
+6. **分片优先于手工复制**：超过上限的条目用 `python3 scripts/memory/memops.py split <key> --max-chars 1800 --apply`；父条目改 router，分片继承元数据，原文归档并以 `file:<archive>#<key>` 进 `evidence_ids`。不得手工复制正文到多个 key。
 
 > **与宿主的关系**：宿主 Skill 规定回写时机与回执格式；长度上限与引用格式由本节承载。
 

@@ -50,6 +50,19 @@ if "$PY" "$ROOT/scripts/memory/audit_memory.py" --db "$DB" --out-json "$TMP/audi
   ok "audit 只读执行（$(head -1 "$TMP/audit.log")）"
 else bad "audit 失败"; cat "$TMP/audit.log"; fi
 
+printf '== 2b) memops：validate / repair / search ==\n'
+sqlite3 "$DB" "VACUUM INTO '$TMP/memops.sqlite'" || bad "memops 快照创建失败"
+"$PY" "$ROOT/scripts/memory/memops.py" --db "$TMP/memops.sqlite" repair --ttl --apply \
+  --backup-dir "$TMP/bk-memops" >"$TMP/memops-repair.log" 2>&1 \
+  && ok "memops repair 执行（$(head -1 "$TMP/memops-repair.log")）" || { bad "memops repair 失败"; cat "$TMP/memops-repair.log"; }
+"$PY" "$ROOT/scripts/memory/memops.py" --db "$TMP/memops.sqlite" validate --max-examples 1 >"$TMP/memops-validate.log" 2>&1 \
+  && ok "memops validate PASS（$(head -1 "$TMP/memops-validate.log")）" || { bad "memops validate 未通过"; cat "$TMP/memops-validate.log"; }
+"$PY" "$ROOT/scripts/memory/memops.py" --db "$TMP/memops.sqlite" repair --ttl --apply \
+  --backup-dir "$TMP/bk-memops" 2>&1 | grep -q 'planned=0 updated=0' \
+  && ok "memops repair 幂等（planned=0）" || bad "memops repair 非幂等"
+"$PY" "$ROOT/scripts/memory/memops.py" --db "$TMP/memops.sqlite" search '记忆' --limit 1 >/dev/null 2>&1 \
+  && ok "memops search 可用" || bad "memops search 失败"
+
 printf '== 3) 快照演练：dry-run / apply ×2 / verify / restore ==\n'
 sqlite3 "$DB" "VACUUM INTO '$TMP/snap.sqlite'" || bad "快照创建失败"
 

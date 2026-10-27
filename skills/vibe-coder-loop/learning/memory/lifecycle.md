@@ -57,7 +57,16 @@ value: {
 
 ## 记忆写入（自主执行，无逐次确认）
 
-**授权**：记忆的增 / 删 / 改 / 查由 Agent **自主执行**——用户常驻授权，授权模型唯一事实源 = `delx-memory-protocol` 协议 §记忆操作授权模型。工具硬约束 `explicit_user_intent=true` 由该常驻授权满足；**「建议块等用户回复保存」与「S12 批量确认清单」两类门控已废除**。
+**授权**：记忆的增 / 删 / 改 / 查由 Agent **自主执行**——用户常驻授权，授权模型唯一事实源 = `delx-memory-protocol` 协议 §记忆操作授权模型。**工具门禁优先**：MCP 要求“当前用户消息显式要求”时按其门禁执行（必要时请求一次会话授权）；项目内受控写入路径（`memory_tool.py` / `memops.py`）按常驻授权执行。**「建议块等用户回复保存」与「S12 批量确认清单」两类门控已废除**。
+
+**写入前检查（工具化，不靠记忆）**：
+
+1. `layer` + `memory_category` + `scope` 三件套齐全；非 null layer 同步 `layer:<L>` tag。
+2. `evidence_ids` ≥1（`file:`/`memory:`/`anchor:`）；缺证据 → `needs_review=true`，不伪造。
+3. TTL 按类型给：lesson 90d / reflection 180d / experience 180d / pattern 365d / project 365d / qa 30d / archive 90d / skill-metrics 180d / vc 30d；永久类显式不设。
+4. `<private>...</private>` 先剥离；命中凭据/密钥形状 → 拒绝写入（工具门禁优先于常驻授权）。
+5. 超 40 行/2000 字 → 用 `python3 scripts/memory/memops.py split`；分片继承父条目元数据，不手工复制。
+6. 写完可跑 `python3 scripts/memory/memops.py validate`；异常用 `repair --ttl --apply`（metadata-only，自动备份）。
 
 **写入时机（即时写入）**：
 
@@ -104,6 +113,8 @@ value: {
 
 **TTL 到期前 30 天**：降级 tag 为 p_medium（降低加载优先级）→ 到期后自然删除或转为 `lesson:historical-*`。
 
+> **TTL 强制**：上表是契约，不是建议。新写入必须带 TTL；历史缺失由 `memops.py repair --ttl` 补齐（按“当前时间 + 默认时长”重锚，不追溯 creation）。`memops.py validate` 的 `ttl_missing` 为告警；连续两轮告警不降 → 在 S12 出口补写。
+
 ### 记忆访问计数与元数据协议
 
 > **Canonical**：本协议事实源 = 本文件。`pattern:memory-writeback-integrity` / `reference:memory-access-tracking` / `lesson:access-writeback-trigger-gap` 为经验锚，不构成第二规则源。
@@ -123,6 +134,13 @@ value: {
 3. 有限 TTL 更新：`ttl_seconds = 原到期时间 − now`（防续期漂移）
 
 **禁止**：`_meta` 写回 value｜未访问却 +1｜用 `memory_search` snippet 命中代替"消费"｜子 agent 直接写计数（由主 agent 汇总，防并发覆盖）｜新写记忆不带 `scope` 标注（global/project/task 三选一）｜**删除前未核验归属与可回滚证据**（删除义务见 `policy/lifecycle.md`「记忆条目删除义务」）
+
+**分片与检索**：
+
+- 长条目拆分只走 `memops.py split`；父条目为 router，分片带 `fragment` + `layer:<L>` tag，继承 layer/evidence/scope。
+- 默认召回排除 `fragment` tag 与 `#` key；需要细节时按分片 key `memory_get`。
+- `memory_search` 不可用时，优先 `python3 scripts/memory/memops.py search "<关键词>" --limit 5`（FTS，默认排除分片），再退回 `memory_list(prefix=...) + memory_get`。
+- 经验/模式召回失败或超时 → 标注 `⚠️ 记忆召回降级` 后继续；规则库（`skill:rules/*`）仍 fail-closed。
 
 **协议文档记忆**：`reference:memory-access-tracking`（TTL 365 天）
 

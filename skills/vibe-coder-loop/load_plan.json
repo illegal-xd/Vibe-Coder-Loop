@@ -7,7 +7,7 @@
     "engine/state-machine.md",
     "engine/transition.md"
   ],
-  "_core_note": "Checkpoint（delx-memory key `vc:checkpoint:<项目绝对地址>`，L0 独立 tag）不在加载计划内——它由 S1 恢复协议单独读取（engine/state-machine.md「Workflow Checkpoint（delx-memory）」），且属运行实例态不计入规则成本口径（不建项目内状态文件）",
+  "_core_note": "Checkpoint（delx-memory key `vc:checkpoint:<项目绝对地址>`，runtime-state 独立 tag；category=state、layer=null）不在加载计划内——它由 S1 恢复协议单独读取（engine/state-machine.md「Workflow Checkpoint（delx-memory）」），且属运行实例态不计入规则成本口径（不建项目内状态文件）",
   "always_whole": [
     "kernel.md"
   ],
