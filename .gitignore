@@ -44,6 +44,10 @@ build/
 coverage/
 .cache/
 
+# Token usage measurement data (local only, append-only: legacy single file + daily files)
+/data/token-usage.jsonl
+/data/token-usage-*.jsonl
+
 # Local tool indexes
 .codegraph/
 

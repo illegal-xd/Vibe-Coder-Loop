@@ -107,10 +107,19 @@ Copy-Item -Force (Join-Path $Repo "kernel\Vibe Coder.md") (Join-Path $OpenCodeAg
 | `delx-memory` 记忆后端（回写/检索/仪表盘） | 否 | 记忆读写/回写步骤跳过或降级；Kernel 的记忆兜底也跳过（规则库仍需可用） |
 | `codegraph` | 否 | 代码定位降级为 `grep` + 文件读取 |
 | Python 3 | 否（仅工具/自检） | 审计 Bash 工具仍可用；`memory_tool.py` 与完整 smoke-check 不可用 |
+| Node.js 18+ | 否（仅上下文裁剪测试） | 不影响主流程；`scripts/tests/test-context-dedup.sh` 以 rc=2 提示 |
 
 ## 六、配置
 
-### 6.1 记忆数据库
+### 6.1 OpenCode 上下文裁剪（可选）
+
+本仓库自带一个本地 OpenCode 插件 `.opencode/plugins/vibe-context-dedup.js`，用于 Dedup（重复只读工具结果）与 Error Purge（被后续等价成功取代的工具错误）。它不需要 npm 安装，OpenCode 启动时会自动加载 `.opencode/plugins/`；两条策略可用 `deduplication.enabled` / `errorPurge.enabled` 独立关闭。规则、配置与限制见 [context-dedup.md](context-dedup.md)。
+
+```bash
+bash scripts/tests/test-context-dedup.sh
+```
+
+### 6.2 记忆数据库
 
 解析优先级：
 
@@ -123,11 +132,11 @@ Copy-Item -Force (Join-Path $Repo "kernel\Vibe Coder.md") (Join-Path $OpenCodeAg
 
 `config.json` 默认 `db_path` 为空，适合大多数用户。不要把自己的绝对路径提交到仓库。
 
-### 6.2 结果外置目录
+### 6.3 结果外置目录
 
 `VIBE_LOOP_ARTIFACTS_DIR` 可覆盖默认的 `$HOME/.vibe-loop/artifacts/<workspace-hash>/`。目录由工具自动创建；24h TTL 由工具清理。
 
-### 6.3 自检 core 定位
+### 6.4 自检 core 定位
 
 `skills/vibe-coder-loop/scripts/smoke-check.sh` 和模板会按以下顺序查找 `smoke-check-core.sh`：
 

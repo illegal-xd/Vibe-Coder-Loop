@@ -27,9 +27,13 @@ Vibe-Coder-Loop/
 ├── runtime/
 │   ├── core/                  # 状态机 / Checkpoint / 协议一致性 CLI
 │   └── exec/                  # 受控执行（allowlist / 超时 / 输出截断 / 脱敏）
+├── .opencode/                 # OpenCode 可选集成（本地插件，无 npm 依赖）
+│   ├── plugins/               # vibe-context-dedup.js（唯一自动加载入口）
+│   └── context-dedup/         # Dedup + Error Purge 核心 / 消息适配 / 配置 / 日志
 ├── tests/
 │   ├── core/                  # runtime/core 单测
-│   └── exec/                  # runtime/exec 单测
+│   ├── exec/                  # runtime/exec 单测
+│   └── context-dedup/         # Dedup + Error Purge 与 OpenCode 消息适配测试
 ├── tools/
 │   └── memory-viewer/         # delx-memory 静态查看器（HTML/CSS/JS，零依赖、无构建）
 ├── docs/
@@ -55,6 +59,7 @@ Vibe-Coder-Loop/
 | 规则库（**必填**） | `delx-memory` 中的 `skill:*` 规则条目（私有通道恢复）。缺失 → `[RULE_STORE_MISSING]` **停止**，不降级继续 |
 | 可选集成 | `delx-memory` 记忆后端（回写/检索/仪表盘）、`codegraph`（代码图谱）；缺失时对应能力标注降级，**不影响规则库的必填性** |
 | 记忆查看器（可选） | 现代浏览器；仅导出数据需 Python 3.8+（`scripts/memory/export_viewer_data.py`） |
+| OpenCode 上下文裁剪（可选） | OpenCode；运行插件由宿主 Bun 加载；测试需 Node.js 18+ | 移除 `.opencode/plugins/vibe-context-dedup.js` 即不生效；无 npm 依赖 |
 | 不支持 | Windows 原生 CMD / PowerShell 直接执行 `.sh`；请使用 Git Bash/WSL，或用 PowerShell 完成安装步骤 |
 
 完整说明见 [docs/installation.md](docs/installation.md) 与 [docs/audits/compatibility.md](docs/audits/compatibility.md)。
@@ -131,6 +136,24 @@ python3 scripts/memory/skill_draft.py generate --dry-run --json
 - 触发反思 ≠ 晋升长期记忆；正式发布仍走人工 Review 与现有晋升门槛。
 - 上述命令的参数、副作用与退出码约定见 [docs/tooling.md](docs/tooling.md)（`--help` 为准）。
 
+## 上下文裁剪（可选，仅 OpenCode）
+
+`.opencode/plugins/vibe-context-dedup.js` 是本地 OpenCode 插件，在每次模型请求前执行两条独立策略：
+
+- **Dedup**：裁剪重复的只读工具结果（默认 `read` / `grep` / `glob`）；工具名、规范化参数、cwd/root、成功状态、输出内容全部一致才裁剪。
+- **Error Purge**：只裁剪结构化确认且被后续等价成功取代的工具错误（`state.status === "error"` + 非空 `state.error`）；不改成功结果中的诊断文本，不按 `error` 字样猜测。
+
+两条策略都只替换请求副本中的 `state.output` / `state.error`，不删除消息或工具调用；结构异常、输出/范围不一致、状态变更、跨用户轮次、callID 引用时保留原文。原始会话对象不被修改。
+
+```bash
+# Dedup + Error Purge / 回退 / 幂等 / 类型契约（83 项）
+bash scripts/tests/test-context-dedup.sh
+```
+
+- 配置：`<project>/.opencode/context-dedup.json`；`enabled` 总开关，`deduplication.enabled` / `errorPurge.enabled` 独立开关，`preview` / `errorPurge.preview` 观察模式。
+- 日志：`~/.vibe-loop/context-dedup/events.jsonl`（仅聚合统计，不含工具输出或错误正文）。
+- 范围、规则、统计字段、已知限制与真机验证步骤见 [docs/context-dedup.md](docs/context-dedup.md)。
+
 ## 配置
 
 | 变量 | 用途 | 缺省 |
@@ -177,6 +200,7 @@ cd tools/memory-viewer && python3 -m http.server 8765   # 浏览器打开 http:/
 
 - [安装与宿主集成](docs/installation.md)
 - [工具入口与调用约定](docs/tooling.md)
+- [OpenCode 上下文裁剪（Dedup + Error Purge）](docs/context-dedup.md)
 - [跨平台兼容矩阵](docs/audits/compatibility.md)
 - [审计报告（2026-10-19）](docs/audits/2026-10-19-open-source-readiness.md)
 - [变更清单](docs/audits/change-list.md)
