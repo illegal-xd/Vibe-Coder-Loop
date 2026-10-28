@@ -1,10 +1,20 @@
 /**
- * Token usage measurement and JSONL record schema (schema_version 1).
+ * Token usage measurement and JSONL record schema (schema_version 3).
  *
  * This module is pure: no filesystem, no host hooks, no network. It turns the
  * runtime's normalized assistant-message usage plus the pruning statistics into
  * one compact record. Every measurement carries its own provenance so actual
  * provider usage can never be confused with a local estimate.
+ *
+ * Schema v3 normalizes every record to the same accounting model used by the
+ * provider SDKs:
+ *   input_tokens  = uncached input + cache read + cache write
+ *   output_tokens = total output (includes reasoning)
+ *   cached_input_tokens / uncached_input_tokens / cache_write_tokens are
+ *                   disjoint subsets of input_tokens
+ *   reasoning_tokens is a subset of output_tokens
+ *   total_tokens  = the runtime-reported total when present, otherwise a
+ *                   derived input_tokens + output_tokens
  *
  * Deliberately excluded from records: prompts, tool outputs, raw responses,
  * error text, file paths, credentials.
@@ -14,7 +24,7 @@ import { countCodePoints, textTokenUnits } from "./core.js";
 
 export { countCodePoints };
 
-export const TOKEN_USAGE_SCHEMA_VERSION = 2;
+export const TOKEN_USAGE_SCHEMA_VERSION = 3;
 export const TOKEN_USAGE_EVENT_TYPE = "model_request_usage";
 
 /**
@@ -148,37 +158,44 @@ function nonNegativeNumber(value) {
  * Extract provider-reported usage from a runtime assistant message.
  *
  * The runtime normalizes every provider into
- * `tokens: { input, output, reasoning, cache: { read, write } }`; the raw
- * provider payload is never exposed to plugins. The runtime maps:
+ * `tokens: { total, input, output, reasoning, cache: { read, write } }`; the
+ * raw provider payload is never exposed to plugins. The runtime maps:
+ *   - OpenAI `prompt_tokens` → total input (cache included)
  *   - OpenAI `prompt_tokens_details.cached_tokens` → `cache.read`
  *   - DeepSeek `prompt_cache_hit_tokens` → `cache.read`
  *   - Anthropic `cache_read_input_tokens` → `cache.read`
+ * and stores the **uncached** prompt portion in `tokens.input`
+ * (`input = prompt_tokens - cache.read - cache.write`). It stores the
+ * **visible** output in `tokens.output` (for the current runtime,
+ * `output = completion_tokens - reasoning`; older runtime versions stored the
+ * completion total directly).
  *
- * Evidence from the opencode binary (`ax()` function) confirms the runtime
- * treats `input + cache.read + cache.write + output + reasoning` as **additive
- * disjoint components** (`measured = c.input + c.cache.read + c.cache.write +
- * c.output + c.reasoning`). For DeepSeek specifically, `prompt_tokens`
- * (uncached) and `prompt_cache_hit_tokens` (cached) are disjoint: `input` is
- * the uncached prompt portion and `cache.read` is the cached portion. Therefore
- * `cache.read > input` is **expected** (large cached prefix, small new suffix),
- * not a mapping error or anomaly.
+ * Real provider sample (2026-10-28, local CLIProxyAPI → deepseek-flash):
+ *   {"prompt_tokens":1936,"completion_tokens":8,"total_tokens":1944,
+ *    "completion_tokens_details":{"reasoning_tokens":8},
+ *    "prompt_tokens_details":{"cached_tokens":1920}}
+ * The runtime exposes `{total:1944, input:16, output:0, reasoning:8,
+ * cache:{read:1920, write:0}}`. Therefore:
+ * - `input_tokens` = 16 + 1920 = 1936 (total input, not 16)
+ * - `output_tokens` = 1944 - 1936 = 8 (total output, includes reasoning)
+ * - `cached_input_tokens` = 1920 (a subset of input, per request)
+ * - `uncached_input_tokens` = 16
+ * - `reasoning_tokens` = 8 (a subset of output)
  *
- * Consequences:
- * - No subset check (`cache.read <= input`) is applied — they are additive.
- * - No subset check (`reasoning <= output`) is applied — same additive model.
- * - `total_tokens` = additive sum of all available components (not `input +
- *   output`), matching the runtime's own formula.
- * - `uncached_input_tokens` = `input` under the additive model (input excludes
- *   cache). Confirmed for DeepSeek; consistent with the runtime's additive
- *   total formula for all providers.
- * - A 0 in any field within a confirmed-usage record is kept as
- *   `provider_usage(0)`: the runtime normalizes all fields to numbers, and a 0
- *   is the effective billing value (it may be a provider-omitted field
- *   defaulted to 0 by the runtime, but it cannot be distinguished from an
- *   explicit 0).
- * - If ALL components are 0, the record is marked `unverified` because the
- *   runtime initializes `tokens` to 0 and an all-zero terminal message almost
- *   always means usage was never populated by the provider.
+ * `tokens.total` is the authoritative total when present. Older runtime
+ * versions (evidence: OpenCode messages before 2026-07-28) stored
+ * `output = completion_tokens` (reasoning included) and
+ * `total = input + cache + output`; newer versions store
+ * `output = visible output` and `total = input + cache + output + reasoning`.
+ * Both normalize to the same model by using `total - input_total` as the
+ * output total. A naive `input + cache + output + reasoning` sum would
+ * overcount the older schema by `reasoning`.
+ *
+ * A 0 in any field within a confirmed-usage record is kept as
+ * `provider_usage(0)`: the runtime normalizes all fields to numbers, and a 0
+ * is the effective billing value (it may be a provider-omitted field
+ * defaulted to 0 by the runtime, but it cannot be distinguished from an
+ * explicit 0). If ALL components are 0, the record is marked `unverified`.
  *
  * @param {unknown} info Assistant message info object.
  * @param {{transport?: string, terminal?: boolean}} [options]
@@ -228,59 +245,154 @@ export function extractProviderUsage(info, options = {}) {
     return usage;
   }
 
-  const input = nonNegativeNumber(tokens.input);
-  const output = nonNegativeNumber(tokens.output);
+  // Runtime component values. `input` is the uncached prompt portion;
+  // `output` is the runtime's output bucket (visible output on current
+  // runtimes, completion total on older runtimes).
+  const uncachedInput = nonNegativeNumber(tokens.input);
+  const runtimeOutput = nonNegativeNumber(tokens.output);
   const reasoning = nonNegativeNumber(tokens.reasoning);
-  let cacheRead = null;
-  let cacheWrite = null;
   const cache = tokens.cache;
-  if (cache && typeof cache === "object") {
-    cacheRead = nonNegativeNumber(cache.read);
-    cacheWrite = nonNegativeNumber(cache.write);
-  }
+  const cacheRead =
+    cache && typeof cache === "object" ? nonNegativeNumber(cache.read) : null;
+  const cacheWrite =
+    cache && typeof cache === "object" ? nonNegativeNumber(cache.write) : null;
+  const reportedTotal = nonNegativeNumber(tokens.total);
 
-  // All available fields are recorded as-is (including zeros). Within a
-  // confirmed-usage record a 0 is the effective billing value; the runtime
-  // normalizes all fields to numbers and cannot distinguish "provider omitted"
-  // from "explicit 0".
-  if (input !== null) {
-    usage.input_tokens = measure(input, SOURCE.PROVIDER_USAGE);
-    // Under the additive model, input is the uncached prompt portion.
-    usage.uncached_input_tokens = measure(input, SOURCE.PROVIDER_USAGE);
-  }
-  if (output !== null) {
-    usage.output_tokens = measure(output, SOURCE.PROVIDER_USAGE);
-  }
-  if (reasoning !== null) {
-    usage.reasoning_tokens = measure(reasoning, SOURCE.PROVIDER_USAGE);
+  // Preserve the runtime's own components before normalization.
+  if (uncachedInput !== null) {
+    usage.uncached_input_tokens = measure(uncachedInput, SOURCE.PROVIDER_USAGE);
   }
   if (cacheRead !== null) {
     usage.cached_input_tokens = measure(cacheRead, SOURCE.PROVIDER_USAGE);
   }
-  if (cacheWrite !== null && cacheWrite > 0) {
+  if (cacheWrite !== null) {
+    // Include an explicit 0: it is different from "field absent".
     usage.cache_write_tokens = measure(cacheWrite, SOURCE.PROVIDER_USAGE);
   }
-
-  // Total: additive sum of all available components, matching the runtime's
-  // own ax() formula. The previous derivation (input + output) undercounted by
-  // omitting cache.read, cache.write and reasoning.
-  const components = [input, cacheRead, cacheWrite, output, reasoning].filter(
-    (value) => value !== null,
-  );
-  if (components.length > 0) {
-    const total = components.reduce((sum, value) => sum + value, 0);
-    usage.total_tokens = measure(total, SOURCE.PROVIDER_DERIVED);
+  if (reasoning !== null) {
+    usage.reasoning_tokens = measure(reasoning, SOURCE.PROVIDER_USAGE);
   }
 
-  // If every available component is 0, usage was almost certainly never
-  // populated by the provider (the runtime initializes tokens to all-zeros).
-  const allZero = components.length > 0 && components.every((value) => value === 0);
+  // Total input = uncached + cache read + cache write. The runtime's
+  // `tokens.input` excludes cache, so this reconstructs the provider's input
+  // total. When a cache field is missing, the total cannot be verified.
+  const inputTotal =
+    uncachedInput !== null && cacheRead !== null && cacheWrite !== null
+      ? uncachedInput + cacheRead + cacheWrite
+      : null;
+
+  let outputTotal = null;
+  let consistency = "unavailable";
+  let validationRule = null;
+
+  if (reportedTotal !== null) {
+    // The runtime total is authoritative. Prefer it over a local component
+    // sum so old and new runtime schemas normalize identically.
+    usage.total_tokens = measure(reportedTotal, SOURCE.PROVIDER_USAGE);
+    if (inputTotal === null) {
+      errors.push("input_total_unverified");
+      consistency = "unverified";
+      validationRule = "input_total_unverified";
+    } else if (reportedTotal < inputTotal) {
+      errors.push("total_lt_input_total");
+      consistency = "mismatch";
+      validationRule = "total_lt_input_total";
+    } else {
+      outputTotal = reportedTotal - inputTotal;
+      if (runtimeOutput !== null && reasoning !== null) {
+        const outputPlusReasoning = runtimeOutput + reasoning;
+        if (outputTotal === outputPlusReasoning) {
+          consistency = "total_equals_input_plus_output_plus_reasoning";
+        } else if (outputTotal === runtimeOutput) {
+          consistency = "total_equals_input_plus_output";
+        } else {
+          errors.push("total_component_mismatch");
+          consistency = "mismatch";
+          validationRule = "total_component_mismatch";
+        }
+      } else {
+        errors.push("output_component_missing");
+        consistency = "unverified";
+        validationRule = "output_component_missing";
+      }
+    }
+  } else if (inputTotal !== null && runtimeOutput !== null && reasoning !== null) {
+    if (reasoning === 0) {
+      // No reasoning tokens: output is unambiguous even without a total.
+      outputTotal = runtimeOutput;
+      usage.total_tokens = measure(inputTotal + outputTotal, SOURCE.PROVIDER_DERIVED);
+      consistency = "derived_reasoning_zero";
+    } else {
+      // `output` may or may not already include reasoning. Do not guess.
+      errors.push("total_missing_reasoning_scope_unknown");
+      consistency = "unverified";
+      validationRule = "total_missing_reasoning_scope_unknown";
+    }
+  } else if (inputTotal === null) {
+    errors.push("input_total_unverified");
+    consistency = "unverified";
+    validationRule = "input_total_unverified";
+  } else {
+    errors.push("total_missing");
+    consistency = "missing";
+  }
+
+  if (inputTotal !== null) {
+    usage.input_tokens = measure(inputTotal, SOURCE.PROVIDER_DERIVED);
+  }
+  if (outputTotal !== null) {
+    usage.output_tokens = measure(outputTotal, SOURCE.PROVIDER_DERIVED);
+  }
+
+  // Keep raw values only when normalization could not be completed or failed
+  // a consistency check, so the anomaly can be diagnosed without guessing.
+  const components = [
+    uncachedInput,
+    cacheRead,
+    cacheWrite,
+    runtimeOutput,
+    reasoning,
+  ].filter((value) => value !== null);
+  if (validationRule !== null && components.length > 0) {
+    usage.validation = {
+      rule: validationRule,
+      raw: {
+        input: uncachedInput,
+        output: runtimeOutput,
+        reasoning,
+        cache_read: cacheRead,
+        cache_write: cacheWrite,
+        total: reportedTotal,
+      },
+      derived: {
+        input_total: inputTotal,
+        output_total: outputTotal,
+      },
+    };
+  }
+
+  const allZero =
+    (components.length > 0 && components.every((value) => value === 0)) ||
+    (components.length === 0 && reportedTotal === 0);
+  const fullyClassified =
+    inputTotal !== null &&
+    outputTotal !== null &&
+    runtimeOutput !== null &&
+    reasoning !== null;
+
   if (allZero) {
     errors.push("usage_zero_unverified");
     usage.usage_status = "unverified";
-  } else if (input !== null && output !== null) {
+  } else if (consistency === "mismatch") {
+    usage.usage_status = "unverified";
+  } else if (
+    fullyClassified &&
+    (consistency === "total_equals_input_plus_output_plus_reasoning" ||
+      consistency === "total_equals_input_plus_output" ||
+      consistency === "derived_reasoning_zero")
+  ) {
     usage.usage_status = "actual";
-  } else if (components.length > 0) {
+  } else if (components.length > 0 || reportedTotal !== null) {
     usage.usage_status = "partial";
   } else {
     usage.usage_status = "missing";
@@ -462,6 +574,28 @@ function contextEstimate(value) {
   };
 }
 
+function normalizedValidation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (typeof value.rule !== "string" || value.rule.length === 0) return null;
+  const raw = value.raw && typeof value.raw === "object" ? value.raw : {};
+  const derived = value.derived && typeof value.derived === "object" ? value.derived : {};
+  return {
+    rule: value.rule.slice(0, 64),
+    raw: {
+      input: nonNegativeNumber(raw.input),
+      output: nonNegativeNumber(raw.output),
+      reasoning: nonNegativeNumber(raw.reasoning),
+      cache_read: nonNegativeNumber(raw.cache_read),
+      cache_write: nonNegativeNumber(raw.cache_write),
+      total: nonNegativeNumber(raw.total),
+    },
+    derived: {
+      input_total: nonNegativeNumber(derived.input_total),
+      output_total: nonNegativeNumber(derived.output_total),
+    },
+  };
+}
+
 /**
  * Build the versioned record. Unknown input keys are dropped by construction:
  * only the fields listed here can ever reach the log.
@@ -503,8 +637,17 @@ export function buildUsageRecord(input = {}) {
     errors: knownErrors([...(Array.isArray(usage.errors) ? usage.errors : []), ...(input.errors ?? [])]),
   };
 
+  // `cache_write_tokens` is optional, but an explicit 0 is preserved so a
+  // measured zero is distinguishable from a missing field.
   if (usage.cache_write_tokens) {
     record.cache_write_tokens = measureOrUnavailable(usage.cache_write_tokens);
+  }
+  if (Number.isInteger(input.attempt) && input.attempt > 1) {
+    record.attempt = input.attempt;
+  }
+  if (usage.validation) {
+    const validation = normalizedValidation(usage.validation);
+    if (validation) record.validation = validation;
   }
   if (before || after || (pruning && pruning.measurement_source)) {
     record.estimator = TOKEN_ESTIMATOR_ID;

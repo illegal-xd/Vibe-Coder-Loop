@@ -105,7 +105,26 @@ export const VibeContextDedupPlugin = async (input = {}) => {
   const measuring = usageLogger.enabled;
   const pendingPrune = createPendingPruneStore();
   const loggedMessages = createSeenIdSet();
+  /**
+   * Retry attempt per assistant message id. The runtime reuses the same
+   * assistant message for automatic retries and clears `time.completed`
+   * before the next attempt, so a message id alone cannot distinguish two
+   * provider requests. `session.retry.scheduled` carries the next attempt.
+   */
+  const attempts = new Map();
+  const MAX_TRACKED_ATTEMPTS = 2048;
   let lastUsageFailureAt = 0;
+
+  function rememberAttempt(messageID, attempt) {
+    if (typeof messageID !== "string" || messageID.length === 0) return;
+    if (!Number.isInteger(attempt) || attempt < 1) return;
+    attempts.set(messageID, attempt);
+    while (attempts.size > MAX_TRACKED_ATTEMPTS) {
+      const oldest = attempts.keys().next();
+      if (oldest.done) break;
+      attempts.delete(oldest.value);
+    }
+  }
 
   /** Rate-limited: one diagnostic per interval, through the existing log. */
   async function reportUsageFailure(reason) {
@@ -207,22 +226,38 @@ export const VibeContextDedupPlugin = async (input = {}) => {
   }
 
   /**
-   * One JSONL record per terminal assistant message. Non-terminal streaming
-   * updates are ignored; retries and repeated callbacks are suppressed by the
-   * message id.
+   * One JSONL record per terminal assistant-message attempt. Non-terminal
+   * streaming updates are ignored. Repeated callbacks for the same attempt
+   * are suppressed; an automatic retry is a separate provider request and is
+   * recorded with `attempt` > 1 instead of replacing or suppressing the
+   * successful attempt.
    */
   async function recordUsageEvent(event) {
     if (!event || typeof event !== "object" || event.type !== "message.updated") return;
     const info = event.properties && event.properties.info;
     if (!info || typeof info !== "object" || info.role !== "assistant") return;
     if (typeof info.id !== "string" || info.id.length === 0) return;
-    if (loggedMessages.has(info.id)) return;
 
     const completed =
       info.time && typeof info.time === "object" && Number.isFinite(info.time.completed);
     const failed = Boolean(info.error);
     if (!completed && !failed) return;
-    loggedMessages.add(info.id);
+
+    // A failed update may already carry `retry` for the next attempt. In that
+    // case this message belongs to the previous attempt, not the retry.
+    const retry = info.retry && typeof info.retry === "object" ? info.retry : null;
+    const retryAttempt =
+      failed && retry && Number.isInteger(retry.attempt) && retry.attempt > 0
+        ? retry.attempt
+        : null;
+    if (retryAttempt !== null) rememberAttempt(info.id, retryAttempt);
+    const attempt =
+      retryAttempt !== null
+        ? Math.max(1, retryAttempt - 1)
+        : (attempts.get(info.id) ?? 1);
+
+    const seenKey = `${info.id}:${attempt}`;
+    if (loggedMessages.has(seenKey)) return;
 
     const sessionID =
       typeof info.sessionID === "string" && info.sessionID.length > 0 ? info.sessionID : null;
@@ -239,6 +274,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     const record = buildUsageRecord({
       session_id: sessionID,
       request_id: info.id,
+      attempt,
       usage,
       context_estimates: pending ? pending.context_estimates : null,
       pruning: pending ? pending.pruning : null,
@@ -246,8 +282,14 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     });
 
     // Failure is reported through the rate-limited diagnostic callback; the
-    // model request is unaffected.
-    await usageLogger.append(record);
+    // model request is unaffected. Only mark the attempt as logged after a
+    // successful append so a transient write failure can be retried by a later
+    // update instead of silently losing the record.
+    const outcome = await usageLogger.append(record);
+    if (outcome.ok) {
+      loggedMessages.add(seenKey);
+      if (!failed) attempts.delete(info.id);
+    }
   }
 
   function contextEstimatesFrom(outcome, messages) {
@@ -283,6 +325,13 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     event: async ({ event } = {}) => {
       if (!usageLogger.enabled) return;
       try {
+        if (event?.type === "session.retry.scheduled") {
+          rememberAttempt(
+            event.properties?.assistantMessageID,
+            event.properties?.attempt,
+          );
+          return;
+        }
         await recordUsageEvent(event);
       } catch {
         // Never propagate into the runtime event bus.

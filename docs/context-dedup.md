@@ -288,7 +288,7 @@ bash scripts/tests/test-context-dedup.sh
 node --test tests/context-dedup/*.test.mjs
 ```
 
-**136 项测试**覆盖（其中 48 项 Token 用量测试见 `token-usage*.test.mjs`，含按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
+**152 项测试**覆盖（其中 64 项 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
 
 - Dedup：相同工具/参数/成功结果重复；不同参数/工具/环境；失败调用；副作用工具；输出不同；依赖屏障；引用守卫；消息结构；幂等；空/异常输入；预览；配置；日志脱敏；OpenCode 类型契约。
 - Error Purge 正向：等价命令/测试/构建成功取代失败；重复相同失败保留最新；多个过期错误；过期与仍相关错误混合。
@@ -314,43 +314,72 @@ node --test tests/context-dedup/*.test.mjs
 ### 采集时机与关联
 
 - `experimental.chat.messages.transform`：在传输前对完整 `messages` 数组做**前后估算**，并读取本轮 `result.stats` 形成 pruning 归因；按 sessionID 暂存一次（消费一次，避免多步重试重复计数）。
-- `event`（`message.updated`）：assistant 消息终态（`time.completed` 存在，或带 `error`）时写一条记录；按 message id 去重。流式中间更新（未终态）不写记录。
+- `event`（`message.updated`）：assistant 消息终态（`time.completed` 存在，或带 `error`）时写一条记录；同一 attempt 的重复回调按 `message id + attempt` 去重。流式中间更新（未终态）不写记录。
+- `event`（`session.retry.scheduled`）：记录下一次 attempt。失败 attempt 与重试成功 attempt 各写一条记录；成功记录带 `attempt` > 1，不会被失败记录抑制。没有重试时 `attempt` 省略（等价于 1）。
 - 同一 transform 测量最多关联到一条 usage 记录（`pendingPrune.take` 消费式取出）。
 
 ### 真实用量来源
 
-Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output, reasoning, cache:{ read, write } }`。原始 provider JSON（DeepSeek 的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 等）**不暴露给插件**，只能取归一化结果。配置实测：provider `CPMAC-API`（本地 OpenAI 兼容代理 `http://127.0.0.1:8317/v1`），模型 `deepseek-flash`。
+Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ total, input, output, reasoning, cache:{ read, write } }`。原始 provider JSON 不暴露给插件，但 `tokens.total`、`tokens.input` 等是 Runtime 归一化后的真实上游数值，不是本地估算。
 
-字段取值：
+配置实测：provider `CPMAC-API` / `aspire-coding-shenzhen`（本地 OpenAI 兼容代理 `http://127.0.0.1:8317/v1`），模型 `deepseek-flash`。
+
+**真实 provider 样本（2026-10-28，非流式）**：
+
+```json
+{"prompt_tokens":1936,"completion_tokens":8,"total_tokens":1944,
+ "completion_tokens_details":{"reasoning_tokens":8},
+ "prompt_tokens_details":{"cached_tokens":1920}}
+```
+
+Runtime 归一化为：
+
+```json
+{"total":1944,"input":16,"output":0,"reasoning":8,
+ "cache":{"read":1920,"write":0}}
+```
+
+说明：`prompt_tokens` 是**输入总量**（含缓存），Runtime 把 `input` 存为**未缓存部分**（1936 − 1920 = 16）；`completion_tokens` 是**输出总量**（含推理），当前 Runtime 把 `output` 存为**可见输出**（8 − 8 = 0），`reasoning` 单独存放。
+
+字段取值（schema v3，归一化后）：
 
 | 字段 | 来源 | 说明 |
 |---|---|---|
-| `input_tokens` | `provider_usage` | `tokens.input`（未缓存 prompt 部分） |
-| `output_tokens` | `provider_usage` | `tokens.output` |
-| `total_tokens` | `provider_usage_derived` | **加法总和** `input + cache.read + cache.write + output + reasoning`（Runtime 不提供 total） |
-| `cached_input_tokens` | `provider_usage` | `tokens.cache.read`（已缓存 prompt 部分；与 `input` **不相交**） |
-| `uncached_input_tokens` | `provider_usage` | = `input`（加法模型下 input 即未缓存部分） |
-| `reasoning_tokens` | `provider_usage` | `tokens.reasoning`（与 `output` **不相交**；0 为有效计费值） |
-| `cache_write_tokens` | `provider_usage`（>0 时，可选键） | `tokens.cache.write` |
+| `input_tokens` | `provider_usage_derived` | **输入总量** = `tokens.input + cache.read + cache.write`；包含缓存 |
+| `output_tokens` | `provider_usage_derived` | **输出总量** = `tokens.total − input_tokens`；包含 reasoning |
+| `total_tokens` | `provider_usage`（有 total）/ `provider_usage_derived`（无 total） | 优先使用 Runtime `tokens.total`；仅在无 total 且无歧义时本地派生 `input_tokens + output_tokens` |
+| `cached_input_tokens` | `provider_usage` | 本次请求的 `cache.read`，是 `input_tokens` 的**子集**，不是跨请求累计值 |
+| `uncached_input_tokens` | `provider_usage` | `tokens.input`（未缓存输入），是 `input_tokens` 的**子集** |
+| `cache_write_tokens` | `provider_usage`（可选键） | `cache.write`，是 `input_tokens` 的**子集**；显式 0 也会保留 |
+| `reasoning_tokens` | `provider_usage` | `tokens.reasoning`，是 `output_tokens` 的**子集**；0 为有效计费值 |
 
-> **加法模型（代码证据）**：opencode 二进制中 `ax()` 函数计算 `measured = c.input + c.cache.read + c.cache.write + c.output + c.reasoning`，五个分量为**独立相加**。DeepSeek 的 `prompt_tokens`（→ `input`）与 `prompt_cache_hit_tokens`（→ `cache.read`）不相交。因此 `cached_input_tokens > input_tokens` 是**合法行为**（大缓存前缀 + 小新增输入），不是映射错误。`total_tokens` 必须用加法总和，否则严重低估（如 `input=1237 + cache.read=229888` 的请求，旧公式 `input+output=1799`，正确值 `231687`）。
+> **归一化规则（v3）**：`cached_input_tokens + uncached_input_tokens + cache_write_tokens = input_tokens`；`reasoning_tokens <= output_tokens`；`input_tokens + output_tokens = total_tokens`。这解决了 v2 中 `input_tokens` 实际是未缓存值、`output_tokens` 实际是可见输出、`total_tokens` 靠本地加法的问题。
+>
+> **旧 Runtime schema**：OpenCode 消息数据（`~/.local/share/opencode/opencode-prod.db`）显示，2026-07-28 之前的记录中 `output = completion_tokens`（已含 reasoning），`total = input + cache + output`；之后的记录中 `output = 可见输出`，`total = input + cache + output + reasoning`。两种 schema 都通过 `output_tokens = total − input_tokens` 归一化；直接用 `input + cache + output + reasoning` 会把旧 schema 的 reasoning 重复计入（实测 55,419 条真实记录中有 8,769 条会因此过计）。
+>
+> **总输入/总输出**：`input_tokens` 和 `output_tokens` 是派生值，来源标记为 `provider_usage_derived`；`total_tokens` 在有 Runtime total 时来源为 `provider_usage`，不再无条件本地求和。
 
-`usage_status`（schema v2）：
+`usage_status`（schema v3）：
 
 | 状态 | 含义 |
 |---|---|
-| `actual` | input/output 均可得且至少一个分量 > 0 |
-| `partial` | 部分字段可得，其余缺失 |
+| `actual` | 输入/输出总量可计算，Runtime total（或 reasoning=0 时的无歧义派生 total）与分量一致，且至少一个分量 > 0 |
+| `partial` | 部分字段可得，但总量或某些分量无法验证（如 total 缺失且 reasoning > 0、cache 字段缺失） |
 | `missing` | 无可用 provider 用量（终态无 tokens / 流式中止未终态 / info 缺失） |
-| `unverified` | 字段存在但**全部分量为 0**——几乎总是 provider 未填充用量（Runtime 初始化为 0），**不得作为真实用量聚合** |
+| `unverified` | 字段存在但**全部分量为 0**，或 Runtime total 与分量不一致；**不得作为真实用量聚合** |
 | `estimated` | 仅有本地估算 |
 
 校验规则（仅标记，**绝不钳制或编造**）：
 
-- `cache.read > input`：**不触发错误**——加法模型下两者不相交，大小关系无约束。
-- `reasoning > output`：**不触发错误**——同上，两者不相交。
+- `cached_input_tokens > input_tokens`：归一化后**不应出现**；若出现说明输入总量推导或字段映射异常。
+- `reasoning_tokens > output_tokens`：归一化后**不应出现**；raw `tokens.output` 可能小于 reasoning（它是可见输出），但归一化 `output_tokens` 是总输出。
+- `total_tokens < input_tokens` → `total_lt_input_total`，状态 `unverified`。
+- Runtime total 既不等于 `input_total + output` 也不等于 `input_total + output + reasoning` → `total_component_mismatch`，状态 `unverified`；原始值写入 `validation.raw`，不静默修正。
+- total 缺失且 `reasoning > 0` → `total_missing_reasoning_scope_unknown`，状态 `partial`，`output_tokens`/`total_tokens` 为 `unavailable`，不猜测 reasoning 是否已包含在 output 中。
+- 任一 cache 字段缺失 → `input_total_unverified`，状态 `partial`，不把缺失当作 0。
 - **全部分量为 0** → `usage_zero_unverified`：Runtime 把 `tokens` 初始化为全 0，终态全零几乎总是 provider 未上报用量（流式无 final usage / 纯工具轮）。原始 0 值保留但状态不为 `actual`。
 - 数值校验：拒绝非有限数、负数、字符串类型；`nonNegativeNumber` 返回 null（不可用）而非 0。
+- 异常记录会带 `validation: { rule, raw: { input, output, reasoning, cache_read, cache_write, total }, derived: { input_total, output_total } }`，用于定位异常字段和原始值。
 
 ### 估算（fallback）
 
@@ -360,7 +389,7 @@ Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output,
 - ASCII 码点权重 `0.25`，非 ASCII 码点权重 `1`，向上取整；
 - 同一公式用于 `context_estimates.before/after_pruning` 与 `pruning.*.removed_tokens`，保证口径一致。
 
-> **schema v2 语义修正**：这些值是**估算 Token 数**（`ceil(weighted_units)`），不是字符数。来源标签由 v1 的 `estimated_char_count` 改为 `estimated_tokens_from_chars`，避免「字符计数」与「Token 估算」混淆。`estimator: "char_weight_v1"` 标注公式版本；原始字符数（`countCodePoints`）当前不入记录，`estimated_char_count` 来源保留给未来真存字符计数的字段。
+> **schema v2/v3 估算语义**：这些值是**估算 Token 数**（`ceil(weighted_units)`），不是字符数。来源标签由 v1 的 `estimated_char_count` 改为 `estimated_tokens_from_chars`，避免「字符计数」与「Token 估算」混淆。`estimator: "char_weight_v1"` 标注公式版本；原始字符数（`countCodePoints`）当前不入记录，`estimated_char_count` 来源保留给未来真存字符计数的字段。
 
 **这是未经验证的临时启发式**：对中文接近 1 token/字符，对英文约 4 字符/token，但对代码、JSON、工具输出混合内容偏差未知；需用真实 DeepSeek 用量样本校准后再视为可靠。
 
@@ -386,11 +415,33 @@ Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output,
 - **旧日志兼容**：升级前的单文件 `<project>/data/token-usage.jsonl` 保留原样，不迁移、不删除、不覆盖。`readUsageLog()` 统一读取旧文件与每日文件；同一条记录（逐字节相同）只计一次。旧文件没有日期索引，按范围读取时会扫描它并按记录时间过滤；每日文件按文件名日期选择，备份/临时/不符合命名规则的文件一律忽略。损坏行、非对象行、无效时间戳、文件名与记录日期不一致都会进入 `invalid` 诊断列表，不会被静默转成有效记录。
 - 记录中**不含** prompt、tool 输出正文、原始响应、错误正文、文件路径、凭证；未知键一律丢弃。
 
-### 记录示例（schema v2；字段均为占位示意，非真实值）
+### AspireCode 会话上下文面板对照
+
+AspireCode 的会话上下文面板（`context.stats.*`）使用的是**最近一条有 usage 的 assistant 消息**，不是会话累计。其 `tokenTotal` 为：
+
+```js
+msg.tokens.input + msg.tokens.output + msg.tokens.reasoning +
+msg.tokens.cache.read + msg.tokens.cache.write
+```
+
+真实样本（DB 消息 `msg_1821cf259001T9OlgAKobbcujv`，与截图完全一致）：
+
+| 面板字段 | 原值 | v3 归一化含义 |
+|---|---|---|
+| 输入 token | 155 | 未缓存输入；总输入 = 155 + 99,968 + 0 = 100,123 |
+| 输出 token | 4,074 | 可见输出；总输出 = 107,099 − 100,123 = 6,976 |
+| 推理 token | 2,902 | 输出子集 |
+| 缓存读/写 | 99,968 / 0 | 输入子集 |
+| 总 token | 107,099 | `tokens.total`，等于 100,123 + 6,976 |
+| 使用率 | 11% | `round(107,099 / 1,000,000 × 100)` |
+
+面板的“上下文拆分”用 `input=155` 作为分母，但字符估算遍历的是全部会话消息，因此百分比不是 107k 上下文的构成，而是按 155 缩放后的字符比例。优化方向：使用 `input_tokens`（100,123）作为分母并注明“按字符估算，含缓存上下文”，或明确标注为“未缓存输入拆分”。会话累计 token/成本应单独展示，不能与当前上下文混在同一组标签下。
+
+### 记录示例（schema v3；字段均为占位示意，非真实值）
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "event_type": "model_request_usage",
   "timestamp": "2026-10-28T12:00:00.000Z",
   "session_id": "ses_…",
@@ -399,11 +450,12 @@ Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output,
   "model": "deepseek-flash",
   "transport": "opencode_provider",
   "usage_status": "actual",
-  "input_tokens": { "value": 9500, "source": "provider_usage" },
-  "output_tokens": { "value": 600, "source": "provider_usage" },
-  "total_tokens": { "value": 13220, "source": "provider_usage_derived" },
+  "input_tokens": { "value": 12500, "source": "provider_usage_derived" },
+  "output_tokens": { "value": 720, "source": "provider_usage_derived" },
+  "total_tokens": { "value": 13220, "source": "provider_usage" },
   "cached_input_tokens": { "value": 3000, "source": "provider_usage" },
   "uncached_input_tokens": { "value": 9500, "source": "provider_usage" },
+  "cache_write_tokens": { "value": 0, "source": "provider_usage" },
   "reasoning_tokens": { "value": 120, "source": "provider_usage" },
   "context_estimates": {
     "before_pruning": { "value": 10000, "source": "estimated_tokens_from_chars" },
@@ -440,9 +492,9 @@ Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output,
 }
 ```
 
-### 字段语义（schema v2）
+### 字段语义（schema v3）
 
-**usage_status**：见上文；`unverified` 表示字段存在但未通过一致性校验，**不可作为真实用量聚合**。
+**usage_status**：见上文；`unverified` 表示字段存在但全零或未通过一致性校验，**不可作为真实用量聚合**。`actual` 表示 Runtime 归一化用量完整且通过一致性校验，不等于「已与原始 HTTP 响应逐字节比对」；原始值仅在异常时通过 `validation.raw` 保留。
 
 **pruning 计数单位**：
 
@@ -458,18 +510,22 @@ Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output,
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
 | `candidate_tokens` / `preserved_tokens` | — | 恒为 `unavailable`：管道未保留每候选 token 量，不为此改动裁剪规则 |
 
-> **v1 → v2 变更**：`schema_version` 1→2；估算来源 `estimated_char_count`→`estimated_tokens_from_chars`（值是 Token 估算而非字符数）；`usage_status` 的 `unavailable`→`missing`，新增 `unverified`；`pruning.*.skipped_reasons`（扁平、单位混淆）→ `skipped.{record_scan,candidate,application}`（按单位分桶），新增 `scanned_records`。v1 旧记录仍以 v1 写在磁盘上，不被重读或迁移；新记录一律 v2。
+> **v1 → v2 变更**：`schema_version` 1→2；估算来源 `estimated_char_count`→`estimated_tokens_from_chars`（值是 Token 估算而非字符数）；`usage_status` 的 `unavailable`→`missing`，新增 `unverified`；`pruning.*.skipped_reasons`（扁平、单位混淆）→ `skipped.{record_scan,candidate,application}`（按单位分桶），新增 `scanned_records`。
+>
+> **v2 → v3 变更**：`input_tokens` 从「未缓存输入」改为「输入总量」；`output_tokens` 从「Runtime 原始 output（当前版本为可见输出）」改为「输出总量（含 reasoning）」；`total_tokens` 优先采用 Runtime `tokens.total`（无 total 时才派生）；`cache_write_tokens` 显式保留 0；新增可选 `attempt`（重试 attempt > 1 时）与异常时的 `validation`。字段名和记录结构不变，v1/v2 旧记录仍按原样可读；`readUsageLog` 不按版本过滤，新旧记录可共存于同一每日文件。分析旧记录时：v2 的总输入 = `input_tokens + cached_input_tokens + cache_write_tokens`，总输出 = `output_tokens + reasoning_tokens`；v3 已直接给出总量。
 
-### 当前环境不可得 / 待真机验证的字段
+### 当前环境不可得 / 待验证的字段
 
-- `uncached_input_tokens`：当前 = `input`（加法模型下两者等价）。对 DeepSeek 已确认（`prompt_tokens` = 未缓存）；对 OpenAI 兼容 provider，Runtime 内部有 `noCache = input_tokens - cached_tokens` 的派生逻辑，最终 `tokens.input` 是否等价于 `noCache` **未在本机真机验证**，但 `ax()` 的加法公式强暗示 `input` 排除 cache。
-- `reasoning_tokens`：0 时无法区分「provider 未上报」与「显式 0」——Runtime 统一归一化为 number。在已确认用量的记录中 0 作为有效计费值保留（`provider_usage`），不标记为 unavailable。
-- `cached_input_tokens` 与 `input_tokens` 的 scope 关系：**已确认不相交（加法）**——证据为 opencode 二进制 `ax()` 函数 `input + cache.read + cache.write + output + reasoning`。`cached > input` 合法。
-- `reasoning_tokens` 与 `output_tokens` 的 scope 关系：**已确认不相交（加法）**——同上。
-- provider 返回的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` / `cached_tokens` 原始字段：Runtime 统一映射到 `cache.read`（证据：二进制中 `prompt_tokens_details?.cached_tokens ?? prompt_cache_hit_tokens ?? cached_tokens ?? cache_read_input_tokens`）。`cache_read_input_tokens`（Anthropic）和 `cache_creation_input_tokens` 也已确认映射。**未真机验证**代理 CPMAC-API 是否原样透传这些字段。
+- `uncached_input_tokens`：**已用真实样本确认**：DeepSeek 返回 `prompt_tokens=1936`、`cached_tokens=1920`，Runtime `tokens.input=16`，即 `input` 是未缓存输入；`input_tokens` 的输入总量 1936 = 16 + 1920。
+- `cached_input_tokens` 与 `input_tokens`：**已确认是子集关系**（v3 不变量 `cached <= input_tokens`）。`cached` 是本次请求的缓存命中量，不是跨请求累计值；真实样本中两次请求的 `cached` 为 1152、1920，而非 1152、3072。
+- `reasoning_tokens`：**已确认是 `output_tokens` 的子集**（v3 不变量 `reasoning <= output_tokens`）。Runtime 的 raw `tokens.output` 是可见输出，可能小于 reasoning（真实样本 `output=0, reasoning=8`），但归一化 `output_tokens` 是总输出 8。
+- `reasoning_tokens=0`：仍无法区分「provider 未上报」与「显式 0」——Runtime 统一归一化为 number。在已确认非零用量的记录中 0 作为有效计费值保留（`provider_usage`）；全零记录标记 `unverified`。
+- provider 原始字段：真实样本确认 OpenAI 兼容代理返回 `prompt_tokens` / `completion_tokens` / `total_tokens` / `prompt_tokens_details.cached_tokens` / `completion_tokens_details.reasoning_tokens`。Runtime 二进制中 OpenAI-compatible 映射为 `prompt_tokens_details?.cached_tokens ?? prompt_cache_hit_tokens ?? cached_tokens ?? cache_read_input_tokens`；`cache_creation_input_tokens` 映射到 `cache.write`。`prompt_cache_miss_tokens` 未被 Runtime 直接读取，Runtime 用 `nonCached = prompt_tokens - cache` 派生。
+- 旧 Runtime schema：2026-07-28 之前的消息数据中 `output` 已含 reasoning、`total` 不含独立 reasoning；当前 Runtime 已改为 `output=可见输出`、`total` 含 reasoning。适配器用 `total - input_total` 统一两种 schema，但**没有按 Runtime 版本硬编码分支**；若未来版本再次改变字段含义，需要新增真实样本验证。
 - 完整请求估算：`experimental.chat.messages.transform` 不含系统提示与工具 schema，故 `context_estimates` 为 messages 子集估算，非完整请求。
 - `transport` 固定为 `"opencode_provider"`：插件进程内看不到实际 wire 协议。
 - 多步工具循环中 transform 与终态 message 的配对依赖 sessionID + 消费一次语义。
+- 重试 attempt：依赖 `session.retry.scheduled` 事件携带的 `assistantMessageID` / `attempt`。若 Runtime 未来改变该事件 shape，`attempt` 可能退回 1，导致同一 message id 的多次 attempt 被去重；已用单测覆盖当前 shape。
 
 ## 十二、已知限制与未验证行为
 
@@ -486,8 +542,9 @@ Runtime 把所有 provider 归一化为 `AssistantMessage.tokens{ input, output,
 - 只替换 `state.error`，不清理 `state.metadata` 中可能存在的堆栈/诊断字段；token 节省仅针对错误正文。
 - 只支持当前 `{ info, parts }` / `ToolPart` 结构；若宿主改成独立 tool-role 消息，会安全 no-op。
 - 没有真实 tokenizer；所有 token 节省都是估算。Token 用量记录的 `context_estimates` / `pruning` 估算同样使用 `char_weight_v1` 启发式，未用真实 DeepSeek 用量校准。
-- Token 用量记录的 provider usage 来自 Runtime 归一化结果（`tokens.input` / `cache.read` / `reasoning` 等）；加法模型已由二进制 `ax()` 函数证据确认，但代理 CPMAC-API 是否原样透传 DeepSeek 的 `prompt_cache_hit_tokens` **未在本机真机验证**。
-- 历史 v2 记录（修复前写入）的 `total_tokens` 使用旧公式 `input + output`（不含 cache/reasoning），**严重低估**；`uncached_input_tokens` 为 `unavailable`；可能含 `cache_scope_unverified` / `reasoning_scope_unverified` 假阳性错误。这些记录保留原值不迁移，标记为历史未验证数据。
+- Token 用量记录的 provider usage 来自 Runtime 归一化结果（`tokens.total` / `input` / `output` / `cache.read` / `reasoning`）。真实样本确认 OpenAI 兼容代理会透传 `prompt_tokens_details.cached_tokens` 与 `completion_tokens_details.reasoning_tokens`；Runtime 再归一化为未缓存 input 与可见 output。
+- 历史 v2 记录（schema v2，修复前写入）的 `input_tokens` 实际是未缓存输入、`output_tokens` 实际是 Runtime 原始 output（当前 Runtime 为可见输出），`total_tokens` 为本地加法总和。这些记录保留原值不迁移；分析时需按 v2 语义换算（总输入 = `input_tokens + cached_input_tokens + cache_write_tokens`，总输出 = `output_tokens + reasoning_tokens`）。v3 新记录已直接给出总量。
+- 旧 Runtime（2026-07-28 之前）的消息数据中 `output` 已含 reasoning，`total` 不含独立 reasoning；v3 适配器用 `total - input_total` 归一化，未按版本硬编码。若上游代理改变 `total` 的定义，必须用真实响应样本重新验证。
 - 裁剪会改变请求前缀，可能影响 provider 的 prompt cache。
 
 **未在本机真机验证：**

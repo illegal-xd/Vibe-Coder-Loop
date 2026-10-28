@@ -18,7 +18,26 @@ import {
 } from "../../.opencode/context-dedup/token-usage.js";
 import { SESSION_ID, assistantMessage, textPart, toolPart, userMessage } from "./helpers.mjs";
 
-function assistantInfo({ input = 9500, output = 600, reasoning = 0, cached = 3000, cacheWrite = 0, time = { created: 1, completed: 2 }, providerID = "CPMAC-API", modelID = "deepseek-flash" } = {}) {
+function assistantInfo({ input = 9500, output = 600, reasoning = 0, cached = 3000, cacheWrite = 0, total, time = { created: 1, completed: 2 }, providerID = "CPMAC-API", modelID = "deepseek-flash" } = {}) {
+  const tokens = {
+    input,
+    output,
+    reasoning,
+    cache: { read: cached, write: cacheWrite },
+  };
+  if (total !== undefined) {
+    if (total !== null) tokens.total = total;
+  } else if (
+    typeof input === "number" &&
+    typeof output === "number" &&
+    typeof reasoning === "number" &&
+    typeof cached === "number" &&
+    typeof cacheWrite === "number"
+  ) {
+    // Current runtime schema: total = uncached input + cache + visible output
+    // + reasoning (the components are disjoint).
+    tokens.total = input + output + reasoning + cached + cacheWrite;
+  }
   return {
     id: "msg_a1",
     sessionID: SESSION_ID,
@@ -29,12 +48,7 @@ function assistantInfo({ input = 9500, output = 600, reasoning = 0, cached = 300
     modelID,
     mode: "default",
     cost: 0,
-    tokens: {
-      input,
-      output,
-      reasoning,
-      cache: { read: cached, write: cacheWrite },
-    },
+    tokens,
     finish: "stop",
   };
 }
@@ -106,20 +120,22 @@ test("message estimates walk text, tool output, tool error and tool input", () =
 
 // --- provider usage extraction -------------------------------------------
 
-test("extracts provider usage with additive total including cache and reasoning", () => {
+test("normalizes input and output totals and prefers the runtime total", () => {
   const usage = extractProviderUsage(assistantInfo({ reasoning: 120 }));
   assert.equal(usage.provider, "CPMAC-API");
   assert.equal(usage.model, "deepseek-flash");
   assert.equal(usage.usage_status, "actual");
-  assert.deepEqual(usage.input_tokens, { value: 9500, source: "provider_usage" });
-  assert.deepEqual(usage.output_tokens, { value: 600, source: "provider_usage" });
-  // Additive: input + cache.read + cache.write + output + reasoning
-  // = 9500 + 3000 + 0 + 600 + 120 = 13220
-  assert.deepEqual(usage.total_tokens, { value: 13220, source: "provider_usage_derived" });
+  // input_tokens = uncached 9500 + cache.read 3000 + cache.write 0
+  assert.deepEqual(usage.input_tokens, { value: 12500, source: "provider_usage_derived" });
+  // output_tokens = total 13220 - input total 12500 = 720 (600 visible + 120 reasoning)
+  assert.deepEqual(usage.output_tokens, { value: 720, source: "provider_usage_derived" });
+  // The runtime reports total directly; it is not locally derived.
+  assert.deepEqual(usage.total_tokens, { value: 13220, source: "provider_usage" });
   assert.deepEqual(usage.cached_input_tokens, { value: 3000, source: "provider_usage" });
-  // Under the additive model, input is the uncached portion.
   assert.deepEqual(usage.uncached_input_tokens, { value: 9500, source: "provider_usage" });
+  assert.deepEqual(usage.cache_write_tokens, { value: 0, source: "provider_usage" });
   assert.deepEqual(usage.reasoning_tokens, { value: 120, source: "provider_usage" });
+  assert.deepEqual(usage.errors, []);
 });
 
 test("zero-valued reasoning and cache within confirmed usage are kept as measured zeros", () => {
@@ -128,6 +144,10 @@ test("zero-valued reasoning and cache within confirmed usage are kept as measure
   assert.equal(usage.usage_status, "actual");
   assert.deepEqual(usage.reasoning_tokens, { value: 0, source: "provider_usage" });
   assert.deepEqual(usage.cached_input_tokens, { value: 0, source: "provider_usage" });
+  assert.deepEqual(usage.cache_write_tokens, { value: 0, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: 9500, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 600, source: "provider_usage_derived" });
+  assert.deepEqual(usage.total_tokens, { value: 10100, source: "provider_usage" });
 });
 
 test("missing and malformed usage metadata degrade honestly", () => {
@@ -142,12 +162,22 @@ test("missing and malformed usage metadata degrade honestly", () => {
     id: "m",
     tokens: { input: "9500", output: 600, reasoning: -1, cache: { read: null, write: 0 } },
   });
-  // output is valid (600), input is not (string), reasoning is not (-1), cache.read is not (null)
-  // → only output available → partial.
+  // output is valid (600), input is not (string), reasoning is not (-1),
+  // cache.read is not (null), and there is no runtime total. The output total
+  // cannot be determined without reasoning/total, so it is not fabricated.
   assert.equal(malformed.usage_status, "partial");
   assert.deepEqual(malformed.input_tokens, { value: null, source: "unavailable" });
-  assert.deepEqual(malformed.output_tokens, { value: 600, source: "provider_usage" });
-  assert.deepEqual(malformed.total_tokens, { value: 600, source: "provider_usage_derived" });
+  assert.deepEqual(malformed.output_tokens, { value: null, source: "unavailable" });
+  assert.deepEqual(malformed.total_tokens, { value: null, source: "unavailable" });
+  assert.ok(malformed.errors.includes("input_total_unverified"));
+  assert.deepEqual(malformed.validation.raw, {
+    input: null,
+    output: 600,
+    reasoning: null,
+    cache_read: null,
+    cache_write: 0,
+    total: null,
+  });
 
   const absent = extractProviderUsage(null);
   assert.equal(absent.usage_status, "missing");
@@ -162,44 +192,80 @@ test("a stream that ends before usage is recorded as missing", () => {
   assert.ok(usage.errors.includes("stream_ended_without_usage"));
 });
 
-// --- additive model: cache.read and reasoning are disjoint from input/output
+// --- canonical accounting: cache and reasoning are subsets of totals
 
-test("cache reads exceeding input is legitimate under the additive model, not an error", () => {
-  // DeepSeek: prompt_tokens (uncached) = 5000, prompt_cache_hit_tokens (cached) = 8000.
-  // They are disjoint: total prompt = 5000 + 8000 = 13000.
+test("cache reads are a subset of total input, not a separate additive bucket", () => {
+  // DeepSeek sample: prompt_tokens total = 13000, prompt_cache_hit_tokens = 8000.
+  // The runtime stores input = 5000 (uncached) and cache.read = 8000.
   const usage = extractProviderUsage(assistantInfo({ input: 5000, output: 200, cached: 8000 }));
   assert.equal(usage.usage_status, "actual");
-  assert.deepEqual(usage.input_tokens, { value: 5000, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: 13000, source: "provider_usage_derived" });
   assert.deepEqual(usage.cached_input_tokens, { value: 8000, source: "provider_usage" });
   assert.deepEqual(usage.uncached_input_tokens, { value: 5000, source: "provider_usage" });
-  // total = 5000 + 8000 + 0 + 200 + 0 = 13200
-  assert.deepEqual(usage.total_tokens, { value: 13200, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 200, source: "provider_usage_derived" });
+  assert.deepEqual(usage.total_tokens, { value: 13200, source: "provider_usage" });
   assert.equal(usage.errors.length, 0);
 });
 
-test("reasoning exceeding output is legitimate under the additive model, not an error", () => {
-  // DeepSeek-R1-style: reasoning is separate from (additive to) completion.
+test("reasoning is a subset of total output, not a second additive bucket", () => {
+  // Current runtime: output is visible output (200), reasoning is 1500,
+  // runtime total is 14200, so total output is 1700.
   const usage = extractProviderUsage(assistantInfo({ output: 200, reasoning: 1500 }));
   assert.equal(usage.usage_status, "actual");
-  assert.deepEqual(usage.output_tokens, { value: 200, source: "provider_usage" });
+  assert.deepEqual(usage.output_tokens, { value: 1700, source: "provider_usage_derived" });
   assert.deepEqual(usage.reasoning_tokens, { value: 1500, source: "provider_usage" });
+  assert.deepEqual(usage.total_tokens, { value: 14200, source: "provider_usage" });
+  assert.ok(usage.reasoning_tokens.value <= usage.output_tokens.value);
+  assert.equal(usage.errors.length, 0);
+});
+
+test("old runtime schema with reasoning included in output is normalized without double counting", () => {
+  // Evidence from OpenCode messages before 2026-07-28: total excludes the
+  // separate reasoning counter. Naively adding reasoning overcounts by 1500.
+  const usage = extractProviderUsage(
+    assistantInfo({ input: 5000, output: 200, reasoning: 1500, cached: 8000, total: 13200 }),
+  );
+  assert.equal(usage.usage_status, "actual");
+  assert.deepEqual(usage.input_tokens, { value: 13000, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 200, source: "provider_usage_derived" });
+  assert.deepEqual(usage.reasoning_tokens, { value: 1500, source: "provider_usage" });
+  assert.deepEqual(usage.total_tokens, { value: 13200, source: "provider_usage" });
   assert.equal(usage.errors.length, 0);
 });
 
 test("all-zero usage is unverified, with raw zeros preserved", () => {
   const usage = extractProviderUsage(assistantInfo({ input: 0, output: 0, reasoning: 0, cached: 0 }));
   assert.equal(usage.usage_status, "unverified");
-  assert.deepEqual(usage.input_tokens, { value: 0, source: "provider_usage" });
-  assert.deepEqual(usage.output_tokens, { value: 0, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: 0, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 0, source: "provider_usage_derived" });
+  assert.deepEqual(usage.total_tokens, { value: 0, source: "provider_usage" });
   assert.ok(usage.errors.includes("usage_zero_unverified"));
 });
 
-test("zero input but non-zero cache is actual (fully-cached request)", () => {
-  // All prompt cached, no new input — legitimate under additive model.
+test("a runtime total without components is partial, not missing", () => {
+  const usage = extractProviderUsage({ tokens: { total: 100 } });
+  assert.equal(usage.usage_status, "partial");
+  assert.deepEqual(usage.total_tokens, { value: 100, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: null, source: "unavailable" });
+  assert.deepEqual(usage.output_tokens, { value: null, source: "unavailable" });
+  assert.ok(usage.errors.includes("input_total_unverified"));
+});
+
+test("a lone zero total is unverified rather than missing", () => {
+  const usage = extractProviderUsage({ tokens: { total: 0 } });
+  assert.equal(usage.usage_status, "unverified");
+  assert.deepEqual(usage.total_tokens, { value: 0, source: "provider_usage" });
+  assert.ok(usage.errors.includes("usage_zero_unverified"));
+});
+
+test("zero uncached input but non-zero cache is actual (fully-cached request)", () => {
+  // All prompt cached, no new input — total input is still 5000.
   const usage = extractProviderUsage(assistantInfo({ input: 0, output: 100, cached: 5000 }));
   assert.equal(usage.usage_status, "actual");
-  assert.deepEqual(usage.input_tokens, { value: 0, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: 5000, source: "provider_usage_derived" });
+  assert.deepEqual(usage.uncached_input_tokens, { value: 0, source: "provider_usage" });
   assert.deepEqual(usage.cached_input_tokens, { value: 5000, source: "provider_usage" });
+  assert.deepEqual(usage.total_tokens, { value: 5100, source: "provider_usage" });
   assert.equal(usage.errors.length, 0);
 });
 
@@ -209,20 +275,166 @@ test("a legitimately verified non-zero usage stays actual", () => {
   assert.deepEqual(usage.errors, []);
 });
 
-// --- reproduces the reported anomaly sample and verifies the fix ------------
+test("a runtime total mismatch is preserved and marked unverified, never silently repaired", () => {
+  const usage = extractProviderUsage(
+    assistantInfo({ input: 100, output: 50, reasoning: 10, cached: 0, total: 999 }),
+  );
+  assert.equal(usage.usage_status, "unverified");
+  assert.deepEqual(usage.total_tokens, { value: 999, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: 100, source: "provider_usage_derived" });
+  // 899 is implied by the authoritative total, but it matches neither
+  // output (50) nor output + reasoning (60); the record is flagged.
+  assert.deepEqual(usage.output_tokens, { value: 899, source: "provider_usage_derived" });
+  assert.ok(usage.errors.includes("total_component_mismatch"));
+  assert.deepEqual(usage.validation.raw, {
+    input: 100,
+    output: 50,
+    reasoning: 10,
+    cache_read: 0,
+    cache_write: 0,
+    total: 999,
+  });
+  assert.deepEqual(usage.validation.derived, { input_total: 100, output_total: 899 });
+});
 
-test("anomaly sample: cached >> input is actual with correct additive total", () => {
+test("a missing total with non-zero reasoning is not guessed", () => {
+  const usage = extractProviderUsage(
+    assistantInfo({ input: 100, output: 50, reasoning: 10, cached: 0, total: null }),
+  );
+  assert.equal(usage.usage_status, "partial");
+  assert.deepEqual(usage.input_tokens, { value: 100, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: null, source: "unavailable" });
+  assert.deepEqual(usage.total_tokens, { value: null, source: "unavailable" });
+  assert.ok(usage.errors.includes("total_missing_reasoning_scope_unknown"));
+  assert.deepEqual(usage.validation.raw, {
+    input: 100,
+    output: 50,
+    reasoning: 10,
+    cache_read: 0,
+    cache_write: 0,
+    total: null,
+  });
+});
+
+test("a missing total with zero reasoning is derived unambiguously", () => {
+  const usage = extractProviderUsage(
+    assistantInfo({ input: 100, output: 50, reasoning: 0, cached: 0, total: null }),
+  );
+  assert.equal(usage.usage_status, "actual");
+  assert.deepEqual(usage.input_tokens, { value: 100, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 50, source: "provider_usage_derived" });
+  assert.deepEqual(usage.total_tokens, { value: 150, source: "provider_usage_derived" });
+  assert.deepEqual(usage.errors, []);
+});
+
+test("a missing cache field leaves the input total unverified instead of assuming zero", () => {
+  const usage = extractProviderUsage({
+    role: "assistant",
+    id: "m",
+    tokens: { input: 100, output: 50, reasoning: 0, cache: { read: null, write: 0 }, total: 150 },
+  });
+  assert.equal(usage.usage_status, "partial");
+  assert.deepEqual(usage.uncached_input_tokens, { value: 100, source: "provider_usage" });
+  assert.deepEqual(usage.input_tokens, { value: null, source: "unavailable" });
+  assert.deepEqual(usage.output_tokens, { value: null, source: "unavailable" });
+  assert.deepEqual(usage.total_tokens, { value: 150, source: "provider_usage" });
+  assert.ok(usage.errors.includes("input_total_unverified"));
+});
+
+// --- real provider samples and reported anomalies --------------------------
+
+test("real DeepSeek sample: completion includes reasoning; runtime stores visible output", () => {
+  // 2026-10-28, local CLIProxyAPI -> deepseek-flash, non-stream request.
+  // Raw upstream usage:
+  //   prompt_tokens=1936, completion_tokens=8, total_tokens=1944,
+  //   prompt_tokens_details.cached_tokens=1920,
+  //   completion_tokens_details.reasoning_tokens=8
+  // Runtime-normalized message.tokens:
+  //   {total:1944, input:16, output:0, reasoning:8,
+  //    cache:{read:1920, write:0}}
+  const usage = extractProviderUsage(
+    assistantInfo({ input: 16, output: 0, reasoning: 8, cached: 1920, total: 1944 }),
+  );
+  assert.equal(usage.usage_status, "actual");
+  assert.deepEqual(usage.input_tokens, { value: 1936, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 8, source: "provider_usage_derived" });
+  assert.deepEqual(usage.uncached_input_tokens, { value: 16, source: "provider_usage" });
+  assert.deepEqual(usage.cached_input_tokens, { value: 1920, source: "provider_usage" });
+  assert.deepEqual(usage.reasoning_tokens, { value: 8, source: "provider_usage" });
+  assert.deepEqual(usage.total_tokens, { value: 1944, source: "provider_usage" });
+  // The raw `output` was 0 (all completion tokens were reasoning), but the
+  // normalized output total is 8. This is why reasoning > raw output is not a
+  // bug in the normalized schema.
+  assert.equal(usage.output_tokens.value, usage.reasoning_tokens.value);
+  assert.equal(usage.errors.length, 0);
+});
+
+test("real runtime sample: cached prefix is a subset, not an accumulated counter", () => {
+  // Values from data/token-usage-2026-10-28.jsonl (request msg_182054b...).
+  // Runtime message.tokens:
+  //   total=140317, input=226, output=653, reasoning=46,
+  //   cache.read=139392, cache.write=0
+  const usage = extractProviderUsage(
+    assistantInfo({
+      input: 226,
+      output: 653,
+      reasoning: 46,
+      cached: 139392,
+      total: 140317,
+    }),
+  );
+  assert.equal(usage.usage_status, "actual");
+  assert.deepEqual(usage.input_tokens, { value: 139618, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 699, source: "provider_usage_derived" });
+  assert.deepEqual(usage.cached_input_tokens, { value: 139392, source: "provider_usage" });
+  assert.deepEqual(usage.uncached_input_tokens, { value: 226, source: "provider_usage" });
+  assert.deepEqual(usage.reasoning_tokens, { value: 46, source: "provider_usage" });
+  assert.deepEqual(usage.total_tokens, { value: 140317, source: "provider_usage" });
+  assert.ok(usage.cached_input_tokens.value <= usage.input_tokens.value);
+  assert.ok(usage.reasoning_tokens.value <= usage.output_tokens.value);
+  assert.equal(usage.errors.length, 0);
+});
+
+test("AspireCode context panel sample: 107,099 total is 100,123 input + 6,976 output", () => {
+  // Exact message behind the AspireCode session context panel:
+  //   msg_1821cf259001T9OlgAKobbcujv
+  //   total=107099, input=155, output=4074, reasoning=2902,
+  //   cache.read=99968, cache.write=0
+  // The panel currently shows input=155, output=4074 and cache=99968
+  // separately, then adds all four buckets. The normalized view below makes
+  // the input/output totals explicit and keeps cache/reasoning as subsets.
+  const usage = extractProviderUsage(
+    assistantInfo({
+      input: 155,
+      output: 4074,
+      reasoning: 2902,
+      cached: 99968,
+      total: 107099,
+    }),
+  );
+  assert.equal(usage.usage_status, "actual");
+  assert.deepEqual(usage.input_tokens, { value: 100123, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 6976, source: "provider_usage_derived" });
+  assert.deepEqual(usage.total_tokens, { value: 107099, source: "provider_usage" });
+  assert.deepEqual(usage.cached_input_tokens, { value: 99968, source: "provider_usage" });
+  assert.deepEqual(usage.uncached_input_tokens, { value: 155, source: "provider_usage" });
+  assert.deepEqual(usage.reasoning_tokens, { value: 2902, source: "provider_usage" });
+  assert.equal(usage.input_tokens.value + usage.output_tokens.value, usage.total_tokens.value);
+  assert.equal(usage.errors.length, 0);
+});
+
+test("anomaly sample: cached >> uncached is expected; input total includes the cache", () => {
   // The exact values from the reported anomaly record.
   const usage = extractProviderUsage(
     assistantInfo({ input: 1237, output: 562, reasoning: 0, cached: 229888 }),
   );
   assert.equal(usage.usage_status, "actual");
-  assert.deepEqual(usage.input_tokens, { value: 1237, source: "provider_usage" });
-  assert.deepEqual(usage.output_tokens, { value: 562, source: "provider_usage" });
+  // Total input = 1237 + 229888; the small uncached suffix is not the total.
+  assert.deepEqual(usage.input_tokens, { value: 231125, source: "provider_usage_derived" });
+  assert.deepEqual(usage.output_tokens, { value: 562, source: "provider_usage_derived" });
   assert.deepEqual(usage.cached_input_tokens, { value: 229888, source: "provider_usage" });
   assert.deepEqual(usage.uncached_input_tokens, { value: 1237, source: "provider_usage" });
-  // Additive total = 1237 + 229888 + 0 + 562 + 0 = 231687
-  assert.deepEqual(usage.total_tokens, { value: 231687, source: "provider_usage_derived" });
+  assert.deepEqual(usage.total_tokens, { value: 231687, source: "provider_usage" });
   assert.equal(usage.errors.length, 0);
 });
 
@@ -372,6 +584,12 @@ test("unknown or sensitive input keys never reach the record", () => {
       ...extractProviderUsage(assistantInfo()),
       apiKey: "sk-secret",
       prompt: "FULL PROMPT TEXT",
+      validation: {
+        rule: "test_rule",
+        raw: { input: 1, apiKey: "sk-secret", prompt: "FULL PROMPT TEXT" },
+        derived: { input_total: 1, extra: "sk-secret" },
+        extra: "sk-secret",
+      },
     },
     output: "RAW TOOL OUTPUT",
     error: "RAW ERROR OUTPUT",

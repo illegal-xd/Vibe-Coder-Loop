@@ -534,6 +534,47 @@ test("readUsageLog reports broken, mistyped, zone-less, and misplaced lines", as
   }
 });
 
+test("legacy v2 lines stay readable while new records are written as v3", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
+  try {
+    const config = resolveConfig({}, {});
+    const legacy = {
+      schema_version: 2,
+      event_type: "model_request_usage",
+      timestamp: "2026-10-27T05:00:00.000Z",
+      session_id: "s",
+      request_id: "legacy-v2",
+      usage_status: "actual",
+      input_tokens: { value: 226, source: "provider_usage" },
+      output_tokens: { value: 653, source: "provider_usage" },
+      total_tokens: { value: 140317, source: "provider_usage_derived" },
+      cached_input_tokens: { value: 139392, source: "provider_usage" },
+      uncached_input_tokens: { value: 226, source: "provider_usage" },
+      reasoning_tokens: { value: 46, source: "provider_usage" },
+      errors: [],
+    };
+    const legacyFile = path.join(directory, "data", dailyName("2026-10-27"));
+    await mkdir(path.dirname(legacyFile), { recursive: true, mode: 0o700 });
+    await writeFile(legacyFile, `${JSON.stringify(legacy)}\n`, "utf8");
+
+    const logger = createUsageLogger({ directory, config });
+    assert.equal((await logger.append(record("new-v3", "2026-10-28T05:00:00.000Z"))).ok, true);
+
+    const all = await readUsageLog(config, directory);
+    assert.deepEqual(
+      all.records.map((entry) => [entry.schema_version, entry.request_id]),
+      [
+        [2, "legacy-v2"],
+        [3, "new-v3"],
+      ],
+    );
+    assert.deepEqual(all.invalid, []);
+    assert.equal(buildUsageRecord({}).schema_version, 3);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("readUsageLog returns no data when nothing has been written", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {

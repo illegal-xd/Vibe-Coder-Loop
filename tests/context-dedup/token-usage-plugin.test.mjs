@@ -9,24 +9,33 @@ import { TOKEN_USAGE_SCHEMA_VERSION } from "../../.opencode/context-dedup/token-
 import { usageLogDateKey } from "../../.opencode/context-dedup/token-usage-log.js";
 import { SESSION_ID, assistantMessage, textPart, toolPart, userMessage } from "./helpers.mjs";
 
-function usageTokens({ input = 9500, output = 600, reasoning = 0, cached = 3000 } = {}) {
-  return { input, output, reasoning, cache: { read: cached, write: 0 } };
+function usageTokens({ input = 9500, output = 600, reasoning = 0, cached = 3000, cacheWrite = 0, total } = {}) {
+  const tokens = { input, output, reasoning, cache: { read: cached, write: cacheWrite } };
+  if (total !== undefined) {
+    if (total !== null) tokens.total = total;
+  } else {
+    // Current runtime schema: total = uncached input + cache + visible output
+    // + reasoning.
+    tokens.total = input + output + reasoning + cached + cacheWrite;
+  }
+  return tokens;
 }
 
-function assistantInfo({ id = "msg_a1", time = { created: 1, completed: 2 }, tokens, error = undefined } = {}) {
+function assistantInfo({ id = "msg_a1", time = { created: 1, completed: 2 }, tokens, error = undefined, retry = undefined } = {}) {
   return {
     id,
     sessionID: SESSION_ID,
     role: "assistant",
     time,
     parentID: "msg_user",
-    providerID: "CPMAC-API",
+    providerID: "aspire-coding-shenzhen",
     modelID: "deepseek-flash",
     mode: "default",
     cost: 0,
     tokens: tokens ?? usageTokens(),
     finish: "stop",
     ...(error ? { error } : {}),
+    ...(retry ? { retry } : {}),
   };
 }
 
@@ -99,12 +108,13 @@ test("records one usage entry pairing real usage with the measured pruning", asy
     assert.equal(record.event_type, "model_request_usage");
     assert.equal(record.session_id, SESSION_ID);
     assert.equal(record.request_id, "msg_a1");
-    assert.equal(record.provider, "CPMAC-API");
+    assert.equal(record.provider, "aspire-coding-shenzhen");
     assert.equal(record.model, "deepseek-flash");
     assert.equal(record.usage_status, "actual");
-    assert.deepEqual(record.input_tokens, { value: 9500, source: "provider_usage" });
-    assert.deepEqual(record.output_tokens, { value: 600, source: "provider_usage" });
-    assert.deepEqual(record.total_tokens, { value: 13100, source: "provider_usage_derived" });
+    assert.deepEqual(record.input_tokens, { value: 12500, source: "provider_usage_derived" });
+    assert.deepEqual(record.output_tokens, { value: 600, source: "provider_usage_derived" });
+    assert.deepEqual(record.total_tokens, { value: 13100, source: "provider_usage" });
+    assert.deepEqual(record.cache_write_tokens, { value: 0, source: "provider_usage" });
     assert.ok(record.context_estimates.before_pruning.value > record.context_estimates.after_pruning.value);
     assert.equal(record.pruning.deduplication.removed_items, 1);
     assert.ok(record.pruning.total_removed_tokens.value > 0);
@@ -149,6 +159,53 @@ test("streaming updates before completion write nothing", async () => {
     });
 
     assert.deepEqual(await usageEntries(directory), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("multiple streaming updates with usage write only the final aggregate", async () => {
+  const directory = await tmpProjectDirectory();
+  try {
+    const plugin = await loadPlugin(directory);
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue" })],
+    });
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_chunks",
+          time: { created: 1 },
+          tokens: usageTokens({ input: 100, output: 5, cached: 0 }),
+        }),
+      ),
+    });
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_chunks",
+          time: { created: 1 },
+          tokens: usageTokens({ input: 5000, output: 200, cached: 0 }),
+        }),
+      ),
+    });
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_chunks",
+          time: { created: 1, completed: 2 },
+          tokens: usageTokens({ input: 5000, output: 200, cached: 0 }),
+        }),
+      ),
+    });
+
+    const entries = await usageEntries(directory);
+    assert.equal(entries.length, 1);
+    const { record } = entries[0];
+    assert.equal(record.usage_status, "actual");
+    assert.deepEqual(record.input_tokens, { value: 5000, source: "provider_usage_derived" });
+    assert.deepEqual(record.output_tokens, { value: 200, source: "provider_usage_derived" });
+    assert.deepEqual(record.total_tokens, { value: 5200, source: "provider_usage" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -233,14 +290,14 @@ test("a broken log path does not break pruning", async () => {
   }
 });
 
-test("anomalous provider usage is preserved raw and accepted as actual under the additive model", async () => {
+test("large cache and reasoning counters stay subsets of the normalized totals", async () => {
   const directory = await tmpProjectDirectory();
   try {
     const plugin = await loadPlugin(directory);
     await plugin["experimental.chat.messages.transform"]({}, {
       messages: [userMessage({ text: "continue" })],
     });
-    // cache.read >> input: legitimate under the additive model (disjoint components).
+    // cache.read >> uncached input: expected when most of the prompt is cached.
     await plugin.event({
       event: messageUpdatedEvent(
         assistantInfo({ id: "msg_anom", tokens: usageTokens({ input: 5000, output: 200, reasoning: 1500, cached: 8000 }) }),
@@ -256,12 +313,15 @@ test("anomalous provider usage is preserved raw and accepted as actual under the
     );
 
     assert.equal(record.usage_status, "actual");
-    assert.deepEqual(record.input_tokens, { value: 5000, source: "provider_usage" });
+    assert.deepEqual(record.input_tokens, { value: 13000, source: "provider_usage_derived" });
     assert.deepEqual(record.cached_input_tokens, { value: 8000, source: "provider_usage" });
-    assert.deepEqual(record.output_tokens, { value: 200, source: "provider_usage" });
+    assert.deepEqual(record.uncached_input_tokens, { value: 5000, source: "provider_usage" });
+    assert.deepEqual(record.output_tokens, { value: 1700, source: "provider_usage_derived" });
     assert.deepEqual(record.reasoning_tokens, { value: 1500, source: "provider_usage" });
-    assert.deepEqual(record.total_tokens, { value: 14700, source: "provider_usage_derived" });
+    assert.deepEqual(record.total_tokens, { value: 14700, source: "provider_usage" });
     assert.equal(record.errors.length, 0);
+    assert.ok(record.reasoning_tokens.value <= record.output_tokens.value);
+    assert.ok(record.cached_input_tokens.value <= record.input_tokens.value);
     // No credentials, prompts, or response bodies leak into the record.
     const text = JSON.stringify(record);
     assert.equal(text.includes("sk-"), false);
@@ -292,9 +352,186 @@ test("zero usage from an unpopulated terminal message is not recorded as actual"
       `token-usage-${usageLogDateKey(record.timestamp)}.jsonl`,
     );
     assert.equal(record.usage_status, "unverified");
-    assert.deepEqual(record.input_tokens, { value: 0, source: "provider_usage" });
-    assert.deepEqual(record.output_tokens, { value: 0, source: "provider_usage" });
+    assert.deepEqual(record.input_tokens, { value: 0, source: "provider_usage_derived" });
+    assert.deepEqual(record.output_tokens, { value: 0, source: "provider_usage_derived" });
+    assert.deepEqual(record.total_tokens, { value: 0, source: "provider_usage" });
     assert.ok(record.errors.includes("usage_zero_unverified"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("older runtime schema (reasoning included in output) does not double count", async () => {
+  const directory = await tmpProjectDirectory();
+  try {
+    const plugin = await loadPlugin(directory);
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue" })],
+    });
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_old_runtime",
+          tokens: usageTokens({
+            input: 5000,
+            output: 200,
+            reasoning: 1500,
+            cached: 8000,
+            total: 13200,
+          }),
+        }),
+      ),
+    });
+
+    const entries = await usageEntries(directory);
+    assert.equal(entries.length, 1);
+    const { record } = entries[0];
+    assert.equal(record.usage_status, "actual");
+    assert.deepEqual(record.input_tokens, { value: 13000, source: "provider_usage_derived" });
+    assert.deepEqual(record.output_tokens, { value: 200, source: "provider_usage_derived" });
+    assert.deepEqual(record.reasoning_tokens, { value: 1500, source: "provider_usage" });
+    assert.deepEqual(record.total_tokens, { value: 13200, source: "provider_usage" });
+    assert.equal(record.errors.length, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("cache reads are per request, not accumulated across requests", async () => {
+  const directory = await tmpProjectDirectory();
+  try {
+    const plugin = await loadPlugin(directory);
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue" })],
+    });
+
+    for (const [id, cached] of [
+      ["msg_cache_1", 1152],
+      ["msg_cache_2", 1920],
+    ]) {
+      await plugin["experimental.chat.messages.transform"]({}, {
+        messages: [userMessage({ text: `continue ${id}` })],
+      });
+      await plugin.event({
+        event: messageUpdatedEvent(
+          assistantInfo({ id, tokens: usageTokens({ input: 784, output: 2, cached }) }),
+        ),
+      });
+    }
+
+    const entries = await usageEntries(directory);
+    assert.equal(entries.length, 2);
+    assert.deepEqual(
+      entries.map((entry) => entry.record.cached_input_tokens.value),
+      [1152, 1920],
+    );
+    // The second record is not 1152 + 1920.
+    assert.deepEqual(
+      entries.map((entry) => entry.record.input_tokens.value),
+      [1936, 2704],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retry attempts are separate records and the successful attempt is not suppressed", async () => {
+  const directory = await tmpProjectDirectory();
+  try {
+    const plugin = await loadPlugin(directory);
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue" })],
+    });
+
+    // Attempt 1 fails without provider usage.
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_retry",
+          tokens: usageTokens({ input: 0, output: 0, reasoning: 0, cached: 0 }),
+          error: { name: "ProviderError", data: { message: "temporary" } },
+        }),
+      ),
+    });
+
+    // The runtime schedules attempt 2 and reuses the assistant message id.
+    await plugin.event({
+      event: {
+        type: "session.retry.scheduled",
+        properties: { assistantMessageID: "msg_retry", attempt: 2, at: Date.now() },
+      },
+    });
+
+    // Attempt 2 succeeds with real usage.
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue again" })],
+    });
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_retry",
+          tokens: usageTokens({ input: 100, output: 50, reasoning: 10, cached: 900 }),
+        }),
+      ),
+    });
+
+    const entries = await usageEntries(directory);
+    assert.equal(entries.length, 2);
+    const failure = entries[0].record;
+    const success = entries[1].record;
+    assert.equal(failure.request_id, "msg_retry");
+    assert.equal(failure.attempt, undefined); // attempt 1 is implicit
+    assert.equal(failure.usage_status, "unverified");
+    assert.equal(success.request_id, "msg_retry");
+    assert.equal(success.attempt, 2);
+    assert.equal(success.usage_status, "actual");
+    assert.deepEqual(success.input_tokens, { value: 1000, source: "provider_usage_derived" });
+    assert.deepEqual(success.output_tokens, { value: 60, source: "provider_usage_derived" });
+    assert.deepEqual(success.total_tokens, { value: 1060, source: "provider_usage" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed attempt carrying retry separates the next success without the scheduled event", async () => {
+  const directory = await tmpProjectDirectory();
+  try {
+    const plugin = await loadPlugin(directory);
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue" })],
+    });
+
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_retry_field",
+          tokens: usageTokens({ input: 0, output: 0, reasoning: 0, cached: 0 }),
+          error: { name: "ProviderError", data: { message: "temporary" } },
+          retry: { attempt: 2 },
+        }),
+      ),
+    });
+
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue again" })],
+    });
+    await plugin.event({
+      event: messageUpdatedEvent(
+        assistantInfo({
+          id: "msg_retry_field",
+          tokens: usageTokens({ input: 100, output: 50, reasoning: 10, cached: 900 }),
+        }),
+      ),
+    });
+
+    const entries = await usageEntries(directory);
+    assert.equal(entries.length, 2);
+    const [failure, success] = entries.map((entry) => entry.record);
+    assert.equal(failure.attempt, undefined);
+    assert.equal(failure.usage_status, "unverified");
+    assert.equal(success.attempt, 2);
+    assert.equal(success.usage_status, "actual");
+    assert.deepEqual(success.total_tokens, { value: 1060, source: "provider_usage" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
