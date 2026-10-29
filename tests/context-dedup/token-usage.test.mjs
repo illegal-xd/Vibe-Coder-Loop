@@ -538,6 +538,34 @@ test("an unmeasured removal makes the total unavailable instead of zero", () => 
   assert.deepEqual(pruning.total_removed_tokens, { value: null, source: "unavailable" });
 });
 
+test("records supersede-writes removals in the same pruning summary", () => {
+  const pruning = summarizePruning(
+    transformStats({
+      supersedeWrites: {
+        enabled: true,
+        preview: false,
+        recordsTotal: 40,
+        candidateCount: 3,
+        prunedCount: 2,
+        preservedCount: 1,
+        tokenSavingsEstimated: 700,
+        skippedReasons: { referenced_later: 1 },
+      },
+    }),
+  );
+
+  assert.equal(pruning.supersede_writes.removed_items, 2);
+  assert.deepEqual(pruning.supersede_writes.removed_tokens, {
+    value: 700,
+    source: "estimated_tokens_from_chars",
+  });
+  assert.equal(pruning.supersede_writes.candidate_items, 3);
+  assert.equal(pruning.supersede_writes.preserved_items, 1);
+  assert.equal(pruning.supersede_writes.skipped.candidate.referenced_later, 1);
+  // 300 (dedup) + 200 (error purge) + 700 (supersede writes), no double count.
+  assert.equal(pruning.total_removed_tokens.value, 1200);
+});
+
 // --- record schema -------------------------------------------------------
 
 test("builds a versioned record from real values only", () => {

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe Kernel · Token Usage</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="notice" id="notice" hidden>
+  未找到 <code>token-usage-data.js</code>。生成方式：<code>python3 scripts/token-usage/export_card_data.py</code>
+</div>
+
+<main class="card" aria-labelledby="cardTitle">
+  <header class="card-head">
+    <h1 id="cardTitle">Vibe Kernel · Token Usage</h1>
+    <div class="head-side">
+      <div class="segmented" role="group" aria-label="统计维度">
+        <button type="button" data-range="yesterday">昨天</button>
+        <button type="button" data-range="today">今天</button>
+        <button type="button" data-range="last7" aria-pressed="true">最近 7 天</button>
+      </div>
+      <p class="caption" id="rangeCaption" aria-live="polite">—</p>
+    </div>
+  </header>
+
+  <section class="metrics" aria-label="Token 指标">
+    <div class="metric">
+      <p class="metric-label">实际输入 Token</p>
+      <p class="metric-value" id="mInput">—</p>
+    </div>
+    <div class="metric">
+      <p class="metric-label">实际输出 Token</p>
+      <p class="metric-value" id="mOutput">—</p>
+    </div>
+    <div class="metric">
+      <p class="metric-label">缓存命中率</p>
+      <p class="metric-value" id="mRate">—</p>
+      <p class="metric-note">缓存输入 ÷ 总输入</p>
+    </div>
+    <div class="metric">
+      <p class="metric-label">估算裁剪量</p>
+      <p class="metric-value" id="mRemoved">—</p>
+      <p class="metric-note">不等于实际节省量</p>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section aria-labelledby="strategyTitle">
+    <h2 id="strategyTitle">策略贡献</h2>
+    <div id="strategyList"></div>
+    <p class="strategy-hint" id="strategyHint" hidden>该区间没有实际裁剪记录，策略贡献为 0。</p>
+  </section>
+
+  <p class="footnote">
+    扫描 / 候选为每请求均值，实际裁剪为区间累计项数；贡献值为估算 token（字符加权），按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。
+  </p>
+  <p class="snapshot" id="snapshot"></p>
+</main>
+
+<script src="token-usage-data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
