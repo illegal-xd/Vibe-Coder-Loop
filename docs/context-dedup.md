@@ -1,14 +1,15 @@
-# OpenCode 上下文裁剪（Dedup + Error Purge）
+# OpenCode 上下文裁剪（Dedup + Error Purge + Supersede Writes）
 
-> 范围：**重复只读结果去重（Dedup）**与**过期工具错误裁剪（Error Purge）**。不包含 Supersede Writes、压缩摘要或其他上下文治理策略。
+> 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**与**写操作上下文覆盖（Supersede Writes）**。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现并通过 **83 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现并通过 **199 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
-- 两条策略共用一个 OpenCode 入口与消息提取/裁剪基础设施，但**独立开关、独立预览、独立统计**。
-- Dedup 只处理默认白名单 `read` / `grep` / `glob`；Error Purge 只处理**结构化确认**的工具失败。
+- 三条策略共用一个 OpenCode 入口与消息提取/裁剪基础设施，但**独立开关、独立预览、独立统计**。
+- Dedup 只处理默认白名单 `read` / `grep` / `glob`；Error Purge 只处理**结构化确认**的工具失败；Supersede Writes 只处理**确认成功**的写工具。
 - Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败；只认 `ToolPart.state.status === "error"` 且有非空 `state.error`。
+- Supersede Writes **只**在同一文件的后续**完整、成功、足够新鲜**的读取之后，抹去旧写操作的正文载荷（`state.input` 的内容字段与 `state.output`），保留文件路径、`status`、callID、metadata、消息顺序与审计身份。
 - 过期错误只替换为明确说明原因的占位文本，**保留 `status: "error"`、callID、input、metadata、消息顺序**；不删除消息或 ToolPart。
 - 原始会话对象不被修改：Adapter 只克隆受影响的 ToolPart 与消息，再替换本次请求的 `output.messages`。
 - 任何结构异常、环境不明确、结果不完整、范围不一致、存在状态变更或引用关系时，**保留原文**。
@@ -24,6 +25,7 @@
 └── context-dedup/
     ├── core.js                          # Dedup 纯规则 + 共享签名/token/占位符
     ├── error-purge.js                   # Error Purge 纯规则 + 统计
+    ├── supersede-writes.js              # Supersede Writes 纯规则 + 文件身份 + 统计
     ├── config.js                        # 配置解析 / 校验 / 环境变量
     ├── opencode.js                      # 消息提取 / 引用守卫 / 字段应用 / 结构校验 / 组合
     ├── token-usage.js                   # Token 用量测量（纯函数：估算 / usage 提取 / schema / 归因）
@@ -35,6 +37,8 @@ tests/context-dedup/
 ├── opencode.test.mjs
 ├── error-purge.test.mjs
 ├── error-purge-adapter.test.mjs
+├── supersede-writes.test.mjs
+├── supersede-writes-adapter.test.mjs
 ├── logging.test.mjs
 ├── token-usage.test.mjs
 ├── token-usage-log.test.mjs
@@ -47,6 +51,7 @@ scripts/tests/test-context-dedup.sh      # Node 内置 test runner 门禁
 |---|---|---|
 | `core.js` | Dedup 签名、分组、依赖屏障、正收益判断 | OpenCode hook / SDK / 文件系统 |
 | `error-purge.js` | 确认错误、成功/歧义分类、supersession、重复失败、置信度 | OpenCode hook / SDK / 文件系统 |
+| `supersede-writes.js` | 确认写入、完整读取判定、文件身份、版本/并发、屏障、正收益 | OpenCode hook / SDK / 文件系统 |
 | `opencode.js` | `{info, parts}` 提取、callID 引用扫描、字段克隆替换、结构校验、回退 | 不实现业务规则 |
 | `vibe-context-dedup.js` | 注册 `experimental.chat.messages.transform`、加载配置、日志、数组就地替换 | 不直接改消息内容 |
 
@@ -73,7 +78,7 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 签名由「工具名 + 规范化参数 + cwd/root + 参数内显式 cwd」组成；路径只做词法规范化，不解析软链、不访问文件系统。同一签名下只有**输出完全一致**的记录进入同组，保留最新一条，裁剪更早的。裁剪前还需：
 
 - 新旧调用之间出现非白名单工具 → 不裁剪；
-- 旧 callID 被后续文本/工具输入/输出/错误/metadata/subtask 引用 → 不裁剪；
+- 旧 callID 在裁剪点与保留结果之间被后续文本/工具输入/输出/错误/metadata/subtask 引用 → 不裁剪；保留结果之后的引用不阻塞（保留结果内容完全相同，引用仍可解析）；
 - 估算旧输出 token 不大于占位符 → 不裁剪。
 
 ## 四、Error Purge 规则
@@ -145,6 +150,71 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 统计中分别记录 high/medium 决策数、`preservedCount` 与 `skippedReasons`。
 
+## 四·五、Supersede Writes 规则
+
+### 4.5.1 可覆盖状态
+
+只有同时满足以下条件的写工具记录才进入候选：
+
+1. 工具名在 `supersedeWrites.writeTools`（默认 `write` / `edit` / `multiedit` / `patch` / `apply_patch`）；
+2. `state.status === "completed"`，无结构化失败信号（非零 `exitCode` / `success:false` / `failed:true` / `timedOut` / 取消标记等）；
+3. `state.input` 是对象，且能解析出文件路径（`filePath` / `path` / `file` / `filename` / `fileName`）；
+4. 能确定执行环境 `info.path.cwd`。
+
+失败、超时、取消、pending/running、仅计划未执行的记录**不会**进入待覆盖状态。候选只记录文件身份与操作元数据，**不复制文件正文**。
+
+### 4.5.2 完整读取判定
+
+一次读取只有同时满足以下条件才算“能代表文件当前完整状态”：
+
+1. 工具名在 `supersedeWrites.readTools`（默认仅 `read`；`grep` / `glob` 是部分结果，不参与）；
+2. `state.status === "completed"`，无结构化失败信号，`state.output` 非空且不是占位文本；
+3. 参数没有 `limit` / `count` / `maxLines` 等显式上限；`offset` / `startLine` / `from` 缺省或为 0/1（从文件头开始）；
+4. 结构化元数据未标记 `truncated:true`、`loaded:false`、`partial:true`、`complete:false`；
+5. 输出开头或结尾不含明显的截断提示（只用于拒绝，不用于接受）。
+
+行范围读取、分页、片段、截断、读取失败、仅元数据读取、来源不确定的读取**一律不触发**整文件覆盖。当前未实现区间级 Supersede，因此采用保守策略：部分读取不清理任何写上下文。
+
+### 4.5.3 文件身份
+
+文件身份由「规范化路径 + cwd + root」组成：
+
+- 路径先做词法规范化（统一分隔符、折叠 `.`/`..`、相对路径按 cwd 解析）；
+- 同一工作区内，`./src/a.ts` 与 `/repo/src/a.ts` 视为同一文件；
+- 不同目录下同名文件、不同 `cwd`/`root` 的同名相对路径、大小写不同的路径、软链目标**不做猜测**，一律视为不同文件；
+- 路径缺失、`cwd` 缺失或规范化失败 → 无法确认身份，**保留旧上下文**。
+
+### 4.5.4 顺序、版本与并发
+
+- 读取必须满足 `read.time.start >= write.time.end`（真正的 happens-before：写入完成后读取才开始）；时间戳缺失或区间非法时**保留**。
+- 写入完成时间晚于读取开始时间 → 视为并发重叠；该读取对**整个文件**不可信，本轮跳过。
+- 同一文件的多个历史成功写入，在一次完整读取后可以统一被覆盖（Case B）。
+- 读取之后发生的新写入不受该读取影响，保留为新的活跃写上下文（Case C）。
+- 读取 A 不清理 B；不同文件的写操作互不影响（Case D）。
+- 未提供可靠时间戳（写入 `time.end` 或读取 `time.start` 缺失）时**保留**，不退化到仅凭消息顺序判断。
+- 读取之后的外部进程修改无法从消息历史中观察，属于已知限制（见第十二节）。
+
+### 4.5.5 清理边界与屏障
+
+- 覆盖只发生在**本次请求副本**：会话历史与审计记录保留原始写入内容，磁盘文件不被读取或修改；被覆盖的 ToolPart 仍以原 callID、`status: "completed"`、`filePath`、metadata 参与后续追溯。
+- 覆盖只替换旧写操作的 **`state.input` 内容字段**（`content` / `oldString` / `newString` / `edits` / `patch` / `diff` 等）与 **`state.output`**，路径字段、`status`、`title`、`metadata`、`time`、`attachments`、callID、tool 全部保留。
+- 写入与读取之间出现**任何不能证明是确认成功写入的变更类记录**（`bash` 等广义变更工具、失败/未完成的写入、未知工具、路径无法解析的写入）→ 无法证明读取仍包含写操作的最终结果，按保守策略跳过。
+- **确认成功**的同一文件中间写入不是屏障（它也会被同一次读取覆盖）；确认成功的其他文件写入不是屏障（不触碰本文件）。
+- 写 callID 在后续文本/工具输入/输出/错误/metadata/subtask 中被引用 → 不清理。
+- 估算净节省（载荷 + 输出 − 占位符）≤ 0 → 不清理。
+- 清理失败（状态/输入与计划不一致、结构校验失败）→ 返回原始消息数组，不部分应用；统计记录 `apply_*` 原因，后续请求可重试。
+
+### 4.5.6 场景对照
+
+| 序列 | 结果 |
+|---|---|
+| `Write(A) → Read(A, full)` | 覆盖 A 的写上下文 |
+| `Write(A1) → Write(A2) → Read(A, full)` | A1、A2 都被覆盖 |
+| `Write(A1) → Read(A, full) → Write(A2)` | 只覆盖 A1，A2 保留 |
+| `Write(A) → Write(B) → Read(A, full)` | 只覆盖 A，B 保留 |
+| `Write(A) → bash → Read(A, full)` | 保守保留（广义变更屏障） |
+| `Write(A) → Read(A, partial)` | 保留（部分读取不算完整） |
+
 ## 五、消息安全
 
 - **只改请求副本**：`transformMessages` 不修改输入消息对象；受影响的 `message` 与 `state` 都是浅克隆。
@@ -152,11 +222,12 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 - **字段级替换**：
   - Dedup 只改 `state.output`；
   - Error Purge 只改 `state.error`；
-  - `callID`、`tool`、`state.status`、`state.input`、`title`、`metadata`、`time`、`attachments`、另一字段全部保持原引用/原值。
+  - Supersede Writes 只改 `state.input` 的内容字段与 `state.output`，路径与其余输入字段保持原值；
+  - 三条策略都不改 `callID`、`tool`、`state.status`、`title`、`metadata`、`time`、`attachments`。
 - **应用后校验**：逐消息、逐 part 检查数量、`info.id`、`callID`、`tool`、`status`、未目标字段；任何不一致 → 返回原始消息数组，统计 `apply_validation_failed`。
 - **结构异常 fail-closed**：消息缺少 `info`/`parts`、info.id/role 不合法、ToolPart 缺少 `callID`/`state`、`callID` 重复 → 整体回退，不部分裁剪。
 - **数组替换失败回滚**：插件先备份原数组，再就地替换；若运行时不接受或抛错，恢复原内容并记录 `apply_array_mutation_failed`。
-- **幂等**：两种占位文本都以 `[vibe-context-dedup]` 开头，二次执行直接跳过。
+- **幂等**：三种占位文本都以 `[vibe-context-dedup]` 开头，二次执行直接跳过。
 
 > 真机语义注意：本实现假设 `experimental.chat.messages.transform` 的 `output.messages` 是本次请求的可修改副本，并沿用参考项目相同的就地修改方式。输入消息对象不被修改这一点由测试保证；数组本身是否与宿主会话共享，属于 Runtime 行为，未在本机真机验证。
 
@@ -187,6 +258,17 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "protectReferences": true,
     "minSuccesses": 1
   },
+  "supersedeWrites": {
+    "enabled": true,
+    "preview": null,
+    "placeholder": "[vibe-context-dedup] Write context omitted: a later full read of the same file superseded it. The write's success status and file path are retained.",
+    "writeTools": ["write", "edit", "multiedit", "patch", "apply_patch"],
+    "readTools": ["read"],
+    "preserveAcrossUserTurns": false,
+    "barrierOnBroadMutations": true,
+    "protectReferences": true,
+    "requireFullRead": true
+  },
   "log": {
     "enabled": true,
     "onlyWhenActive": true,
@@ -202,8 +284,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 | 字段 | 作用 | 缺省 |
 |---|---|---|
-| `enabled` | 插件总开关（两条策略） | `true` |
-| `preview` | 全局观察模式；Dedup 直接使用，Error Purge 默认继承 | `false` |
+| `enabled` | 插件总开关（三条策略） | `true` |
+| `preview` | 全局观察模式；Dedup 直接使用，Error Purge / Supersede Writes 默认继承 | `false` |
 | `tools` | Dedup 只读白名单；同时作为 Error Purge 的“只读工具”集合 | `["read","grep","glob"]` |
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
 | `barrierOnNonWhitelistedTools` | Dedup 依赖屏障 | `true` |
@@ -219,11 +301,20 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
 | `errorPurge.protectReferences` | 旧错误 callID 被后续引用时保留 | `true` |
 | `errorPurge.minSuccesses` | 需要多少个后续等价成功才 supersede | `1` |
+| `supersedeWrites.enabled` | Supersede Writes 独立开关 | `true` |
+| `supersedeWrites.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
+| `supersedeWrites.placeholder` | 写上下文被覆盖时的占位文本 | 见上 |
+| `supersedeWrites.writeTools` | 允许进入待覆盖状态的写工具 | `["write","edit","multiedit","patch","apply_patch"]` |
+| `supersedeWrites.readTools` | 能触发覆盖的完整读取工具 | `["read"]` |
+| `supersedeWrites.preserveAcrossUserTurns` | 跨 user turn 时保留旧写上下文 | `false` |
+| `supersedeWrites.barrierOnBroadMutations` | 写与读之间出现任何非只读/非确认成功写入的记录时保留 | `true` |
+| `supersedeWrites.protectReferences` | 写 callID 被后续引用时保留 | `true` |
+| `supersedeWrites.requireFullRead` | 只允许完整读取触发覆盖（关闭后风险自负） | `true` |
 | `log.enabled` | 关闭日志 | `true` |
 | `log.onlyWhenActive` | 只在有候选/变更/错误时写日志 | `true` |
 | `log.path` | 日志路径；相对路径相对项目根，支持 `~` | `~/.vibe-loop/context-dedup/events.jsonl` |
 | `log.maxBytes` | 超过后轮转为 `.1`；`.1` 已存在则暂停追加 | `524288` |
-| `tokenUsage.enabled` | 独立的 Token 用量记录开关；与两条裁剪策略互不影响 | `true` |
+| `tokenUsage.enabled` | 独立的 Token 用量记录开关；与三条裁剪策略互不影响 | `true` |
 | `tokenUsage.path` | 基准文件路径；每日文件沿用其目录与基名（`token-usage.jsonl` → `token-usage-YYYY-MM-DD.jsonl`）。相对路径相对项目根，支持 `~`；缺省 `<project>/data/token-usage.jsonl` | `null` |
 
 环境变量：
@@ -231,9 +322,11 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | 变量 | 作用 |
 |---|---|
 | `VIBE_CONTEXT_DEDUP_DISABLED=1` | 插件总关闭（不读配置文件） |
-| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 顶层预览（两条策略默认继承） |
+| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 顶层预览（三条策略默认继承） |
 | `VIBE_CONTEXT_ERROR_PURGE_DISABLED=1` | 仅关闭 Error Purge |
 | `VIBE_CONTEXT_ERROR_PURGE_PREVIEW=1` | 仅 Error Purge 预览 |
+| `VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED=1` | 仅关闭 Supersede Writes |
+| `VIBE_CONTEXT_SUPERSEDE_WRITES_PREVIEW=1` | 仅 Supersede Writes 预览 |
 | `VIBE_CONTEXT_DEDUP_LOG_DISABLED=1` | 关闭聚合日志 |
 | `VIBE_CONTEXT_DEDUP_CONFIG=<path>` | 指定配置文件 |
 | `VIBE_TOKEN_USAGE_LOG_DISABLED=1` | 仅关闭 Token 用量记录（裁剪与聚合日志不受影响） |
@@ -276,7 +369,26 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
 | `outputBytesRemovedActual` | 实际移除的 UTF-8 字节数 |
 
-Token 估算：ASCII 约 `1/4 token/字符`，非 ASCII 约 `1 token/字符`，向上取整。**这是估算，不是模型 tokenizer 的真实计数**；`actualTokenSavings: null` 表示真实值不可得。Error Purge 只估算被替换的 `state.error`，不包含 metadata 中的潜在诊断内容。
+嵌套 `supersedeWrites`：
+
+| 字段 | 含义 |
+|---|---|
+| `enabled` / `preview` / `changed` | 策略开关 / 观察模式 / 是否实际变更 |
+| `confirmedWriteCount` | 结构化确认成功的写操作数 |
+| `fullReadCount` | 通过完整读取判定的读取数 |
+| `ambiguousResultCount` | 失败写、部分读取、非白名单工具等歧义结果数 |
+| `candidateCount` | 可进入待覆盖状态的写记录数 |
+| `plannedPruneCount` / `wouldPruneCount` / `prunedCount` | 规则计划 / 引用守卫后 / 实际应用 |
+| `preservedCount` | 保留的候选写上下文数 |
+| `highConfidencePruneCount` | 高置信度覆盖决策数 |
+| `decisionKinds` | `superseded_by_read` 决策计数 |
+| `skippedReasons` | `no_superseding_read` / `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `apply_*` 等 |
+| `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
+| `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
+| `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
+| `outputBytesRemovedActual` | 实际移除的 UTF-8 字节数（输入载荷 + 输出） |
+
+Token 估算：ASCII 约 `1/4 token/字符`，非 ASCII 约 `1 token/字符`，向上取整。**这是估算，不是模型 tokenizer 的真实计数**；`actualTokenSavings: null` 表示真实值不可得。Error Purge 只估算被替换的 `state.error`；Supersede Writes 估算被脱敏的输入内容字段与被替换的 `state.output`，不包含 metadata 中的潜在诊断内容。
 
 日志默认写到 `~/.vibe-loop/context-dedup/events.jsonl`，目录 `0700`、文件创建时 `0600`，超过 `maxBytes` 轮转为 `.1`；若 `.1` 已存在则暂停追加，绝不覆盖已有文件。日志失败不会影响请求。
 
@@ -288,12 +400,14 @@ bash scripts/tests/test-context-dedup.sh
 node --test tests/context-dedup/*.test.mjs
 ```
 
-**152 项测试**覆盖（其中 64 项 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
+**199 项测试**覆盖（其中 64 项 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
 
 - Dedup：相同工具/参数/成功结果重复；不同参数/工具/环境；失败调用；副作用工具；输出不同；依赖屏障；引用守卫；消息结构；幂等；空/异常输入；预览；配置；日志脱敏；OpenCode 类型契约。
 - Error Purge 正向：等价命令/测试/构建成功取代失败；重复相同失败保留最新；多个过期错误；过期与仍相关错误混合。
 - Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；后续失败；缺失/畸形关联。
-- 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；Dedup 与 Error Purge 同请求独立生效；插件 hook 就地应用；日志不落错误正文。
+- Supersede Writes 正向：写后完整读取；连续写入后统一覆盖；跨 user turn 默认允许；相对/绝对路径归一；预览与独立开关。
+- Supersede Writes 负向：写入失败/超时/pending；重复写入后新写入保留；读取 A 不清理 B；同名不同目录/不同 workspace；行范围/offset/limit/截断/空输出/读取失败；读取早于写入或与写入重叠；并发写入；广义变更屏障；引用守卫；路径无法解析；净收益不足；二次执行幂等；状态不一致回退。
+- 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；三条策略同请求独立生效；插件 hook 就地应用；日志不落错误正文或文件内容。
 
 环境契约测试读取本机安装的 `@opencode-ai/plugin` 与 SDK 类型，断言 hook 与 `ToolPart` 字段存在；未安装类型时跳过，不伪造通过。
 
@@ -305,7 +419,11 @@ node --test tests/context-dedup/*.test.mjs
 4. 检查会话历史：消息数量、工具调用/结果数量和顺序不变；失败 ToolPart 的 `status` 仍为 `error`，但请求副本中的 `state.error` 变为占位文本；最新成功结果保留。
 5. 在失败与成功之间插入一次编辑或一条新的用户消息，确认默认保留旧错误。
 6. 再跑一次相同请求：`prunedCount: 0`，确认幂等。
-7. 如无日志：用 `opencode --print-logs` 确认本地插件是否加载。
+7. 保持 `preview: true`，让模型写入一个文件，再在同一或后续 user turn 完整读取该文件。
+8. 查看日志：应出现 `supersedeWrites.confirmedWriteCount >= 1`、`fullReadCount >= 1`、`wouldPruneCount >= 1`、`prunedCount: 0`。
+9. 改为 `"preview": false` 重复写入+完整读取；请求副本中写 ToolPart 的 `state.input.content` 与 `state.output` 变为占位文本，`filePath` / `status` / metadata 不变；磁盘文件内容不受影响。
+10. 尝试 `write → read(offset/limit)`、`write → bash → read`、`write → read → write`，确认部分读取/变更屏障/新写入均保留；再跑一次确认幂等。
+11. 如无日志：用 `opencode --print-logs` 确认本地插件是否加载。
 
 ## 十、Token 用量记录（token-usage-YYYY-MM-DD.jsonl）
 
@@ -397,7 +515,7 @@ Runtime 归一化为：
 
 ### 归因（无双重计数）
 
-- Dedup 只替换 `state.output`（completed），Error Purge 只替换 `state.error`（error）；两条策略**作用于不同记录的不同字段**，按执行顺序 `["deduplication", "error_purge"]` 求和不会重复计数。
+- Dedup 只替换 `state.output`（completed），Error Purge 只替换 `state.error`（error），Supersede Writes 只替换写工具的 `state.input` 内容字段与 `state.output`；三条策略**作用于不同记录/不同字段**，按执行顺序 `["deduplication", "error_purge", "supersede_writes"]` 求和不会重复计数。
 - `removed_tokens` 是**净节省**（被替换内容 − 占位符），来自既有 `tokenSavingsEstimated`，不等于“真实输入 token 节省”（实际还受 system prompt、工具定义、provider 序列化、缓存等影响）。
 - `candidate_tokens` / `preserved_tokens` 记为 `unavailable`：既有管道未保留每条候选的 token 量，且**不为此改动裁剪规则**。
 - 当某策略有 `removed_items > 0` 但 `removed_tokens` 不可得时，`total_removed_tokens` 记为 `unavailable`（不编造 0）。
@@ -462,7 +580,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
     "after_pruning": { "value": 9500, "source": "estimated_tokens_from_chars" }
   },
   "pruning": {
-    "order": ["deduplication", "error_purge"],
+    "order": ["deduplication", "error_purge", "supersede_writes"],
     "deduplication": {
       "enabled": true, "preview": false,
       "scanned_records": 47,
@@ -482,7 +600,13 @@ msg.tokens.cache.read + msg.tokens.cache.write
       "removed_tokens": { "value": 0, "source": "estimated_tokens_from_chars" },
       "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
     },
-    "total_removed_tokens": { "value": 300, "source": "estimated_tokens_from_chars" },
+    "supersede_writes": {
+      "enabled": true, "preview": false,
+      "scanned_records": 47, "candidate_items": 1, "removed_items": 1, "preserved_items": 0,
+      "removed_tokens": { "value": 180, "source": "estimated_tokens_from_chars" },
+      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+    },
+    "total_removed_tokens": { "value": 480, "source": "estimated_tokens_from_chars" },
     "measurement_source": "estimated_tokens_from_chars",
     "attribution": "incremental_sequential",
     "token_unit_note": "removed_tokens and total_removed_tokens are estimated token counts from char_weight_v1, not character counts or billed usage."
@@ -540,6 +664,11 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 无法可靠识别自然语言引用；使用 callID 引用扫描、user-turn 屏障、状态变更屏障作为保守代理。
 - 执行环境只建模 `cwd` / `root` / 参数内显式 `cwd`；不建模环境变量、`.gitignore`、网络状态。
 - 只替换 `state.error`，不清理 `state.metadata` 中可能存在的堆栈/诊断字段；token 节省仅针对错误正文。
+- Supersede Writes 只脱敏写工具输入中的已知内容字段（`content` / `oldString` / `newString` / `edits` / `patch` / `diff` / `input` 等）与 `state.output`；未知形状的写工具输入即使成功也不会被覆盖。
+- 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`）。若宿主不提供这些信号，只按“无 offset/limit 且输出非空”判定，超大文件被静默截断时无法识别；可通过 `requireFullRead` 保持默认保守策略。
+- 文件版本仅由 `state.time`（写入完成时间、读取开始时间）推断；不读取磁盘 mtime、内容哈希或文件系统锁。读取之后的外部进程修改无法从消息历史中观察，因此不额外失效已经完成的覆盖。
+- 同一文件的中间写入会与更早写入一起被后续完整读取覆盖；这是预期行为（读取代表最终状态），但不是区间级 Supersede。
+- 未实现区间级上下文追踪；部分读取一律不清理整文件写上下文。
 - 只支持当前 `{ info, parts }` / `ToolPart` 结构；若宿主改成独立 tool-role 消息，会安全 no-op。
 - 没有真实 tokenizer；所有 token 节省都是估算。Token 用量记录的 `context_estimates` / `pruning` 估算同样使用 `char_weight_v1` 启发式，未用真实 DeepSeek 用量校准。
 - Token 用量记录的 provider usage 来自 Runtime 归一化结果（`tokens.total` / `input` / `output` / `cache.read` / `reasoning`）。真实样本确认 OpenAI 兼容代理会透传 `prompt_tokens_details.cached_tokens` 与 `completion_tokens_details.reasoning_tokens`；Runtime 再归一化为未缓存 input 与可见 output。
@@ -559,13 +688,14 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 本机安装的 `@opencode-ai/plugin` 类型定义中存在该 hook，消息结构为 `{ info: Message, parts: Part[] }`。
 - 本机安装的 SDK 类型中 `ToolPart` 含 `callID`、`tool`、`state`；错误态含 `status: "error"` 与 `error: string`，完成态含 `status: "completed"` 与 `output: string`。
 - 参考项目 `opencode-dynamic-context-pruning` 使用同一 hook 并就地修改 `output.messages`。
-- Node/Bun 可加载插件入口并注册 hook；83 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
+- Node/Bun 可加载插件入口并注册 hook；199 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
 
 ## 十三、卸载 / 回滚
 
 - 删除或移走 `.opencode/plugins/vibe-context-dedup.js` 即可停止插件；`.opencode/context-dedup/` 可一并移走。
-- 只关闭 Error Purge：设置 `"errorPurge": {"enabled": false}`，Dedup 不受影响。
-- 只关闭 Dedup：设置 `"deduplication": {"enabled": false}`，Error Purge 不受影响。
+- 只关闭 Error Purge：设置 `"errorPurge": {"enabled": false}`，Dedup / Supersede Writes 不受影响。
+- 只关闭 Dedup：设置 `"deduplication": {"enabled": false}`，Error Purge / Supersede Writes 不受影响。
+- 只关闭 Supersede Writes：设置 `"supersedeWrites": {"enabled": false}`（或 `VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED=1`），前两条策略不受影响。
 - 不需要数据库迁移，不写会话存储，不修改项目源码。
 - 只关闭 Token 用量记录：设置 `"tokenUsage": {"enabled": false}`（或 `VIBE_TOKEN_USAGE_LOG_DISABLED=1`），裁剪与聚合日志不受影响。
 - 日志在 `~/.vibe-loop/context-dedup/`，可按需清理；Token 用量记录在 `<project>/data/token-usage-YYYY-MM-DD.jsonl`（旧单文件 `token-usage.jsonl` 保留），均可按需清理；这不是项目资产。

@@ -360,3 +360,37 @@ test("disabled Error Purge is a no-op", () => {
   assert.equal(stats.enabled, false);
   assert.equal(reason(stats, "disabled"), 2);
 });
+
+test("unrelated successful tools are not serialized into signatures", () => {
+  let serialized = 0;
+  const hugeArgs = {
+    filePath: "src/a.ts",
+    content: "x".repeat(10_000),
+    toJSON() {
+      serialized += 1;
+      return { filePath: "src/a.ts", content: "x" };
+    },
+  };
+  const { decisions } = planErrorPurge([
+    successRecord({ id: "w1", order: 0, tool: "write", args: hugeArgs, output: "written" }),
+    errorRecord({ id: "e1", order: 1 }),
+    successRecord({ id: "s1", order: 2 }),
+  ]);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["e1"],
+  );
+  assert.equal(serialized, 0);
+});
+
+test("an intervening retry of the same operation is not a state-change barrier", () => {
+  const records = [
+    errorRecord({ id: "e1", order: 1 }),
+    successRecord({ id: "retry", order: 2 }), // same tool + args = same signature
+    successRecord({ id: "s1", order: 3 }),
+  ];
+  const { decisions } = planErrorPurge(records);
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].id, "e1");
+  assert.equal(decisions[0].keeperId, "s1");
+});

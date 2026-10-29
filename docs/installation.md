@@ -113,7 +113,7 @@ Copy-Item -Force (Join-Path $Repo "kernel\Vibe Coder.md") (Join-Path $OpenCodeAg
 
 ### 6.1 OpenCode 上下文裁剪（可选）
 
-本仓库自带一个本地 OpenCode 插件 `.opencode/plugins/vibe-context-dedup.js`，用于 Dedup（重复只读工具结果）与 Error Purge（被后续等价成功取代的工具错误）。它不需要 npm 安装，OpenCode 启动时会自动加载 `.opencode/plugins/`；两条策略可用 `deduplication.enabled` / `errorPurge.enabled` 独立关闭。规则、配置与限制见 [context-dedup.md](context-dedup.md)。
+本仓库自带一个本地 OpenCode 插件 `.opencode/plugins/vibe-context-dedup.js`，用于 Dedup（重复只读工具结果）、Error Purge（被后续等价成功取代的工具错误）与 Supersede Writes（被后续完整读取取代的写操作上下文）。它不需要 npm 安装，OpenCode 启动时会自动加载 `.opencode/plugins/`；三条策略可用 `deduplication.enabled` / `errorPurge.enabled` / `supersedeWrites.enabled` 独立关闭。规则、配置与限制见 [context-dedup.md](context-dedup.md)。
 
 ```bash
 bash scripts/tests/test-context-dedup.sh

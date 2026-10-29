@@ -513,10 +513,11 @@ export function summarizePruning(stats) {
     stats.deduplicationEnabled,
   );
   const errorPurge = strategySummary(stats.errorPurge);
+  const supersedeWrites = strategySummary(stats.supersedeWrites);
 
-  if (!deduplication && !errorPurge) return null;
+  if (!deduplication && !errorPurge && !supersedeWrites) return null;
 
-  const parts = [deduplication, errorPurge].filter(Boolean);
+  const parts = [deduplication, errorPurge, supersedeWrites].filter(Boolean);
   let total = 0;
   let measured = true;
   for (const part of parts) {
@@ -528,9 +529,10 @@ export function summarizePruning(stats) {
   }
 
   return {
-    order: ["deduplication", "error_purge"],
+    order: ["deduplication", "error_purge", "supersede_writes"],
     deduplication: deduplication ?? null,
     error_purge: errorPurge ?? null,
+    supersede_writes: supersedeWrites ?? null,
     total_removed_tokens: measured ? measure(total, SOURCE.ESTIMATED_TOKENS_FROM_CHARS) : unavailableMeasure(),
     measurement_source: SOURCE.ESTIMATED_TOKENS_FROM_CHARS,
     attribution: "incremental_sequential",
@@ -722,8 +724,9 @@ export function createPendingPruneStore(options = {}) {
 /** Bounded insert-only set used to log each terminal message exactly once. */
 export function createSeenIdSet(options = {}) {
   const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 2048;
-  const seen = new Set();
-  const order = [];
+  // Map preserves insertion order and evicts the oldest key in O(1); the
+  // previous Set + Array pair paid O(limit) for every `shift()`.
+  const seen = new Map();
   return {
     has(id) {
       return seen.has(id);
@@ -731,11 +734,11 @@ export function createSeenIdSet(options = {}) {
     add(id) {
       if (typeof id !== "string" || id.length === 0) return false;
       if (seen.has(id)) return false;
-      seen.add(id);
-      order.push(id);
-      while (order.length > limit) {
-        const oldest = order.shift();
-        seen.delete(oldest);
+      seen.set(id, true);
+      while (seen.size > limit) {
+        const oldest = seen.keys().next();
+        if (oldest.done) break;
+        seen.delete(oldest.value);
       }
       return true;
     },

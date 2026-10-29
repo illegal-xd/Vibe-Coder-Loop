@@ -49,6 +49,13 @@ export const TOKEN_COUNTING = "estimate_heuristic_v1";
 
 const PATH_KEYS = new Set(["filePath", "path", "cwd", "directory", "dir", "root", "worktree"]);
 const textEncoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
+// Buffer.byteLength computes UTF-8 length without allocating a Uint8Array.
+// TextEncoder.encode (the browser fallback) allocates a buffer the size of the
+// string, which is wasteful for multi-megabyte tool payloads.
+const nodeByteLength =
+  typeof Buffer === "function" && typeof Buffer.byteLength === "function"
+    ? (text) => Buffer.byteLength(text, "utf8")
+    : null;
 
 /**
  * @typedef {Object} ToolRecord
@@ -181,6 +188,7 @@ export function estimateTokens(text) {
 
 export function byteLength(text) {
   if (typeof text !== "string") return 0;
+  if (nodeByteLength) return nodeByteLength(text);
   if (textEncoder) return textEncoder.encode(text).length;
   return text.length;
 }
@@ -279,17 +287,20 @@ export function buildOperationSignature(record) {
   ].join("\u0000");
 }
 
-function blockingReason(records, keeper, next, options) {
-  for (const record of records) {
-    if (!record || typeof record !== "object") continue;
-    if (!Number.isFinite(record.order)) continue;
-    if (record.order <= keeper.order || record.order >= next.order) continue;
-    if (options.mutationTools.has(record.tool)) return "intervening_side_effect";
-    if (options.barrierOnNonWhitelistedTools && !options.toolSet.has(record.tool)) {
-      return "intervening_side_effect";
-    }
+/**
+ * Does any order in a sorted array fall strictly inside (lower, upper)?
+ * Used by all strategies to answer barrier/supersession range questions in
+ * O(log n) instead of rescanning the whole record list per pair.
+ */
+export function hasOrderInRange(sortedOrders, lowerExclusive, upperExclusive) {
+  let low = 0;
+  let high = sortedOrders.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedOrders[mid] <= lowerExclusive) low = mid + 1;
+    else high = mid;
   }
-  return "";
+  return low < sortedOrders.length && sortedOrders[low] < upperExclusive;
 }
 
 function normalizeOptions(config = {}) {
@@ -355,6 +366,23 @@ export function planDeduplication(records, config = {}) {
     increment(stats.skippedReasons, "disabled", records.length);
     return { decisions: [], stats };
   }
+
+  // Barrier timeline is independent of the duplicate pair, so build it once.
+  // A mutation tool, or any non-whitelisted tool when that guard is enabled,
+  // blocks every duplicate group that spans it.
+  const barrierOrders = [];
+  for (const record of records) {
+    if (!record || typeof record !== "object") continue;
+    if (!Number.isFinite(record.order)) continue;
+    if (options.mutationTools.has(record.tool)) {
+      barrierOrders.push(record.order);
+      continue;
+    }
+    if (options.barrierOnNonWhitelistedTools && !options.toolSet.has(record.tool)) {
+      barrierOrders.push(record.order);
+    }
+  }
+  barrierOrders.sort((left, right) => left - right);
 
   const eligible = [];
   const seenIds = new Set();
@@ -460,9 +488,8 @@ export function planDeduplication(records, config = {}) {
       let keeper = outputGroup[0];
       for (let index = 1; index < outputGroup.length; index += 1) {
         const next = outputGroup[index];
-        const reason = blockingReason(records, keeper.record, next.record, options);
-        if (reason) {
-          increment(stats.skippedReasons, reason);
+        if (hasOrderInRange(barrierOrders, keeper.order, next.order)) {
+          increment(stats.skippedReasons, "intervening_side_effect");
           keeper = next;
           continue;
         }

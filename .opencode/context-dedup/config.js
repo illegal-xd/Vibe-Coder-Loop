@@ -16,6 +16,11 @@ import {
   DEFAULT_ERROR_PLACEHOLDER,
   DUPLICATE_ERROR_PLACEHOLDER,
 } from "./error-purge.js";
+import {
+  DEFAULT_SUPERSEDE_PLACEHOLDER,
+  DEFAULT_SUPERSEDE_READ_TOOLS,
+  DEFAULT_WRITE_TOOLS,
+} from "./supersede-writes.js";
 
 export const DEFAULT_LOG_MAX_BYTES = 512 * 1024;
 
@@ -40,6 +45,17 @@ export const DEFAULT_CONFIG = Object.freeze({
     pruneRepeatedFailures: true,
     protectReferences: true,
     minSuccesses: 1,
+  }),
+  supersedeWrites: Object.freeze({
+    enabled: true,
+    preview: null,
+    placeholder: DEFAULT_SUPERSEDE_PLACEHOLDER,
+    writeTools: Object.freeze([...DEFAULT_WRITE_TOOLS]),
+    readTools: Object.freeze([...DEFAULT_SUPERSEDE_READ_TOOLS]),
+    preserveAcrossUserTurns: false,
+    barrierOnBroadMutations: true,
+    protectReferences: true,
+    requireFullRead: true,
   }),
   log: Object.freeze({
     enabled: true,
@@ -231,6 +247,73 @@ function resolveLog(raw, env) {
   return { enabled, onlyWhenActive, path: logPath, maxBytes };
 }
 
+function resolveSupersedeWrites(raw, env, globalPreview) {
+  env = env ?? {};
+  if (raw === undefined) {
+    const defaults = DEFAULT_CONFIG.supersedeWrites;
+    return {
+      ...defaults,
+      enabled: isTruthy(env.VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED)
+        ? false
+        : defaults.enabled,
+      preview: isTruthy(env.VIBE_CONTEXT_SUPERSEDE_WRITES_PREVIEW)
+        ? true
+        : globalPreview,
+    };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigError("supersedeWrites must be an object");
+  }
+
+  const enabled =
+    raw.enabled === undefined
+      ? DEFAULT_CONFIG.supersedeWrites.enabled
+      : assertBoolean(raw.enabled, "supersedeWrites.enabled");
+  const preview =
+    raw.preview === undefined || raw.preview === null
+      ? globalPreview
+      : assertBoolean(raw.preview, "supersedeWrites.preview");
+
+  return {
+    enabled: isTruthy(env.VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED) ? false : enabled,
+    preview: isTruthy(env.VIBE_CONTEXT_SUPERSEDE_WRITES_PREVIEW) ? true : preview,
+    placeholder: assertPlaceholder(
+      raw.placeholder,
+      "supersedeWrites.placeholder",
+      DEFAULT_CONFIG.supersedeWrites.placeholder,
+    ),
+    writeTools: stringList(
+      raw.writeTools,
+      "supersedeWrites.writeTools",
+      DEFAULT_CONFIG.supersedeWrites.writeTools,
+    ),
+    readTools: stringList(
+      raw.readTools,
+      "supersedeWrites.readTools",
+      DEFAULT_CONFIG.supersedeWrites.readTools,
+    ),
+    preserveAcrossUserTurns:
+      raw.preserveAcrossUserTurns === undefined
+        ? DEFAULT_CONFIG.supersedeWrites.preserveAcrossUserTurns
+        : assertBoolean(
+            raw.preserveAcrossUserTurns,
+            "supersedeWrites.preserveAcrossUserTurns",
+          ),
+    barrierOnBroadMutations:
+      raw.barrierOnBroadMutations === undefined
+        ? DEFAULT_CONFIG.supersedeWrites.barrierOnBroadMutations
+        : assertBoolean(raw.barrierOnBroadMutations, "supersedeWrites.barrierOnBroadMutations"),
+    protectReferences:
+      raw.protectReferences === undefined
+        ? DEFAULT_CONFIG.supersedeWrites.protectReferences
+        : assertBoolean(raw.protectReferences, "supersedeWrites.protectReferences"),
+    requireFullRead:
+      raw.requireFullRead === undefined
+        ? DEFAULT_CONFIG.supersedeWrites.requireFullRead
+        : assertBoolean(raw.requireFullRead, "supersedeWrites.requireFullRead"),
+  };
+}
+
 /**
  * Resolve the token-usage log settings. Independent of the pruning switches:
  * disabling pruning must not stop measurement, and disabling measurement must
@@ -305,6 +388,7 @@ export function resolveConfig(raw = {}, env = process.env) {
   const tokenUsage = resolveTokenUsage(raw.tokenUsage, env);
   const deduplication = resolveDeduplication(raw.deduplication);
   const errorPurge = resolveErrorPurge(raw.errorPurge, env, preview);
+  const supersedeWrites = resolveSupersedeWrites(raw.supersedeWrites, env, preview);
 
   return {
     enabled: isTruthy(env.VIBE_CONTEXT_DEDUP_DISABLED) ? false : enabled,
@@ -316,6 +400,7 @@ export function resolveConfig(raw = {}, env = process.env) {
     mutationTools,
     deduplication,
     errorPurge,
+    supersedeWrites,
     log,
     tokenUsage,
   };

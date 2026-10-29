@@ -28,6 +28,7 @@ export function toolPart({
   error = "boom",
   title = `${tool} call`,
   metadata = {},
+  time = { start: 1, end: 2 },
 } = {}) {
   const state =
     status === "completed"
@@ -37,7 +38,7 @@ export function toolPart({
           output,
           title,
           metadata,
-          time: { start: 1, end: 2 },
+          time,
         }
       : status === "error"
         ? {
@@ -45,10 +46,10 @@ export function toolPart({
             input,
             error,
             metadata,
-            time: { start: 1, end: 2 },
+            time,
           }
         : status === "running"
-          ? { status, input, title, metadata, time: { start: 1 } }
+          ? { status, input, title, metadata, time: { start: time.start } }
           : { status: "pending", input, raw: "" };
 
   return {
@@ -114,6 +115,10 @@ export function toolRecord({
   root = "/repo",
   status = "completed",
   output = "same output",
+  error = "",
+  metadata = {},
+  time = { start: order ?? 1, end: (order ?? 1) + 1 },
+  userSegment = 0,
 } = {}) {
   return {
     id,
@@ -123,6 +128,10 @@ export function toolRecord({
     env: { cwd, root },
     status,
     output,
+    error,
+    metadata,
+    time,
+    userSegment,
   };
 }
 

@@ -172,27 +172,61 @@ function isConfirmedSuccess(record) {
   );
 }
 
-function isStateChange(record, options, signature, signaturesByOrder) {
-  if (!record || typeof record !== "object") return true;
-  if (typeof record.tool !== "string" || record.tool.length === 0) return true;
-  if (signaturesByOrder.get(record.order) === signature) return false; // same operation retry
-  if (options.readOnlyTools.has(record.tool)) return false;
-  return true;
+/** Count orders with lowerExclusive < order < upperExclusive in O(log n). */
+function countBetween(sortedOrders, lowerExclusive, upperExclusive) {
+  let low = 0;
+  let high = sortedOrders.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedOrders[mid] <= lowerExclusive) low = mid + 1;
+    else high = mid;
+  }
+  const start = low;
+  high = sortedOrders.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedOrders[mid] < upperExclusive) low = mid + 1;
+    else high = mid;
+  }
+  return low - start;
 }
 
-function barrierReason(records, older, newer, options, signature, signaturesByOrder) {
-  if (!options.preserveOnStateChanges) return "";
+/**
+ * Precompute the state-change timeline once. `stateChangeOrders` contains
+ * every record that could block a supersession; `ordersBySignature` lets the
+ * decision pass subtract retries of the candidate's own operation. This turns
+ * the previous O(records) barrier scan per candidate/success pair into two
+ * binary searches.
+ */
+function buildBarrierTimeline(records, options) {
+  const stateChangeOrders = [];
+  const ordersBySignature = new Map();
+  let invalidRecord = false;
   for (const record of records) {
     if (!record || typeof record !== "object") {
-      return "unknown_intervening_record";
+      invalidRecord = true;
+      continue;
     }
     if (!Number.isFinite(record.order)) continue;
-    if (record.order <= older.order || record.order >= newer.order) continue;
-    if (isStateChange(record, options, signature, signaturesByOrder)) {
-      return "intervening_state_change";
+    if (typeof record.tool !== "string" || record.tool.length === 0) {
+      stateChangeOrders.push(record.order);
+      continue;
     }
+    if (options.readOnlyTools.has(record.tool)) continue;
+    stateChangeOrders.push(record.order);
   }
-  return "";
+  stateChangeOrders.sort((left, right) => left - right);
+  return { stateChangeOrders, ordersBySignature, invalidRecord };
+}
+
+function barrierReason(candidate, newer, options, timeline) {
+  if (!options.preserveOnStateChanges) return "";
+  if (timeline.invalidRecord) return "unknown_intervening_record";
+  const all = countBetween(timeline.stateChangeOrders, candidate.order, newer.order);
+  if (all === 0) return "";
+  const retries = timeline.ordersBySignature.get(candidate.signature) ?? [];
+  const sameOperation = countBetween(retries, candidate.order, newer.order);
+  return all > sameOperation ? "intervening_state_change" : "";
 }
 
 function candidateError(record, stats, signature) {
@@ -297,15 +331,51 @@ export function planErrorPurge(records, config = {}) {
     return { decisions: [], stats };
   }
 
-  const candidates = [];
-  const successesBySignature = new Map();
-  const signaturesByOrder = new Map();
-
-  for (const record of records) {
+  // First pass: classify and collect the tools that actually have confirmed
+  // errors. Successes of any other tool can never share an error signature, so
+  // their (possibly huge) arguments never need to be serialized.
+  const classifications = new Array(records.length);
+  const candidateTools = new Set();
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
     if (!record || typeof record !== "object") {
+      classifications[index] = "invalid";
       increment(stats.skippedReasons, "invalid_record");
       continue;
     }
+    if (isConfirmedError(record) && !hasCancellationMetadata(record)) {
+      classifications[index] = "error";
+      stats.confirmedErrorCount += 1;
+      if (typeof record.tool === "string" && record.tool.length > 0) {
+        candidateTools.add(record.tool);
+      }
+      continue;
+    }
+    classifications[index] = isConfirmedSuccess(record) ? "success" : "ambiguous";
+  }
+
+  const timeline = buildBarrierTimeline(records, options);
+  const candidates = [];
+  const successesBySignature = new Map();
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const kind = classifications[index];
+    if (kind === "invalid") continue;
+    if (kind === "ambiguous") {
+      stats.ambiguousResultCount += 1;
+      continue;
+    }
+    // A confirmed error with a missing tool name is still reported by
+    // candidateError; everything else whose tool cannot match a candidate is
+    // irrelevant to Error Purge and is skipped without stringification.
+    if (kind === "success" && !candidateTools.has(record.tool)) continue;
+    if (kind === "error" && (typeof record.tool !== "string" || record.tool.length === 0)) {
+      const candidate = candidateError(record, stats, "");
+      if (candidate) candidates.push(candidate);
+      continue;
+    }
+    if (!candidateTools.has(record.tool)) continue;
 
     let signature = "";
     if (
@@ -317,29 +387,31 @@ export function planErrorPurge(records, config = {}) {
     ) {
       try {
         signature = buildOperationSignature(record);
-        signaturesByOrder.set(record.order, signature);
       } catch {
         signature = "";
       }
+      if (signature && !options.readOnlyTools.has(record.tool)) {
+        const list = timeline.ordersBySignature.get(signature);
+        if (list) list.push(record.order);
+        else timeline.ordersBySignature.set(signature, [record.order]);
+      }
     }
 
-    if (isConfirmedError(record) && !hasCancellationMetadata(record)) {
-      stats.confirmedErrorCount += 1;
+    if (kind === "error") {
       const candidate = candidateError(record, stats, signature);
       if (candidate) candidates.push(candidate);
       continue;
     }
 
-    if (isConfirmedSuccess(record)) {
-      const success = successRecord(record, stats, signature);
-      if (!success) continue;
-      const list = successesBySignature.get(success.signature);
-      if (list) list.push(success);
-      else successesBySignature.set(success.signature, [success]);
-      continue;
-    }
+    const success = successRecord(record, stats, signature);
+    if (!success) continue;
+    const list = successesBySignature.get(success.signature);
+    if (list) list.push(success);
+    else successesBySignature.set(success.signature, [success]);
+  }
 
-    stats.ambiguousResultCount += 1;
+  for (const list of timeline.ordersBySignature.values()) {
+    list.sort((left, right) => left - right);
   }
 
   const decisions = [];
@@ -375,7 +447,9 @@ export function planErrorPurge(records, config = {}) {
 
   // Rule 1: a later equivalent success supersedes an earlier failure.
   for (const candidate of candidates) {
-    const laterSuccesses = (successesBySignature.get(candidate.signature) ?? []).filter(
+    const allSuccesses = successesBySignature.get(candidate.signature);
+    if (!allSuccesses || allSuccesses.length === 0) continue;
+    const laterSuccesses = allSuccesses.filter(
       (success) => success.order > candidate.order,
     );
     if (laterSuccesses.length === 0) continue;
@@ -390,14 +464,7 @@ export function planErrorPurge(records, config = {}) {
         if (!blockedReason) blockedReason = "across_user_turn";
         continue;
       }
-      const barrier = barrierReason(
-        records,
-        candidate.record,
-        success.record,
-        options,
-        candidate.signature,
-        signaturesByOrder,
-      );
+      const barrier = barrierReason(candidate, success.record, options, timeline);
       if (barrier) {
         if (!blockedReason) blockedReason = barrier;
         continue;
@@ -417,62 +484,67 @@ export function planErrorPurge(records, config = {}) {
   }
 
   // Rule 2: repeated identical failures. Keep the newest equivalent failure.
+  // Nested maps avoid building `${signature}\0${errorText}` keys, which would
+  // copy potentially large error text for every candidate.
   if (options.pruneRepeatedFailures) {
-    const groups = new Map();
+    const groups = new Map(); // signature -> errorText -> candidates[]
     for (const candidate of candidates) {
       if (candidate.decided) continue;
-      const key = `${candidate.signature}\u0000${candidate.errorText}`;
-      const list = groups.get(key);
+      let byError = groups.get(candidate.signature);
+      if (!byError) {
+        byError = new Map();
+        groups.set(candidate.signature, byError);
+      }
+      const list = byError.get(candidate.errorText);
       if (list) list.push(candidate);
-      else groups.set(key, [candidate]);
+      else byError.set(candidate.errorText, [candidate]);
     }
 
-    for (const group of groups.values()) {
-      if (group.length < 2) continue;
-      group.sort((left, right) => left.order - right.order);
-      const keeper = group[group.length - 1];
-      for (const candidate of group.slice(0, -1)) {
-        if (candidate.decided) continue;
-        if (
-          options.preserveAcrossUserTurns &&
-          candidate.userSegment !== keeper.userSegment
-        ) {
-          if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
-          continue;
+    for (const byError of groups.values()) {
+      for (const group of byError.values()) {
+        if (group.length < 2) continue;
+        group.sort((left, right) => left.order - right.order);
+        const keeper = group[group.length - 1];
+        for (const candidate of group.slice(0, -1)) {
+          if (candidate.decided) continue;
+          if (
+            options.preserveAcrossUserTurns &&
+            candidate.userSegment !== keeper.userSegment
+          ) {
+            if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
+            continue;
+          }
+          const barrier = barrierReason(candidate, keeper.record, options, timeline);
+          if (barrier) {
+            if (!candidate.blockedReason) candidate.blockedReason = barrier;
+            continue;
+          }
+          decide(
+            candidate,
+            keeper,
+            "duplicate_failure",
+            MEDIUM_CONFIDENCE,
+            options.duplicatePlaceholder,
+          );
         }
-        const barrier = barrierReason(
-          records,
-          candidate.record,
-          keeper.record,
-          options,
-          candidate.signature,
-          signaturesByOrder,
-        );
-        if (barrier) {
-          if (!candidate.blockedReason) candidate.blockedReason = barrier;
-          continue;
+        if (!keeper.decided && !keeper.blockedReason) {
+          keeper.blockedReason = "latest_failure_retained";
         }
-        decide(
-          candidate,
-          keeper,
-          "duplicate_failure",
-          MEDIUM_CONFIDENCE,
-          options.duplicatePlaceholder,
-        );
-      }
-      if (!keeper.decided && !keeper.blockedReason) {
-        keeper.blockedReason = "latest_failure_retained";
       }
     }
   } else {
-    const seen = new Set();
+    const seen = new Map(); // signature -> Set(errorText)
     for (const candidate of candidates) {
       if (candidate.decided) continue;
-      const key = `${candidate.signature}\u0000${candidate.errorText}`;
-      if (seen.has(key) && !candidate.blockedReason) {
+      let byError = seen.get(candidate.signature);
+      if (!byError) {
+        byError = new Set();
+        seen.set(candidate.signature, byError);
+      }
+      if (byError.has(candidate.errorText) && !candidate.blockedReason) {
         candidate.blockedReason = "repeated_failures_disabled";
       }
-      seen.add(key);
+      byError.add(candidate.errorText);
     }
   }
 

@@ -71,6 +71,34 @@ function sanitizeErrorPurgeStats(stats) {
   };
 }
 
+function sanitizeSupersedeWritesStats(stats) {
+  if (!stats || typeof stats !== "object") return null;
+  return {
+    enabled: stats.enabled === true,
+    preview: stats.preview === true,
+    changed: stats.changed === true,
+    recordsTotal: Number(stats.recordsTotal) || 0,
+    confirmedWriteCount: Number(stats.confirmedWriteCount) || 0,
+    fullReadCount: Number(stats.fullReadCount) || 0,
+    ambiguousResultCount: Number(stats.ambiguousResultCount) || 0,
+    candidateCount: Number(stats.candidateCount) || 0,
+    plannedPruneCount: Number(stats.plannedPruneCount) || 0,
+    wouldPruneCount: Number(stats.wouldPruneCount) || 0,
+    prunedCount: Number(stats.prunedCount) || 0,
+    preservedCount: Number(stats.preservedCount) || 0,
+    highConfidencePruneCount: Number(stats.highConfidencePruneCount) || 0,
+    decisionKinds: compactReasons(stats.decisionKinds),
+    skippedReasons: compactReasons(stats.skippedReasons),
+    durationMs: Number.isFinite(stats.durationMs) ? stats.durationMs : null,
+    tokenSavingsEstimated: Number(stats.tokenSavingsEstimated) || 0,
+    tokenSavingsEstimatedIfApplied: Number(stats.tokenSavingsEstimatedIfApplied) || 0,
+    tokenCounting: typeof stats.tokenCounting === "string" ? stats.tokenCounting : "unknown",
+    actualTokenSavings: null,
+    outputBytesRemovedActual: Number(stats.outputBytesRemovedActual) || 0,
+    error: typeof stats.error === "string" ? sanitizeError(stats.error) : undefined,
+  };
+}
+
 function sanitizeStats(stats) {
   return {
     event: "transform",
@@ -95,6 +123,7 @@ function sanitizeStats(stats) {
     outputBytesRemovedActual: Number(stats.outputBytesRemovedActual) || 0,
     error: typeof stats.error === "string" ? sanitizeError(stats.error) : undefined,
     errorPurge: sanitizeErrorPurgeStats(stats.errorPurge),
+    supersedeWrites: sanitizeSupersedeWritesStats(stats.supersedeWrites),
   };
 }
 
@@ -137,7 +166,9 @@ export async function appendStats({ directory, config, configError }, stats) {
       !stats?.candidateCount &&
       !stats?.error &&
       !stats?.errorPurge?.candidateCount &&
-      !stats?.errorPurge?.error
+      !stats?.errorPurge?.error &&
+      !stats?.supersedeWrites?.candidateCount &&
+      !stats?.supersedeWrites?.error
     ) {
       return;
     }

@@ -29,11 +29,11 @@ Vibe-Coder-Loop/
 │   └── exec/                  # 受控执行（allowlist / 超时 / 输出截断 / 脱敏）
 ├── .opencode/                 # OpenCode 可选集成（本地插件，无 npm 依赖）
 │   ├── plugins/               # vibe-context-dedup.js（唯一自动加载入口）
-│   └── context-dedup/         # Dedup + Error Purge 核心 / 消息适配 / 配置 / 日志
+│   └── context-dedup/         # Dedup + Error Purge + Supersede Writes 核心 / 消息适配 / 配置 / 日志
 ├── tests/
 │   ├── core/                  # runtime/core 单测
 │   ├── exec/                  # runtime/exec 单测
-│   └── context-dedup/         # Dedup + Error Purge 与 OpenCode 消息适配测试
+│   └── context-dedup/         # Dedup + Error Purge + Supersede Writes 与 OpenCode 消息适配测试
 ├── tools/
 │   └── memory-viewer/         # delx-memory 静态查看器（HTML/CSS/JS，零依赖、无构建）
 ├── docs/
@@ -138,19 +138,20 @@ python3 scripts/memory/skill_draft.py generate --dry-run --json
 
 ## 上下文裁剪（可选，仅 OpenCode）
 
-`.opencode/plugins/vibe-context-dedup.js` 是本地 OpenCode 插件，在每次模型请求前执行两条独立策略：
+`.opencode/plugins/vibe-context-dedup.js` 是本地 OpenCode 插件，在每次模型请求前执行三条独立策略：
 
 - **Dedup**：裁剪重复的只读工具结果（默认 `read` / `grep` / `glob`）；工具名、规范化参数、cwd/root、成功状态、输出内容全部一致才裁剪。
 - **Error Purge**：只裁剪结构化确认且被后续等价成功取代的工具错误（`state.status === "error"` + 非空 `state.error`）；不改成功结果中的诊断文本，不按 `error` 字样猜测。
+- **Supersede Writes**：成功写入同一文件后，若后续完整读取能代表文件当前状态，则抹去旧写操作的内容载荷（`state.input` 内容字段 + `state.output`），保留文件路径、状态、metadata 与审计身份；部分读取、失败写入、并发/版本不确定时保守保留。
 
-两条策略都只替换请求副本中的 `state.output` / `state.error`，不删除消息或工具调用；结构异常、输出/范围不一致、状态变更、跨用户轮次、callID 引用时保留原文。原始会话对象不被修改。
+三条策略都只替换请求副本中的 `state.output` / `state.error` / 写操作输入载荷，不删除消息或工具调用；结构异常、输出/范围不一致、状态变更、跨用户轮次、callID 引用时保留原文。原始会话对象与磁盘文件不被修改。
 
 ```bash
-# Dedup + Error Purge / 回退 / 幂等 / 类型契约（83 项）
+# Dedup + Error Purge + Supersede Writes / 回退 / 幂等 / 类型契约（199 项）
 bash scripts/tests/test-context-dedup.sh
 ```
 
-- 配置：`<project>/.opencode/context-dedup.json`；`enabled` 总开关，`deduplication.enabled` / `errorPurge.enabled` 独立开关，`preview` / `errorPurge.preview` 观察模式。
+- 配置：`<project>/.opencode/context-dedup.json`；`enabled` 总开关，`deduplication.enabled` / `errorPurge.enabled` / `supersedeWrites.enabled` 独立开关，`preview` / `errorPurge.preview` / `supersedeWrites.preview` 观察模式。
 - 日志：`~/.vibe-loop/context-dedup/events.jsonl`（仅聚合统计，不含工具输出或错误正文）。
 - 范围、规则、统计字段、已知限制与真机验证步骤见 [docs/context-dedup.md](docs/context-dedup.md)。
 
@@ -200,7 +201,7 @@ cd tools/memory-viewer && python3 -m http.server 8765   # 浏览器打开 http:/
 
 - [安装与宿主集成](docs/installation.md)
 - [工具入口与调用约定](docs/tooling.md)
-- [OpenCode 上下文裁剪（Dedup + Error Purge）](docs/context-dedup.md)
+- [OpenCode 上下文裁剪（Dedup + Error Purge + Supersede Writes）](docs/context-dedup.md)
 - [跨平台兼容矩阵](docs/audits/compatibility.md)
 - [审计报告（2026-10-19）](docs/audits/2026-10-19-open-source-readiness.md)
 - [变更清单](docs/audits/change-list.md)

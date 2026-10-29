@@ -18,11 +18,18 @@ import {
   byteLength,
   createStats,
   PRUNE_MARKER,
+  isPlainObject,
   isPrunedOutput,
   planDeduplication,
   textTokenUnits,
 } from "./core.js";
 import { createErrorPurgeStats, planErrorPurge } from "./error-purge.js";
+import {
+  CONTENT_KEYS,
+  DEFAULT_WRITE_TOOLS,
+  createSupersedeWritesStats,
+  planSupersedeWrites,
+} from "./supersede-writes.js";
 import { messagesTokenUnits } from "./token-usage.js";
 
 const TOOL_PART = "tool";
@@ -157,6 +164,8 @@ export function extractToolRecords(messages) {
       const output = typeof state.output === "string" ? state.output : "";
       const error = typeof state.error === "string" ? state.error : "";
       const metadata = state.metadata !== undefined ? state.metadata : undefined;
+      const time =
+        state.time && typeof state.time === "object" && !Array.isArray(state.time) ? state.time : null;
       const record = {
         id: part.callID,
         order: partOrder,
@@ -167,6 +176,7 @@ export function extractToolRecords(messages) {
         output,
         error,
         metadata,
+        time,
         userSegment,
       };
       records.push(record);
@@ -223,19 +233,29 @@ function escapeRegex(text) {
   return text.replace(REGEX_ESCAPE, "\\$&");
 }
 
-function searchableStrings(part) {
+function searchableStrings(part, skipPayloadTools) {
   if (!part || typeof part !== "object") return null;
   const candidates = [];
   if (typeof part.text === "string") candidates.push(part.text);
   if (part.type === "subtask" && typeof part.prompt === "string") candidates.push(part.prompt);
   if (part.type === TOOL_PART) {
-    if (part.metadata !== undefined) candidates.push(safeStringify(part.metadata));
+    // Write payloads (file content / diffs) are data, not conversational
+    // references. Serializing megabytes of content here is both expensive and
+    // prone to false positives, so skip input/metadata for write-like tools.
+    const skipPayload =
+      skipPayloadTools !== null &&
+      skipPayloadTools !== undefined &&
+      typeof part.tool === "string" &&
+      skipPayloadTools.has(part.tool);
+    if (part.metadata !== undefined && !skipPayload) candidates.push(safeStringify(part.metadata));
     const state = part.state;
     if (state && typeof state === "object") {
       if (typeof state.output === "string") candidates.push(state.output);
       if (typeof state.error === "string") candidates.push(state.error);
-      if (state.input !== undefined) candidates.push(safeStringify(state.input));
-      if (state.metadata !== undefined) candidates.push(safeStringify(state.metadata));
+      if (state.input !== undefined && !skipPayload) candidates.push(safeStringify(state.input));
+      if (state.metadata !== undefined && !skipPayload) {
+        candidates.push(safeStringify(state.metadata));
+      }
     }
   }
   return candidates.length > 0 ? candidates : null;
@@ -248,8 +268,10 @@ function searchableStrings(part) {
  * alternation regex matches every id in one pass per part instead of one pass
  * per id per part.
  */
-export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive = -Infinity) {
+export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive = -Infinity, options = {}) {
   const refsById = new Map();
+  const skipPayloadTools =
+    options && options.skipPayloadTools instanceof Set ? options.skipPayloadTools : null;
   if (!Array.isArray(orderedParts) || !Array.isArray(callIds) || callIds.length === 0) {
     return { refsById };
   }
@@ -263,7 +285,7 @@ export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive =
 
   for (const item of orderedParts) {
     if (!item || !Number.isFinite(item.order) || item.order <= startOrderExclusive) continue;
-    const strings = searchableStrings(item.part);
+    const strings = searchableStrings(item.part, skipPayloadTools);
     if (!strings) continue;
     for (const text of strings) {
       if (typeof text !== "string" || text.length === 0) continue;
@@ -287,16 +309,6 @@ export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive =
     }
   }
   return { refsById };
-}
-
-function earliestOrder(decisions) {
-  let earliest = Number.POSITIVE_INFINITY;
-  for (const decision of decisions) {
-    if (Number.isFinite(decision?.order) && decision.order < earliest) {
-      earliest = decision.order;
-    }
-  }
-  return Number.isFinite(earliest) ? earliest : -Infinity;
 }
 
 function lowerBound(orders, target) {
@@ -405,11 +417,35 @@ function validateStructure(before, after, appliedIds, field, replacements) {
   return { ok: failures.length === 0, failures };
 }
 
+/**
+ * Map a parts array without allocating a new array (or copying unchanged part
+ * references) when no part changes. Messages with no target parts therefore
+ * keep their original array and object.
+ */
+function mapPartsLazily(parts, transform) {
+  let result = null;
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    const next = transform(part, index);
+    if (next !== part) {
+      if (!result) result = parts.slice(0, index);
+      result.push(next);
+    } else if (result) {
+      result.push(part);
+    }
+  }
+  return result;
+}
+
 function applyFieldDecisions(messages, decisions, locations, field) {
   const byId = new Map();
   for (const decision of decisions) {
     if (!decision || typeof decision.id !== "string" || decision.field !== field) continue;
     if (!byId.has(decision.id)) byId.set(decision.id, decision);
+  }
+
+  if (byId.size === 0) {
+    return { messages, changed: false, applied: [], dropped: [], validation: null };
   }
 
   const applied = [];
@@ -419,9 +455,8 @@ function applyFieldDecisions(messages, decisions, locations, field) {
 
   const result = messages.map((message, messageIndex) => {
     if (!message || !Array.isArray(message.parts)) return message;
-    let changed = false;
 
-    const parts = message.parts.map((part, partIndex) => {
+    const parts = mapPartsLazily(message.parts, (part, partIndex) => {
       if (!part || part.type !== TOOL_PART || typeof part.callID !== "string") return part;
       const decision = byId.get(part.callID);
       if (!decision) return part;
@@ -461,7 +496,6 @@ function applyFieldDecisions(messages, decisions, locations, field) {
         return part;
       }
 
-      changed = true;
       applied.push({
         ...decision,
         previousValue: part.state[field],
@@ -472,7 +506,7 @@ function applyFieldDecisions(messages, decisions, locations, field) {
       return { ...part, state: { ...part.state, [field]: replacement } };
     });
 
-    return changed ? { ...message, parts } : message;
+    return parts ? { ...message, parts } : message;
   });
 
   for (const id of byId.keys()) {
@@ -522,6 +556,252 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
 }
 
 /**
+ * Validate a Supersede Writes transform. Unlike the single-field validators,
+ * this allows `state.input` and `state.output` to change on target parts
+ * (input content redacted, output replaced by placeholder) while every other
+ * field — status, title, metadata, time, attachments, callID, tool, message
+ * identity, message/part counts — must be byte-for-byte unchanged.
+ */
+function validateSupersedeStructure(before, after, appliedIds, redactions) {
+  const failures = [];
+  if (before.length !== after.length) failures.push("message_count");
+
+  const unchangedStateKeys = ["status", "title", "metadata", "time", "attachments", "error", "raw"];
+  const unchangedPartKeys = ["id", "sessionID", "messageID", "type", "callID", "tool", "metadata"];
+
+  const limit = Math.min(before.length, after.length);
+  for (let messageIndex = 0; messageIndex < limit; messageIndex += 1) {
+    const beforeMessage = before[messageIndex];
+    const afterMessage = after[messageIndex];
+    if (!beforeMessage || !afterMessage) {
+      failures.push(`message_missing:${messageIndex}`);
+      continue;
+    }
+    if (beforeMessage.info?.id !== afterMessage.info?.id) {
+      failures.push(`message_id:${messageIndex}`);
+    }
+
+    const beforeParts = Array.isArray(beforeMessage.parts) ? beforeMessage.parts : [];
+    const afterParts = Array.isArray(afterMessage.parts) ? afterMessage.parts : [];
+    if (beforeParts.length !== afterParts.length) {
+      failures.push(`part_count:${messageIndex}`);
+      continue;
+    }
+
+    for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
+      const beforePart = beforeParts[partIndex];
+      const afterPart = afterParts[partIndex];
+      const isTarget =
+        beforePart?.type === TOOL_PART &&
+        typeof beforePart.callID === "string" &&
+        appliedIds.has(beforePart.callID);
+
+      if (beforePart === afterPart) {
+        if (isTarget) failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
+        continue;
+      }
+
+      if (
+        !beforePart ||
+        !afterPart ||
+        beforePart.type !== TOOL_PART ||
+        afterPart.type !== TOOL_PART ||
+        beforePart.callID !== afterPart.callID ||
+        !appliedIds.has(beforePart.callID)
+      ) {
+        failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
+        continue;
+      }
+
+      const beforeState = beforePart.state;
+      const afterState = afterPart.state;
+      if (!beforeState || !afterState) {
+        failures.push(`state_missing:${messageIndex}:${partIndex}`);
+        continue;
+      }
+
+      const redaction = redactions.get(beforePart.callID);
+      if (!redaction) {
+        failures.push(`redaction_missing:${messageIndex}:${partIndex}`);
+      } else {
+        if (!sameValue(afterState.input, redaction.redactedInput)) {
+          failures.push(`input_redaction:${messageIndex}:${partIndex}`);
+        }
+        if (afterState.output !== redaction.replacement) {
+          failures.push(`output_replacement:${messageIndex}:${partIndex}`);
+        }
+      }
+
+      for (const key of unchangedStateKeys) {
+        if (!sameValue(beforeState[key], afterState[key])) {
+          failures.push(`state_${key}_changed:${messageIndex}:${partIndex}`);
+        }
+      }
+      for (const key of unchangedPartKeys) {
+        if (!sameValue(beforePart[key], afterPart[key])) {
+          failures.push(`part_${key}_changed:${messageIndex}:${partIndex}`);
+        }
+      }
+    }
+  }
+
+  return { ok: failures.length === 0, failures };
+}
+
+/**
+ * Supersede Writes decisions: redact the bulky content fields of a write
+ * tool's `state.input` and replace its `state.output` with a placeholder.
+ * The file path, status, metadata, and audit identity are preserved.
+ */
+export function applySupersedeWriteDecisions(messages, decisions, locations) {
+  const byId = new Map();
+  for (const decision of decisions) {
+    if (!decision || typeof decision.id !== "string") continue;
+    if (decision.field !== "input+output") continue;
+    if (!byId.has(decision.id)) byId.set(decision.id, decision);
+  }
+
+  if (byId.size === 0) {
+    return { messages, changed: false, applied: [], dropped: [], validation: null };
+  }
+
+  const applied = [];
+  const dropped = [];
+  const appliedIds = new Set();
+  const redactions = new Map();
+
+  const result = messages.map((message, messageIndex) => {
+    if (!message || !Array.isArray(message.parts)) return message;
+
+    const parts = mapPartsLazily(message.parts, (part, partIndex) => {
+      if (!part || part.type !== TOOL_PART || typeof part.callID !== "string") return part;
+      const decision = byId.get(part.callID);
+      if (!decision) return part;
+
+      const location = locations.get(part.callID);
+      if (
+        !location ||
+        location.messageIndex !== messageIndex ||
+        location.partIndex !== partIndex ||
+        location.tool !== part.tool
+      ) {
+        dropped.push({ id: part.callID, reason: "location_mismatch" });
+        return part;
+      }
+
+      if (!part.state || part.state.status !== "completed") {
+        dropped.push({ id: part.callID, reason: "state_mismatch" });
+        return part;
+      }
+      // Prefer the original input reference captured by the planner: it avoids
+      // duplicating large file content as a JSON string. Keep the legacy JSON
+      // comparison for decisions built by older callers/tests.
+      const inputMatches =
+        decision.expectedInput !== undefined
+          ? part.state.input === decision.expectedInput
+          : safeStringify(part.state.input) === decision.expectedInputJson;
+      if (
+        typeof part.state.output !== "string" ||
+        part.state.output !== decision.expectedOutput ||
+        !inputMatches
+      ) {
+        dropped.push({ id: part.callID, reason: "state_mismatch" });
+        return part;
+      }
+      if (isPrunedOutput(part.state.output) && isPrunedInput(part.state.input, decision.replacement)) {
+        dropped.push({ id: part.callID, reason: "already_pruned" });
+        return part;
+      }
+      if (
+        part.state.output === decision.replacement &&
+        safeStringify(part.state.input) === safeStringify(decision.redactedInput)
+      ) {
+        dropped.push({ id: part.callID, reason: "no_change" });
+        return part;
+      }
+
+      applied.push({
+        ...decision,
+        previousOutput: part.state.output,
+        previousInput: part.state.input,
+      });
+      appliedIds.add(part.callID);
+      redactions.set(part.callID, {
+        redactedInput: decision.redactedInput,
+        replacement: decision.replacement,
+      });
+      return {
+        ...part,
+        state: {
+          ...part.state,
+          input: decision.redactedInput,
+          output: decision.replacement,
+        },
+      };
+    });
+
+    return parts ? { ...message, parts } : message;
+  });
+
+  for (const id of byId.keys()) {
+    if (!appliedIds.has(id) && !dropped.some((item) => item.id === id)) {
+      dropped.push({ id, reason: "target_missing" });
+    }
+  }
+
+  if (applied.length === 0) {
+    return { messages, changed: false, applied, dropped, validation: null };
+  }
+
+  const validation = validateSupersedeStructure(messages, result, appliedIds, redactions);
+  if (!validation.ok) {
+    return { messages, changed: false, applied: [], dropped, validation };
+  }
+
+  return { messages: result, changed: true, applied, dropped, validation };
+}
+
+/** Removal metrics for one applied Supersede Writes decision. */
+function supersedeRemovalMetrics(decision) {
+  if (Number.isFinite(decision.bytesRemoved) && Number.isFinite(decision.tokenUnitsRemoved)) {
+    return {
+      bytes: Math.max(0, decision.bytesRemoved),
+      units: Math.max(0, decision.tokenUnitsRemoved),
+    };
+  }
+  // Legacy decision shape (no precomputed metrics): derive once here.
+  const previousInputJson = safeStringify(decision.previousInput);
+  const redactedInputJson = safeStringify(decision.redactedInput);
+  return {
+    bytes: Math.max(
+      0,
+      byteLength(decision.previousOutput) +
+        byteLength(previousInputJson) -
+        byteLength(decision.replacement) -
+        byteLength(redactedInputJson),
+    ),
+    units:
+      textTokenUnits(previousInputJson) -
+      textTokenUnits(redactedInputJson) +
+      textTokenUnits(decision.previousOutput) -
+      textTokenUnits(decision.replacement),
+  };
+}
+
+function isPrunedInput(input, placeholder) {
+  if (!isPlainObject(input)) return false;
+  for (const key of CONTENT_KEYS) {
+    const value = input[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && (value === placeholder || value.startsWith(PRUNE_MARKER))) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
  * Full request transformation: extract once, then run independent dedup and
  * error-purge plans. Each strategy has its own preview switch and statistics.
  * The function never mutates the input message objects and falls back to the
@@ -547,13 +827,30 @@ export function transformMessages(messages, config = {}) {
   const errorPurgeConfig = config.errorPurge ?? {};
   const errorPurgeEnabled = stats.enabled && errorPurgeConfig.enabled !== false;
   const errorPurgePreview =
-    errorPurgeConfig.preview !== undefined
+    errorPurgeConfig.preview !== undefined && errorPurgeConfig.preview !== null
       ? errorPurgeConfig.preview === true
       : stats.preview;
   stats.deduplicationEnabled = dedupEnabled;
   stats.errorPurge = createErrorPurgeStats();
   stats.errorPurge.enabled = errorPurgeEnabled;
   stats.errorPurge.preview = errorPurgePreview;
+
+  const supersedeConfig = config.supersedeWrites ?? {};
+  const supersedeEnabled = stats.enabled && supersedeConfig.enabled !== false;
+  const supersedePreview =
+    supersedeConfig.preview !== undefined && supersedeConfig.preview !== null
+      ? supersedeConfig.preview === true
+      : stats.preview;
+  stats.supersedeWrites = createSupersedeWritesStats();
+  stats.supersedeWrites.enabled = supersedeEnabled;
+  stats.supersedeWrites.preview = supersedePreview;
+  // Referencing a write call id from inside another write's file content is
+  // not a conversational reference; avoid serializing those payloads.
+  const writePayloadTools = new Set(
+    Array.isArray(supersedeConfig.writeTools)
+      ? supersedeConfig.writeTools
+      : DEFAULT_WRITE_TOOLS,
+  );
 
   const placeholder =
     typeof config.placeholder === "string" && config.placeholder.startsWith(PRUNE_MARKER)
@@ -563,25 +860,48 @@ export function transformMessages(messages, config = {}) {
   const finish = () => {
     stats.durationMs = Number((now() - started).toFixed(3));
     stats.errorPurge.durationMs = stats.durationMs;
+    stats.supersedeWrites.durationMs = stats.durationMs;
     return stats;
   };
 
   if (!Array.isArray(messages)) {
     increment(stats.skippedReasons, "invalid_messages");
     finish();
-    return { messages, changed: false, stats, decisions: [], errorPurgeDecisions: [] };
+    return {
+      messages,
+      changed: false,
+      stats,
+      decisions: [],
+      errorPurgeDecisions: [],
+      supersedeWritesDecisions: [],
+    };
   }
 
   if (!stats.enabled) {
     increment(stats.skippedReasons, "disabled", messages.length);
     stats.errorPurge.skippedReasons.disabled = messages.length;
+    stats.supersedeWrites.skippedReasons.disabled = messages.length;
     finish();
-    return { messages, changed: false, stats, decisions: [], errorPurgeDecisions: [] };
+    return {
+      messages,
+      changed: false,
+      stats,
+      decisions: [],
+      errorPurgeDecisions: [],
+      supersedeWritesDecisions: [],
+    };
   }
 
   if (messages.length === 0) {
     finish();
-    return { messages, changed: false, stats, decisions: [], errorPurgeDecisions: [] };
+    return {
+      messages,
+      changed: false,
+      stats,
+      decisions: [],
+      errorPurgeDecisions: [],
+      supersedeWritesDecisions: [],
+    };
   }
 
   const extraction = extractToolRecords(messages);
@@ -589,9 +909,33 @@ export function transformMessages(messages, config = {}) {
   if (extraction.structuralFailure) {
     stats.error = extraction.structuralFailure;
     stats.errorPurge.error = extraction.structuralFailure;
+    stats.supersedeWrites.error = extraction.structuralFailure;
     finish();
-    return { messages, changed: false, stats, decisions: [], errorPurgeDecisions: [] };
+    return {
+      messages,
+      changed: false,
+      stats,
+      decisions: [],
+      errorPurgeDecisions: [],
+      supersedeWritesDecisions: [],
+    };
   }
+
+  // Compute every plan before applying anything: the plans only read the
+  // extracted records, and doing this up front lets the reference guard scan
+  // the message list once instead of once per strategy.
+  const errorPlan = planErrorPurge(extraction.records, {
+    ...errorPurgeConfig,
+    enabled: errorPurgeEnabled,
+    readOnlyTools: config.tools,
+    mutationTools: config.mutationTools,
+  });
+  const supersedePlan = planSupersedeWrites(extraction.records, {
+    ...supersedeConfig,
+    enabled: supersedeEnabled,
+    mutationTools: config.mutationTools,
+    readOnlyTools: config.tools,
+  });
 
   // ---------------------------------------------------------------------
   // Strategy 1: deduplication (existing behavior, preserved)
@@ -609,22 +953,45 @@ export function transformMessages(messages, config = {}) {
   mergeReasons(stats.skippedReasons, dedupPlan.stats.skippedReasons);
 
   const protectCallIds = config.protectCallIdReferences !== false;
-  // Build the reference index once for all dedup decisions instead of scanning
-  // the message list once per decision. The scan starts at the earliest
-  // decision order because nothing earlier can reference a decision id.
-  const dedupRefIndex = protectCallIds && dedupPlan.decisions.length > 0
-    ? buildReferenceIndex(
-        extraction.orderedParts,
-        dedupPlan.decisions.map((decision) => decision.id),
-        earliestOrder(dedupPlan.decisions),
-      )
-    : null;
+  const protectErrorReferences = errorPurgeConfig.protectReferences !== false;
+  const protectSupersedeReferences = supersedeConfig.protectReferences !== false;
+
+  // One reference index for all three strategies. The scan starts at the
+  // earliest decision order because nothing earlier can reference a decision.
+  const referenceIds = [];
+  const referenceOrders = [];
+  for (const [enabled, decisions] of [
+    [protectCallIds, dedupPlan.decisions],
+    [protectErrorReferences, errorPlan.decisions],
+    [protectSupersedeReferences, supersedePlan.decisions],
+  ]) {
+    if (!enabled) continue;
+    for (const decision of decisions) {
+      if (typeof decision.id !== "string" || decision.id.length === 0) continue;
+      referenceIds.push(decision.id);
+      if (Number.isFinite(decision.order)) referenceOrders.push(decision.order);
+    }
+  }
+  let referenceStartOrder = Number.POSITIVE_INFINITY;
+  for (const order of referenceOrders) {
+    if (order < referenceStartOrder) referenceStartOrder = order;
+  }
+  if (!Number.isFinite(referenceStartOrder)) referenceStartOrder = -Infinity;
+  const referenceIndex =
+    referenceIds.length > 0
+      ? buildReferenceIndex(
+          extraction.orderedParts,
+          referenceIds,
+          referenceStartOrder,
+          { skipPayloadTools: writePayloadTools },
+        )
+      : null;
 
   const dedupDecisions = [];
   for (const decision of dedupPlan.decisions) {
     if (
       protectCallIds &&
-      indexHasReference(dedupRefIndex, decision.id, decision.order, decision.keeperOrder)
+      indexHasReference(referenceIndex, decision.id, decision.order, decision.keeperOrder)
     ) {
       increment(stats.skippedReasons, "referenced_later");
       continue;
@@ -681,12 +1048,6 @@ export function transformMessages(messages, config = {}) {
   // ---------------------------------------------------------------------
   // Strategy 2: Error Purge (independent switch and preview)
   // ---------------------------------------------------------------------
-  const errorPlan = planErrorPurge(extraction.records, {
-    ...errorPurgeConfig,
-    enabled: errorPurgeEnabled,
-    readOnlyTools: config.tools,
-    mutationTools: config.mutationTools,
-  });
   stats.errorPurge = {
     ...errorPlan.stats,
     enabled: errorPurgeEnabled,
@@ -694,20 +1055,11 @@ export function transformMessages(messages, config = {}) {
     tokenSavingsEstimated: errorPurgePreview ? 0 : errorPlan.stats.tokenSavingsEstimated,
   };
 
-  const protectErrorReferences = errorPurgeConfig.protectReferences !== false;
-  const errorRefIndex = protectErrorReferences && errorPlan.decisions.length > 0
-    ? buildReferenceIndex(
-        extraction.orderedParts,
-        errorPlan.decisions.map((decision) => decision.id),
-        earliestOrder(errorPlan.decisions),
-      )
-    : null;
-
   const errorDecisions = [];
   for (const decision of errorPlan.decisions) {
     if (
       protectErrorReferences &&
-      indexHasReference(errorRefIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
+      indexHasReference(referenceIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
     ) {
       increment(stats.errorPurge.skippedReasons, "referenced_later");
       continue;
@@ -785,7 +1137,89 @@ export function transformMessages(messages, config = {}) {
     currentMessages = errorApplication.messages;
   }
 
-  stats.changed = dedupChanged || errorChanged;
+  // ---------------------------------------------------------------------
+  // Strategy 3: Supersede Writes (independent switch and preview)
+  // ---------------------------------------------------------------------
+  stats.supersedeWrites = {
+    ...supersedePlan.stats,
+    enabled: supersedeEnabled,
+    preview: supersedePreview,
+    tokenSavingsEstimated: supersedePreview ? 0 : supersedePlan.stats.tokenSavingsEstimated,
+  };
+
+  const supersedeDecisions = [];
+  for (const decision of supersedePlan.decisions) {
+    if (
+      protectSupersedeReferences &&
+      indexHasReference(referenceIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
+    ) {
+      increment(stats.supersedeWrites.skippedReasons, "referenced_later");
+      continue;
+    }
+    supersedeDecisions.push(decision);
+  }
+  stats.supersedeWrites.wouldPruneCount = supersedeDecisions.length;
+  stats.supersedeWrites.preservedCount = Math.max(
+    0,
+    stats.supersedeWrites.candidateCount - supersedeDecisions.length,
+  );
+  stats.supersedeWrites.highConfidencePruneCount = supersedeDecisions.filter(
+    (decision) => decision.confidence === "high",
+  ).length;
+  stats.supersedeWrites.decisionKinds = countDecisionKinds(supersedeDecisions);
+  stats.supersedeWrites.tokenSavingsEstimatedIfApplied = supersedeDecisions.reduce(
+    (total, decision) => total + decision.estimatedTokensSaved,
+    0,
+  );
+
+  let supersedeChanged = false;
+  if (!supersedePreview) {
+    const supersedeApplication = applySupersedeWriteDecisions(
+      currentMessages,
+      supersedeDecisions,
+      extraction.locations,
+    );
+    mergeReasons(stats.supersedeWrites.skippedReasons, {
+      apply_location_mismatch: countDropped(supersedeApplication.dropped, "location_mismatch"),
+      apply_state_mismatch: countDropped(supersedeApplication.dropped, "state_mismatch"),
+      apply_already_pruned: countDropped(supersedeApplication.dropped, "already_pruned"),
+      apply_target_missing: countDropped(supersedeApplication.dropped, "target_missing"),
+      apply_no_change: countDropped(supersedeApplication.dropped, "no_change"),
+    });
+    if (supersedeApplication.validation && !supersedeApplication.validation.ok) {
+      increment(
+        stats.supersedeWrites.skippedReasons,
+        "apply_validation_failed",
+        supersedeApplication.validation.failures.length,
+      );
+      stats.supersedeWrites.error = "apply_validation_failed";
+    }
+    stats.supersedeWrites.prunedCount = supersedeApplication.applied.length;
+    stats.supersedeWrites.changed = supersedeApplication.changed;
+    stats.supersedeWrites.tokenSavingsEstimated = supersedeApplication.applied.reduce(
+      (total, decision) => total + Math.max(0, decision.estimatedTokensSaved ?? 0),
+      0,
+    );
+    let supersededBytesRemoved = 0;
+    for (const decision of supersedeApplication.applied) {
+      const metrics = supersedeRemovalMetrics(decision);
+      supersededBytesRemoved += metrics.bytes;
+      if (measureContext) removedUnits += metrics.units;
+    }
+    stats.supersedeWrites.outputBytesRemovedActual = supersededBytesRemoved;
+    stats.supersedeWrites.preservedCount = Math.max(
+      0,
+      stats.supersedeWrites.candidateCount - supersedeApplication.applied.length,
+    );
+    stats.supersedeWrites.highConfidencePruneCount = supersedeApplication.applied.filter(
+      (decision) => decision.confidence === "high",
+    ).length;
+    stats.supersedeWrites.decisionKinds = countDecisionKinds(supersedeApplication.applied);
+    supersedeChanged = supersedeApplication.changed;
+    currentMessages = supersedeApplication.messages;
+  }
+
+  stats.changed = dedupChanged || errorChanged || supersedeChanged;
   if (contextUnits) contextUnits.after = contextUnits.before - removedUnits;
   finish();
   return {
@@ -794,6 +1228,7 @@ export function transformMessages(messages, config = {}) {
     stats,
     decisions: dedupDecisions,
     errorPurgeDecisions: errorDecisions,
+    supersedeWritesDecisions: supersedeDecisions,
     contextUnits,
   };
 }

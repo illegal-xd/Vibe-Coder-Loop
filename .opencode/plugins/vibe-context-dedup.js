@@ -210,6 +210,15 @@ export const VibeContextDedupPlugin = async (input = {}) => {
         result.stats.prunedCount = 0;
         result.stats.tokenSavingsEstimated = 0;
         result.stats.outputBytesRemovedActual = 0;
+        // The request copy was not accepted, so no strategy's removals reached
+        // the model; keep nested counters consistent with reality.
+        for (const strategy of ["errorPurge", "supersedeWrites"]) {
+          if (!result.stats[strategy]) continue;
+          result.stats[strategy].changed = false;
+          result.stats[strategy].prunedCount = 0;
+          result.stats[strategy].tokenSavingsEstimated = 0;
+          result.stats[strategy].outputBytesRemovedActual = 0;
+        }
         result.stats.error = "apply_array_mutation_failed";
         result.stats.skippedReasons = {
           ...result.stats.skippedReasons,
