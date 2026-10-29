@@ -484,7 +484,10 @@ test("attributes removals per strategy in execution order without double countin
   // Candidates are not removals.
   assert.equal(pruning.deduplication.candidate_items, 4);
   assert.equal(pruning.deduplication.preserved_items, 2);
-  assert.equal(pruning.deduplication.candidate_tokens.value, null);
+  // v4: always-unavailable per-candidate token holders were removed.
+  assert.equal("candidate_tokens" in pruning.deduplication, false);
+  assert.equal("preserved_tokens" in pruning.deduplication, false);
+  assert.equal(pruning.token_unit, "estimated_tokens_char_weight_v1");
   assert.equal(pruning.measurement_source, "estimated_tokens_from_chars");
 });
 

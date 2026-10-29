@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -53,6 +53,7 @@ test("logs aggregate stats only and never tool output", async () => {
           preservedCount: 0,
           highConfidencePruneCount: 1,
           mediumConfidencePruneCount: 0,
+          inputRedactedCount: 1,
           skippedReasons: { across_user_turn: 0, intervening_state_change: 1 },
           durationMs: 1.5,
           tokenSavingsEstimated: 30,
@@ -85,12 +86,42 @@ test("logs aggregate stats only and never tool output", async () => {
     assert.equal(record.input, undefined);
     assert.equal(record.errorPurge.confirmedErrorCount, 1);
     assert.equal(record.errorPurge.prunedCount, 1);
+    assert.equal(record.errorPurge.inputRedactedCount, 1);
     assert.equal(record.errorPurge.skippedReasons.intervening_state_change, 1);
     assert.equal(record.errorPurge.skippedReasons.across_user_turn, undefined);
     assert.equal(record.errorPurge.tokenCounting, "estimate_heuristic_v1");
     assert.equal(record.errorPurge.actualTokenSavings, null);
     assert.equal(record.errorPurge.errorText, undefined);
     assert.equal(record.errorPurge.output, undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rotation uses numbered archives and keeps logging when .1 already exists", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-context-dedup-rotate-"));
+  try {
+    const logPath = path.join(directory, "events.jsonl");
+    const archive = `${logPath}.1`;
+    await writeFile(archive, "user-owned-archive\n", "utf8");
+
+    const config = resolveConfig(
+      { log: { path: logPath, onlyWhenActive: false, maxBytes: 80 } },
+      {},
+    );
+    const stats = { enabled: true, changed: true, candidateCount: 1 };
+
+    await appendStats({ directory, config }, stats);
+    await appendStats({ directory, config }, stats);
+
+    // The existing archive is never overwritten.
+    assert.equal(await readFile(archive, "utf8"), "user-owned-archive\n");
+    // The next free slot is used instead of silently disabling logging.
+    const secondArchive = await readFile(`${logPath}.2`, "utf8");
+    assert.equal(secondArchive.trim().split("\n").length, 1);
+    // And the active file still receives the newest record.
+    const active = await readFile(logPath, "utf8");
+    assert.equal(active.trim().split("\n").length, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

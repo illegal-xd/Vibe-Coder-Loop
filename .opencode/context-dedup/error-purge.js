@@ -472,6 +472,9 @@ export function planErrorPurge(records, config = {}) {
   const timeline = buildBarrierTimeline(records, options);
   const candidates = [];
   const successesBySignature = new Map();
+  // Diagnostic only: which tools ever produced a confirmed success and when.
+  // Bounded by the tools that actually have a confirmed error.
+  const successOrdersByTool = new Map();
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -523,6 +526,9 @@ export function planErrorPurge(records, config = {}) {
     const list = successesBySignature.get(success.signature);
     if (list) list.push(success);
     else successesBySignature.set(success.signature, [success]);
+    let orders = successOrdersByTool.get(record.tool);
+    if (orders) orders.push(success.order);
+    else successOrdersByTool.set(record.tool, [success.order]);
   }
 
   for (const list of timeline.ordersBySignature.values()) {
@@ -597,7 +603,12 @@ export function planErrorPurge(records, config = {}) {
     const allSuccesses = successesBySignature.get(candidate.signature);
     if (!allSuccesses || allSuccesses.length === 0) {
       // Diagnostic only: repeated identical failures (Rule 2) may still prune.
-      if (!candidate.rule1Reason) candidate.rule1Reason = "no_success_for_signature";
+      if (!candidate.rule1Reason) {
+        const orders = successOrdersByTool.get(candidate.record.tool) ?? [];
+        candidate.rule1Reason = orders.some((order) => order > candidate.order)
+          ? "later_success_args_changed"
+          : "no_success_for_signature";
+      }
       continue;
     }
     const laterSuccesses = allSuccesses.filter(

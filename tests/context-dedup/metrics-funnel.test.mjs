@@ -119,6 +119,30 @@ test("dedup: unique signatures are reported as the reason nothing is prunable", 
   assert.equal(plan.stats.markedCount, 0);
 });
 
+test("dedup: repeated reads of the same file with different windows are named precisely", () => {
+  const plan = planDeduplication([
+    toolRecord({
+      id: "r1",
+      order: 1,
+      tool: "read",
+      args: { filePath: "a.txt", offset: 1, limit: 50 },
+    }),
+    toolRecord({
+      id: "r2",
+      order: 2,
+      tool: "read",
+      args: { filePath: "a.txt", offset: 51, limit: 50 },
+    }),
+    toolRecord({ id: "r3", order: 3, tool: "read", args: { filePath: "b.txt" } }),
+  ]);
+
+  assert.equal(plan.decisions.length, 0);
+  // Same tool + same path, different canonical args: the runtime-stamped
+  // read window changed, so byte equality can never hold.
+  assert.equal(plan.stats.skippedReasons.same_target_args_changed, 2);
+  assert.equal(plan.stats.skippedReasons.unique_signature, 1);
+});
+
 test("dedup: same signature with different output is reported, never pruned", () => {
   const plan = planDeduplication([
     readRecord({ id: "r1", order: 1, output: "v1" }),

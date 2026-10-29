@@ -535,6 +535,26 @@ function keeperTokens(entry) {
   return entry.estimatedTokens;
 }
 
+/**
+ * Cheap "same target" key for near-miss diagnostics: tool name plus the first
+ * explicit path argument. Unlike `buildOperationSignature` it ignores the rest
+ * of the arguments, so two windowed reads of the same file compare equal even
+ * when the runtime stamped different `offset`/`limit` values.
+ */
+function targetKeyOf(record) {
+  const args = record && isPlainObject(record.args) ? record.args : null;
+  if (!args) return "";
+  for (const key of PATH_ARGUMENT_KEYS) {
+    const raw = args[key];
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      const cwd =
+        record.env && typeof record.env.cwd === "string" ? record.env.cwd : "";
+      return `${record.tool}\u0000${normalizePath(raw.trim(), cwd)}`;
+    }
+  }
+  return "";
+}
+
 function increment(map, key, amount = 1) {
   if (!key || amount <= 0) return;
   map[key] = (map[key] ?? 0) + amount;
@@ -672,6 +692,7 @@ export function planDeduplication(records, config = {}) {
   }
 
   const decisions = [];
+  const uniqueEntries = [];
   const placeholderTokens = estimateTokens(options.placeholder);
   for (const signatureGroup of bySignature.values()) {
     // Classify every eligible record so zero contribution is explainable:
@@ -679,7 +700,7 @@ export function planDeduplication(records, config = {}) {
     // with a different output cannot be deduplicated without changing meaning.
     if (signatureGroup.length === 1) {
       stats.uniqueSignatureCount += 1;
-      increment(stats.skippedReasons, "unique_signature");
+      uniqueEntries.push(signatureGroup[0]);
       continue;
     }
 
@@ -733,6 +754,33 @@ export function planDeduplication(records, config = {}) {
 
   decisions.sort((left, right) => left.order - right.order);
   stats.markedCount = decisions.length;
+
+  // Near-miss diagnostics for unique signatures: records that point at the
+  // same target (tool + explicit path) but still have different canonical
+  // arguments. This is the common "read the same file four times" case, where
+  // a windowed `offset`/`limit` changes the signature and byte equality can
+  // never hold.
+  if (uniqueEntries.length > 0) {
+    const byTarget = new Map();
+    for (const entry of uniqueEntries) {
+      const key = targetKeyOf(entry.record);
+      if (!key) {
+        increment(stats.skippedReasons, "unique_signature");
+        continue;
+      }
+      const group = byTarget.get(key);
+      if (group) group.push(entry);
+      else byTarget.set(key, [entry]);
+    }
+    for (const group of byTarget.values()) {
+      increment(
+        stats.skippedReasons,
+        group.length > 1 ? "same_target_args_changed" : "unique_signature",
+        group.length,
+      );
+    }
+  }
+
   stats.prunableCount = stats.duplicateCandidateCount;
   stats.plannedPruneCount = decisions.length;
   stats.tokenSavingsEstimated = decisions.reduce(

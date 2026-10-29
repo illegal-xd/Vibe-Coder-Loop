@@ -63,6 +63,7 @@ function sanitizeErrorPurgeStats(stats) {
     preservedCount: Number(stats.preservedCount) || 0,
     highConfidencePruneCount: Number(stats.highConfidencePruneCount) || 0,
     mediumConfidencePruneCount: Number(stats.mediumConfidencePruneCount) || 0,
+    inputRedactedCount: Number(stats.inputRedactedCount) || 0,
     decisionKinds: compactReasons(stats.decisionKinds),
     skippedReasons: compactReasons(stats.skippedReasons),
     durationMs: Number.isFinite(stats.durationMs) ? stats.durationMs : null,
@@ -147,29 +148,62 @@ function sanitizeStats(stats) {
   };
 }
 
-async function rotateIfNeeded(file, maxBytes) {
-  try {
-    const info = await stat(file);
-    if (info.size <= maxBytes) return true;
-  } catch {
-    return true;
-  }
+async function rotateIfNeeded(file, maxBytes, incomingBytes) {
+  const size = await currentSize(file);
+  if (size + incomingBytes <= maxBytes) return true;
+  // All archive slots were already found occupied; do not stat them again on
+  // every append. Logging continues in the active file (never overwrite).
+  if (rotationExhausted.has(file)) return true;
 
-  const archive = `${file}.1`;
-  try {
-    await stat(archive);
-    // Never overwrite an existing archive. Pause logging instead of
-    // destroying a file that the user may have placed at this path.
-    return false;
-  } catch {
-    // Archive does not exist; safe to rename.
-  }
-  try {
-    await rename(file, archive);
+  for (let index = 1; index <= MAX_ARCHIVES; index += 1) {
+    const archive = `${file}.${index}`;
+    try {
+      await stat(archive);
+      // Slot taken by a file the user may own; try the next one.
+      continue;
+    } catch {
+      // Free slot.
+    }
+    try {
+      await rename(file, archive);
+      fileSizes.set(file, 0);
+    } catch {
+      // Rename failed (permissions, cross-device, or the file vanished).
+      // Keep appending instead of dropping diagnostics.
+    }
     return true;
-  } catch {
-    return false;
   }
+  // Every archive slot exists: keep appending to the active file rather than
+  // silently disabling logging for the rest of the session. Existing files are
+  // never overwritten or deleted.
+  rotationExhausted.add(file);
+  return true;
+}
+
+// Process-local caches. `directoryReady` avoids one mkdir syscall per request;
+// `fileSizes` avoids one stat per request by tracking appended bytes.
+const directoryReady = new Set();
+const fileSizes = new Map();
+const rotationExhausted = new Set();
+const MAX_ARCHIVES = 3;
+
+async function currentSize(file) {
+  const known = fileSizes.get(file);
+  if (Number.isFinite(known)) return known;
+  let size = 0;
+  try {
+    size = (await stat(file)).size;
+  } catch {
+    size = 0;
+  }
+  fileSizes.set(file, size);
+  return size;
+}
+
+async function ensureDirectory(dir) {
+  if (directoryReady.has(dir)) return;
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  directoryReady.add(dir);
 }
 
 /**
@@ -197,8 +231,6 @@ export async function appendStats({ directory, config, configError }, stats) {
     const maxBytes = Number.isInteger(config.log.maxBytes)
       ? config.log.maxBytes
       : 512 * 1024;
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    if (!(await rotateIfNeeded(file, maxBytes))) return;
 
     const record = {
       ts: new Date().toISOString(),
@@ -206,10 +238,18 @@ export async function appendStats({ directory, config, configError }, stats) {
       ...sanitizeStats(stats ?? {}),
     };
     if (configError) record.configError = sanitizeError(configError);
-    await appendFile(file, `${JSON.stringify(record)}\n`, {
+    // Serialize once: the same string is measured for rotation and appended.
+    const line = `${JSON.stringify(record)}\n`;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+
+    await ensureDirectory(path.dirname(file));
+    if (!(await rotateIfNeeded(file, maxBytes, lineBytes))) return;
+
+    await appendFile(file, line, {
       encoding: "utf8",
       mode: 0o600,
     });
+    fileSizes.set(file, (fileSizes.get(file) ?? 0) + lineBytes);
   } catch {
     // Fail-open for observability: a broken log path must not affect chat.
   }

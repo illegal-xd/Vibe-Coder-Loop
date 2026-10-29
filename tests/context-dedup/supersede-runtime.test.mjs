@@ -135,7 +135,8 @@ test("a truncated read is rejected and never supersedes the write", () => {
   assert.equal(decisions.length, 0);
   assert.equal(stats.fullReadCount, 0);
   assert.equal(stats.readRejectedReasons.read_truncated, 1);
-  assert.equal(stats.skippedReasons.no_superseding_read, 1);
+  // The file was read, but only partially: that is the precise reason.
+  assert.equal(stats.skippedReasons.read_not_full, 1);
 });
 
 test("a read that does not start at line 1 is rejected", () => {
@@ -299,7 +300,7 @@ test("a write that happens after the read is retained", () => {
   assert.equal(result.changed, false);
   assert.equal(result.stats.supersedeWrites.prunedCount, 0);
   // The read is not a superseder for a later write.
-  assert.equal(result.stats.supersedeWrites.skippedReasons.no_superseding_read, 1);
+  assert.equal(result.stats.supersedeWrites.skippedReasons.read_before_write, 1);
 });
 
 test("a partial (offset) read never clears the whole-file write", () => {

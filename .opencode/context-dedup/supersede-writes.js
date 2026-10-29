@@ -527,7 +527,17 @@ export function planSupersedeWrites(records, config = {}) {
   const timeline = buildBarrierTimeline(records, options);
   const writesByFile = new Map();
   const readsByFile = new Map();
+  // Diagnostic only: every successful read with a resolvable identity, even
+  // when it is not a complete read. Lets a preserved write explain whether the
+  // file was never read, only read partially, or read before the write.
+  const allReadsByFile = new Map();
   const placeholderTokens = textTokenUnits(options.placeholder);
+
+  const rememberRead = (map, identity, read) => {
+    const list = map.get(identity);
+    if (list) list.push(read);
+    else map.set(identity, [read]);
+  };
 
   for (const record of records) {
     if (!record || typeof record !== "object") {
@@ -575,14 +585,24 @@ export function planSupersedeWrites(records, config = {}) {
       const inspection = options.requireFullRead
         ? inspectRead(record, options)
         : { full: isReadCandidate(record, options), reason: "read_partial" };
+      const identity = fileIdentityOf(record);
       if (!inspection.full) {
         stats.ambiguousResultCount += 1;
         increment(stats.readRejectedReasons, inspection.reason || "read_incomplete");
+        // A rejected read still proves the file was inspected; classify it for
+        // the per-write diagnostics only when it was a confirmed success.
+        if (identity && isReadCandidate(record, options)) {
+          rememberRead(allReadsByFile, identity, {
+            record,
+            identity,
+            order: record.order,
+            userSegment: userSegmentOf(record),
+          });
+        }
         continue;
       }
       stats.confirmedReadCount += 1;
       stats.fullReadCount += 1;
-      const identity = fileIdentityOf(record);
       if (!identity) {
         increment(stats.skippedReasons, "read_unresolved_path");
         continue;
@@ -593,9 +613,8 @@ export function planSupersedeWrites(records, config = {}) {
         order: record.order,
         userSegment: userSegmentOf(record),
       };
-      const list = readsByFile.get(identity);
-      if (list) list.push(read);
-      else readsByFile.set(identity, [read]);
+      rememberRead(readsByFile, identity, read);
+      rememberRead(allReadsByFile, identity, read);
     }
   }
 
@@ -714,11 +733,27 @@ export function planSupersedeWrites(records, config = {}) {
   }
 
   // Count every preserved candidate exactly once, for every file (including
-  // files that never had a full read).
+  // files that never had a full read). When no guard fired, classify the
+  // evidence gap: no read, only partial reads, or full reads that all happened
+  // before the write. This keeps "candidate > 0, changed = 0" explainable.
   for (const writes of writesByFile.values()) {
     for (const candidate of writes) {
       if (candidate.decided) continue;
-      increment(stats.skippedReasons, candidate.blockedReason || "no_superseding_read");
+      let reason = candidate.blockedReason;
+      if (!reason) {
+        const fullReads = readsByFile.get(candidate.identity) ?? [];
+        const anyReads = allReadsByFile.get(candidate.identity) ?? [];
+        if (fullReads.length > 0) {
+          reason = fullReads.some((read) => read.order > candidate.order)
+            ? "no_superseding_read"
+            : "read_before_write";
+        } else if (anyReads.length > 0) {
+          reason = "read_not_full";
+        } else {
+          reason = "no_superseding_read";
+        }
+      }
+      increment(stats.skippedReasons, reason);
     }
   }
 

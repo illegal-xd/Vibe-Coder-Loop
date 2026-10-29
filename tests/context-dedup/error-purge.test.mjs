@@ -101,7 +101,7 @@ test("Case B/C: different command or build target is not equivalent", () => {
     successRecord({ id: "s1", order: 3, args: { command: "npm test -- --run unit" } }),
   ]);
   assert.equal(differentCommand.decisions.length, 0);
-  assert.equal(reason(differentCommand.stats, "no_success_for_signature"), 1);
+  assert.equal(reason(differentCommand.stats, "later_success_args_changed"), 1);
 
   const buildVsDeploy = planErrorPurge([
     errorRecord({ id: "e1", order: 1, args: { command: "npm run build" } }),

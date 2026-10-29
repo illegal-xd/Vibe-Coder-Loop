@@ -30,7 +30,7 @@
  */
 
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, readdir } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -40,6 +40,8 @@ import { serializeUsageRecord } from "./token-usage.js";
 
 const JSONL_EXTENSION = ".jsonl";
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+/** Bound the diagnostics array for corrupt archives. */
+const MAX_INVALID_DIAGNOSTICS = 200;
 /** UTC designator or numeric offset; a zone-less timestamp is ambiguous. */
 const ZONE_SUFFIX_PATTERN = /(?:[zZ]|[+-]\d{2}:?\d{2})$/;
 
@@ -299,42 +301,61 @@ export async function readUsageLog(
   const records = [];
   const files = [];
   const invalid = [];
-  const seenLines = new Set();
+
+  // Exact cross-file dedupe is only meaningful when the legacy single file
+  // still shares records with the daily files. Keeping every full line in a
+  // Set for the whole window doubled the retained memory; scan the legacy file
+  // once and only then keep a dedupe set.
+  let legacyExists = false;
+  try {
+    await access(basePath);
+    legacyExists = true;
+  } catch {
+    legacyExists = false;
+  }
+  const seenLines = legacyExists ? new Set() : null;
 
   async function scan(file, fileDate) {
     const read = await readLines(file, (line, lineNumber) => {
       const text = line.trim();
       if (text.length === 0) return;
+      const pushInvalid = (reason) => {
+        if (invalid.length < MAX_INVALID_DIAGNOSTICS) {
+          invalid.push({ file, line: lineNumber, reason });
+        }
+      };
       let record;
       try {
         record = JSON.parse(text);
       } catch {
-        invalid.push({ file, line: lineNumber, reason: "invalid_json" });
+        pushInvalid("invalid_json");
         return;
       }
       if (!record || typeof record !== "object" || Array.isArray(record)) {
-        invalid.push({ file, line: lineNumber, reason: "invalid_record" });
+        pushInvalid("invalid_record");
         return;
       }
       const dateKey = usageLogDateKey(record.timestamp);
       if (dateKey === null) {
-        invalid.push({ file, line: lineNumber, reason: "invalid_timestamp" });
+        pushInvalid("invalid_timestamp");
         return;
       }
       if (fileDate !== null && dateKey !== fileDate) {
-        invalid.push({ file, line: lineNumber, reason: "file_date_mismatch" });
+        pushInvalid("file_date_mismatch");
         return;
       }
       if (from && dateKey < from) return;
       if (to && dateKey > to) return;
-      if (seenLines.has(text)) return;
-      seenLines.add(text);
+      if (seenLines) {
+        if (seenLines.has(text)) return;
+        seenLines.add(text);
+      }
       records.push(record);
     });
     if (read) files.push(file);
   }
 
-  await scan(basePath, null);
+  if (legacyExists) await scan(basePath, null);
   for (const entry of dailyFiles) {
     await scan(entry.file, entry.date);
   }

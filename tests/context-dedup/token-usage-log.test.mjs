@@ -572,7 +572,7 @@ test("readUsageLog reports broken, mistyped, zone-less, and misplaced lines", as
   }
 });
 
-test("legacy v2 lines stay readable while new records are written as v3", async () => {
+test("legacy v2 lines stay readable while new records are written as v4", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
@@ -603,11 +603,11 @@ test("legacy v2 lines stay readable while new records are written as v3", async 
       all.records.map((entry) => [entry.schema_version, entry.request_id]),
       [
         [2, "legacy-v2"],
-        [3, "new-v3"],
+        [4, "new-v3"],
       ],
     );
     assert.deepEqual(all.invalid, []);
-    assert.equal(buildUsageRecord({}).schema_version, 3);
+    assert.equal(buildUsageRecord({}).schema_version, 4);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

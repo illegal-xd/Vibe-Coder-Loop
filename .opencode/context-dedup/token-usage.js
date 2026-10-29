@@ -1,5 +1,5 @@
 /**
- * Token usage measurement and JSONL record schema (schema_version 3).
+ * Token usage measurement and JSONL record schema (schema_version 4).
  *
  * This module is pure: no filesystem, no host hooks, no network. It turns the
  * runtime's normalized assistant-message usage plus the pruning statistics into
@@ -24,7 +24,7 @@ import { countCodePoints, textTokenUnits } from "./core.js";
 
 export { countCodePoints };
 
-export const TOKEN_USAGE_SCHEMA_VERSION = 3;
+export const TOKEN_USAGE_SCHEMA_VERSION = 4;
 export const TOKEN_USAGE_EVENT_TYPE = "model_request_usage";
 
 /**
@@ -498,9 +498,11 @@ function strategySummary(stats, fallbackEnabled) {
     changed_items: changedItems,
     removed_items: changedItems,
     preserved_items: preserved,
-    candidate_tokens: unavailableMeasure(),
+    // v4: `candidate_tokens` / `preserved_tokens` were always unavailable and
+    // duplicated the same holder object on every strategy; the funnel counts
+    // above already carry the information. Only the measured net removal
+    // remains, with its provenance.
     removed_tokens: removed !== null ? measure(removed, SOURCE.ESTIMATED_TOKENS_FROM_CHARS) : unavailableMeasure(),
-    preserved_tokens: unavailableMeasure(),
     skipped: partitionSkippedReasons(stats.skippedReasons),
   };
 
@@ -587,8 +589,7 @@ export function summarizePruning(stats) {
     total_removed_tokens: measured ? measure(total, SOURCE.ESTIMATED_TOKENS_FROM_CHARS) : unavailableMeasure(),
     measurement_source: SOURCE.ESTIMATED_TOKENS_FROM_CHARS,
     attribution: "incremental_sequential",
-    token_unit_note:
-      "removed_tokens and total_removed_tokens are estimated token counts from char_weight_v1, not character counts or billed usage.",
+    token_unit: "estimated_tokens_char_weight_v1",
   };
 }
 

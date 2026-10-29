@@ -2,7 +2,7 @@
 
 > 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**与**写操作上下文覆盖（Supersede Writes）**。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现并通过 **260 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现并通过 **262 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
@@ -380,7 +380,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `log.enabled` | 关闭日志 | `true` |
 | `log.onlyWhenActive` | 只在有候选/变更/错误时写日志 | `true` |
 | `log.path` | 日志路径；相对路径相对项目根，支持 `~` | `~/.vibe-loop/context-dedup/events.jsonl` |
-| `log.maxBytes` | 超过后轮转为 `.1`；`.1` 已存在则暂停追加 | `524288` |
+| `log.maxBytes` | 超过后按 `.1`→`.3` 顺序轮转；全部占用时继续追加主文件，绝不覆盖/删除已有文件 | `524288` |
 | `tokenUsage.enabled` | 独立的 Token 用量记录开关；与三条裁剪策略互不影响 | `true` |
 | `tokenUsage.path` | 基准文件路径；每日文件沿用其目录与基名（`token-usage.jsonl` → `token-usage-YYYY-MM-DD.jsonl`）。相对路径相对项目根，支持 `~`；缺省 `~/.config/opencode/token-usage/token-usage.jsonl`（跨项目共享归档） | `null` |
 
@@ -427,7 +427,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `uniqueSignatureCount` / `sameSignatureDifferentOutputCount` | 合格记录中“签名唯一”/“签名相同但输出不同”的数量（解释为何不可裁剪） |
 | `sameSignatureDifferentOutputGroups` | 同签名不同输出的签名组数 |
 | `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
-| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_signature_different_output` / `intervening_side_effect` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `intervening_side_effect` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省 |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的全部决策估算节省 |
 | `tokenCounting` | `estimate_heuristic_v1` |
@@ -448,7 +448,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `highConfidencePruneCount` / `mediumConfidencePruneCount` | 置信度决策数 |
 | `decisionKinds` | `superseded_by_success` / `duplicate_failure` / `stale_failure_input` 决策计数 |
 | `inputRedactedCount` | 决策中同时裁剪了失败调用输入载荷的数量 |
-| `skippedReasons` | `no_success_for_signature` / `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
+| `skippedReasons` | `no_success_for_signature`（同工具无更晚成功）/ `later_success_args_changed`（同工具有更晚成功但参数不等价）/ `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -470,7 +470,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `preservedCount` | 保留的候选写上下文数 |
 | `highConfidencePruneCount` | 高置信度覆盖决策数 |
 | `decisionKinds` | `superseded_by_read` 决策计数 |
-| `skippedReasons` | `no_superseding_read` / `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `no_superseding_read`（该文件从未被读）/ `read_not_full`（只有部分读取）/ `read_before_write`（完整读取全部早于写入）/ `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -480,7 +480,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 Token 估算：ASCII 约 `1/4 token/字符`，非 ASCII 约 `1 token/字符`，向上取整。**这是估算，不是模型 tokenizer 的真实计数**；`actualTokenSavings: null` 表示真实值不可得。Error Purge 只估算被替换的 `state.error`；Supersede Writes 估算被脱敏的输入内容字段与被替换的 `state.output`，不包含 metadata 中的潜在诊断内容。
 
-日志默认写到 `~/.vibe-loop/context-dedup/events.jsonl`，目录 `0700`、文件创建时 `0600`，超过 `maxBytes` 轮转为 `.1`；若 `.1` 已存在则暂停追加，绝不覆盖已有文件。日志失败不会影响请求。
+日志默认写到 `~/.vibe-loop/context-dedup/events.jsonl`，目录 `0700`、文件创建时 `0600`；超过 `maxBytes` 时按 `.1`→`.3` 顺序轮转，全部归档位被占用时继续追加到主文件（**不再因为 `.1` 已存在而永久停写**），绝不覆盖已有文件。写入路径缓存目录状态与已写字节数，避免每次请求重复 `mkdir`/`stat`。日志失败不会影响请求。
 
 ## 八、测试
 
@@ -490,7 +490,7 @@ bash scripts/tests/test-context-dedup.sh
 node --test tests/context-dedup/*.test.mjs
 ```
 
-**260 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
+**262 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3/v4 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
 
 - Dedup：相同工具/参数/成功结果重复；不同参数/工具/环境；失败调用；副作用工具；输出不同；依赖屏障；引用守卫；消息结构；幂等；空/异常输入；预览；配置；日志脱敏；OpenCode 类型契约。
 - 保护规则：glob（`**`/`*`/`?`）匹配；multiedit/apply_patch/execute 路径提取；工具名与路径保护在三条策略中一致生效；默认空列表不改变行为。
@@ -608,7 +608,7 @@ Runtime 归一化为：
 
 - Dedup 只替换 `state.output`（completed），Error Purge 只替换 `state.error`（error），Supersede Writes 只替换写工具的 `state.input` 内容字段与 `state.output`；三条策略**作用于不同记录/不同字段**，按执行顺序 `["deduplication", "error_purge", "supersede_writes"]` 求和不会重复计数。
 - `removed_tokens` 是**净节省**（被替换内容 − 占位符），来自既有 `tokenSavingsEstimated`，不等于“真实输入 token 节省”（实际还受 system prompt、工具定义、provider 序列化、缓存等影响）。
-- `candidate_tokens` / `preserved_tokens` 记为 `unavailable`：既有管道未保留每条候选的 token 量，且**不为此改动裁剪规则**。
+- v4 删除了恒为 `unavailable` 的 `candidate_tokens` / `preserved_tokens`：管道未保留每条候选的 token 量，重复的空 holder 只增加记录体积；漏斗计数已足以表达候选/保留数量。
 - 当某策略有 `removed_items > 0` 但 `removed_tokens` 不可得时，`total_removed_tokens` 记为 `unavailable`（不编造 0）。
 
 ### 存储（按 UTC 自然日分文件）
@@ -655,11 +655,11 @@ msg.tokens.cache.read + msg.tokens.cache.write
 
 面板的“上下文拆分”用 `input=155` 作为分母，但字符估算遍历的是全部会话消息，因此百分比不是 107k 上下文的构成，而是按 155 缩放后的字符比例。优化方向：使用 `input_tokens`（100,123）作为分母并注明“按字符估算，含缓存上下文”，或明确标注为“未缓存输入拆分”。会话累计 token/成本应单独展示，不能与当前上下文混在同一组标签下。
 
-### 记录示例（schema v3；字段均为占位示意，非真实值）
+### 记录示例（schema v4；字段均为占位示意，非真实值）
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "event_type": "model_request_usage",
   "timestamp": "2026-10-28T12:00:00.000Z",
   "session_id": "ses_…",
@@ -685,9 +685,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
       "enabled": true, "preview": false,
       "scanned_records": 47,
       "eligible_items": 2, "candidate_items": 2, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 1,
-      "candidate_tokens": { "value": null, "source": "unavailable" },
       "removed_tokens": { "value": 300, "source": "estimated_tokens_from_chars" },
-      "preserved_tokens": { "value": null, "source": "unavailable" },
       "skipped": {
         "record_scan": { "unsupported_tool": 40, "not_completed": 5 },
         "candidate": { "referenced_later": 1 },
@@ -711,14 +709,14 @@ msg.tokens.cache.read + msg.tokens.cache.write
     "total_removed_tokens": { "value": 480, "source": "estimated_tokens_from_chars" },
     "measurement_source": "estimated_tokens_from_chars",
     "attribution": "incremental_sequential",
-    "token_unit_note": "removed_tokens and total_removed_tokens are estimated token counts from char_weight_v1, not character counts or billed usage."
+    "token_unit": "estimated_tokens_char_weight_v1"
   },
   "estimator": "char_weight_v1",
   "errors": []
 }
 ```
 
-### 字段语义（schema v3）
+### 字段语义（schema v4）
 
 **usage_status**：见上文；`unverified` 表示字段存在但全零或未通过一致性校验，**不可作为真实用量聚合**。`actual` 表示 Runtime 归一化用量完整且通过一致性校验，不等于「已与原始 HTTP 响应逐字节比对」；原始值仅在异常时通过 `validation.raw` 保留。
 
@@ -735,16 +733,18 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
 | `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `full` / `rejected_reasons`（`read_truncated` 等） |
 | `skipped.record_scan` | 扫描记录数 | 被排除的扫描记录（`unsupported_tool` 计 bash/edit 等非白名单调用，**可合法大于 `candidate_items`**） |
-| `skipped.candidate` | 候选/分组数 | 合格候选被守卫拦截（`unique_signature` / `same_signature_different_output` / `no_success_for_signature` / `intervening_side_effect` / `no_token_benefit` / `across_user_turn` 等） |
+| `skipped.candidate` | 候选/分组数 | 合格候选被守卫拦截（`unique_signature` / `same_target_args_changed` / `same_signature_different_output` / `no_success_for_signature` / `later_success_args_changed` / `read_not_full` / `read_before_write` / `intervening_side_effect` / `no_token_benefit` / `across_user_turn` 等） |
 | `skipped.application` | 应用阶段决策数 | apply 时因 location/state/校验失败被丢弃 |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
-| `candidate_tokens` / `preserved_tokens` | — | 恒为 `unavailable`：管道未保留每候选 token 量，不为此改动裁剪规则 |
+| `token_unit` | — | v4 固定为 `estimated_tokens_char_weight_v1`；说明 `removed_tokens` 是估算 Token 数，不是字符数，也不是计费值 |
 
 > **卡片行契约**：`server.mjs` 的 `buildCardPayload()` 与可选的 `export_card_data.py` 每策略写 `[removed_tokens, scanned_records, candidate_items, removed_items, eligible_items, marked_items]`；旧四列记录由 `app.js` 回退为 `candidate_items`/`removed_items`，不编造数字。
 
 > **v1 → v2 变更**：`schema_version` 1→2；估算来源 `estimated_char_count`→`estimated_tokens_from_chars`（值是 Token 估算而非字符数）；`usage_status` 的 `unavailable`→`missing`，新增 `unverified`；`pruning.*.skipped_reasons`（扁平、单位混淆）→ `skipped.{record_scan,candidate,application}`（按单位分桶），新增 `scanned_records`。
 >
 > **v2 → v3 变更**：`input_tokens` 从「未缓存输入」改为「输入总量」；`output_tokens` 从「Runtime 原始 output（当前版本为可见输出）」改为「输出总量（含 reasoning）」；`total_tokens` 优先采用 Runtime `tokens.total`（无 total 时才派生）；`cache_write_tokens` 显式保留 0；新增可选 `attempt`（重试 attempt > 1 时）与异常时的 `validation`。字段名和记录结构不变，v1/v2 旧记录仍按原样可读；`readUsageLog` 不按版本过滤，新旧记录可共存于同一每日文件。分析旧记录时：v2 的总输入 = `input_tokens + cached_input_tokens + cache_write_tokens`，总输出 = `output_tokens + reasoning_tokens`；v3 已直接给出总量。
+>
+> **v3 → v4 变更**：`pruning.*` 删除恒为 `unavailable` 的 `candidate_tokens` / `preserved_tokens`，记录尾部 150 字符的 `token_unit_note` 收敛为固定短字段 `token_unit`；计数与 `removed_tokens`/`total_removed_tokens` 的语义不变。v1–v3 旧记录仍可读，卡片按缺失字段回退。
 
 ### 当前环境不可得 / 待验证的字段
 
@@ -797,7 +797,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 本机安装的 `@opencode-ai/plugin` 类型定义中存在该 hook，消息结构为 `{ info: Message, parts: Part[] }`。
 - 本机安装的 SDK 类型中 `ToolPart` 含 `callID`、`tool`、`state`；错误态含 `status: "error"` 与 `error: string`，完成态含 `status: "completed"` 与 `output: string`。
 - 参考项目 `opencode-dynamic-context-pruning` 使用同一 hook 并就地修改 `output.messages`。
-- Node/Bun 可加载插件入口并注册 hook；260 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
+- Node/Bun 可加载插件入口并注册 hook；262 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
 
 ## 十三、卸载 / 回滚
 

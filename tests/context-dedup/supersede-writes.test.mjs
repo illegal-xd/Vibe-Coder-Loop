@@ -154,7 +154,8 @@ test("a write after the read is retained", () => {
     decisions.map((decision) => decision.id),
     ["w1"],
   );
-  assert.equal(stats.skippedReasons.no_superseding_read, 1);
+  // w2 has a full read, but it happened before the write.
+  assert.equal(stats.skippedReasons.read_before_write, 1);
 });
 
 test("reading file A never supersedes file B", () => {
