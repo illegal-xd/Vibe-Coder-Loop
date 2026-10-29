@@ -12,8 +12,12 @@
  *   patch/apply_patch) with a confirmed-success status are candidates;
  * - only a confirmed-success full read (default tool `read`) of the SAME
  *   canonical file, in the SAME workspace (cwd/root), can supersede;
- * - a read is "full" only when it has no offset/limit, is not truncated, and
- *   returns content (not metadata-only);
+ * - a read is "full" only when it starts at line 1, is not truncated, and
+ *   returns content (not metadata-only). The runtime normalizes every read's
+ *   input with an explicit `offset`/`limit`, so a bare `limit` is NOT proof of
+ *   a partial read: completeness must come from structured EOF evidence
+ *   (`metadata.truncated === false`, or a `metadata.display` line range that
+ *   covers `totalLines`), with the legacy "no offset/limit" form as fallback;
  * - the read must have started no earlier than the write ended (real
  *   happens-before). Missing or malformed completion timings preserve the
  *   write; overlapping writes invalidate the read for that file;
@@ -24,6 +28,7 @@
  *   touched the file and we cannot prove the read still contains the write's
  *   final result;
  * - write call ids referenced later are protected by the adapter;
+ * - writes to user-protected tools or file patterns are never redacted;
  * - estimated saved tokens must exceed the placeholder, otherwise the
  *   rewrite is not worth it.
  *
@@ -40,6 +45,7 @@ import {
   isPlainObject,
   isPrunedOutput,
   normalizePath,
+  protectedReason,
   textTokenUnits,
 } from "./core.js";
 
@@ -121,6 +127,14 @@ function normalizeOptions(config = {}) {
   const writeTools = asStringSet(config.writeTools ?? DEFAULT_WRITE_TOOLS);
   const readTools = asStringSet(config.readTools ?? DEFAULT_SUPERSEDE_READ_TOOLS);
   const readOnlyTools = asStringSet(config.readOnlyTools ?? DEFAULT_READ_ONLY_TOOLS);
+  const protectedTools = Array.isArray(config.protectedTools)
+    ? config.protectedTools.filter((tool) => typeof tool === "string" && tool.trim().length > 0)
+    : [];
+  const protectedFilePatterns = Array.isArray(config.protectedFilePatterns)
+    ? config.protectedFilePatterns.filter(
+        (pattern) => typeof pattern === "string" && pattern.trim().length > 0,
+      )
+    : [];
   return {
     enabled,
     placeholder: validPlaceholder(config.placeholder, DEFAULT_SUPERSEDE_PLACEHOLDER),
@@ -131,6 +145,8 @@ function normalizeOptions(config = {}) {
     barrierOnBroadMutations: config.barrierOnBroadMutations !== false,
     protectReferences: config.protectReferences !== false,
     requireFullRead: config.requireFullRead !== false,
+    protectedTools,
+    protectedFilePatterns,
   };
 }
 
@@ -139,10 +155,20 @@ export function createSupersedeWritesStats() {
     enabled: true,
     preview: false,
     recordsTotal: 0,
-    confirmedWriteCount: 0,
+    // Observable funnel: writes detected -> writes with a resolved identity
+    // (eligible) -> writes that share identity with an accepted full read
+    // (candidate) -> decisions (marked) -> applied (changed).
+    observedReadCount: 0,
+    confirmedReadCount: 0,
     fullReadCount: 0,
+    ambiguousWriteCount: 0,
     ambiguousResultCount: 0,
+    confirmedWriteCount: 0,
+    eligibleCount: 0,
     candidateCount: 0,
+    fileMatchCount: 0,
+    versionVerifiedCount: 0,
+    markedCount: 0,
     plannedPruneCount: 0,
     wouldPruneCount: 0,
     prunedCount: 0,
@@ -150,6 +176,8 @@ export function createSupersedeWritesStats() {
     highConfidencePruneCount: 0,
     decisionKinds: {},
     skippedReasons: {},
+    // Why reads were not usable as a superseder (completeness/version gate).
+    readRejectedReasons: {},
     tokenSavingsEstimated: 0,
     tokenSavingsEstimatedIfApplied: 0,
     tokenCounting: TOKEN_COUNTING,
@@ -292,30 +320,57 @@ function isReadCandidate(record, options) {
   return true;
 }
 
-function isFullRead(record, options) {
-  if (!isReadCandidate(record, options)) return false;
+/** Structured line range reported by the runtime for a file read, if any. */
+function readLineRange(metadata) {
+  const display = isPlainObject(metadata) ? metadata.display : null;
+  if (!isPlainObject(display)) return null;
+  const lineStart = display.lineStart;
+  const lineEnd = display.lineEnd;
+  const totalLines = display.totalLines;
+  if (![lineStart, lineEnd, totalLines].every((value) => Number.isFinite(value))) return null;
+  if (totalLines <= 0) return null;
+  return { lineStart, lineEnd, totalLines };
+}
 
-  // Offset/limit => explicitly a slice, never the whole file. OpenCode's read
-  // tool documents offset as 1-indexed, so 0/1 both start at the beginning.
+/**
+ * Classify a read record for supersession. Returns `{ full, reason }` where
+ * `reason` explains why a read cannot act as a superseder.
+ *
+ * The runtime normalizes every `read` input with an explicit `offset`
+ * (1-indexed, default 1) and `limit` (computed cap), so a `limit` alone cannot
+ * mean "partial". Completeness therefore has to come from structured EOF
+ * evidence, in this order:
+ *   1. `metadata.truncated === false` for a read that started at line 1;
+ *   2. `metadata.display` range covering `[1, totalLines]`;
+ *   3. legacy records that carry neither offset nor limit.
+ * Anything weaker is treated as incomplete and never supersedes a write.
+ */
+function inspectRead(record, options) {
+  if (!isReadCandidate(record, options)) {
+    return { full: false, reason: "read_invalid_candidate" };
+  }
+
   const args = record.args;
-  const offset = args.offset ?? args.line ?? args.startLine ?? args.from;
-  if (offset !== undefined && offset !== null) {
-    const numeric = Number(offset);
-    // Any malformed, negative, or >1 offset means we cannot prove the read
-    // started at the beginning of the file.
-    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) return false;
+  const rawOffset = args.offset ?? args.line ?? args.startLine ?? args.from;
+  if (rawOffset !== undefined && rawOffset !== null) {
+    const numeric = Number(rawOffset);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+      return { full: false, reason: "read_invalid_offset" };
+    }
+    // OpenCode's read tool documents offset as 1-indexed, so 0/1 both start
+    // at the beginning; anything larger is an explicit slice.
+    if (numeric > 1) return { full: false, reason: "read_partial_offset" };
   }
   const limit = args.limit ?? args.lines ?? args.count ?? args.maxLines;
-  if (limit !== undefined && limit !== null) {
-    return false; // any explicit cap (even malformed) => partial
-  }
 
-  // Structured freshness signals when the runtime provides them.
   const metadata = isPlainObject(record.metadata) ? record.metadata : {};
-  if (metadata.truncated === true) return false;
-  if (metadata.loaded === false) return false;
-  if (metadata.partial === true) return false;
-  if (metadata.complete === false) return false;
+  if (metadata.truncated === true) return { full: false, reason: "read_truncated" };
+  if (metadata.loaded === false) return { full: false, reason: "read_not_loaded" };
+  if (metadata.partial === true) return { full: false, reason: "read_partial" };
+  if (metadata.complete === false) return { full: false, reason: "read_incomplete" };
+  if (isPlainObject(metadata.display) && metadata.display.truncated === true) {
+    return { full: false, reason: "read_truncated" };
+  }
 
   // Conservative text sniff: only used to reject, never to accept. The
   // runtime appends its cap notice at the end ("Output capped at ..."), so
@@ -325,11 +380,40 @@ function isFullRead(record, options) {
     const head = output.slice(0, 512).toLowerCase();
     const tail = output.slice(-512).toLowerCase();
     for (const hint of TRUNCATION_HINTS) {
-      if (head.includes(hint) || tail.includes(hint)) return false;
+      if (head.includes(hint) || tail.includes(hint)) {
+        return { full: false, reason: "read_truncated_hint" };
+      }
     }
   }
 
-  return true;
+  // Proof 1: the runtime explicitly reports that the read was not truncated.
+  // Combined with the offset <= 1 check above, the read covered the whole file
+  // even though the runtime also stamped a `limit`.
+  if (metadata.truncated === false) return { full: true, reason: "" };
+
+  // Proof 2: a structured range. When the runtime reports one it is
+  // authoritative: either it covers the whole file or the read was partial.
+  const range = readLineRange(metadata);
+  if (range) {
+    if (range.lineStart <= 1 && range.lineEnd >= range.totalLines) {
+      return { full: true, reason: "" };
+    }
+    return { full: false, reason: "read_partial_range" };
+  }
+
+  // Legacy fallback: no explicit slice. Offset 0/1 is the beginning of the
+  // file; a bare `limit` without EOF proof stays conservative because it may
+  // be a real cap.
+  const startsAtBeginning =
+    rawOffset === undefined || rawOffset === null || Number(rawOffset) <= 1;
+  if (startsAtBeginning && (limit === undefined || limit === null)) {
+    return { full: true, reason: "" };
+  }
+
+  return {
+    full: false,
+    reason: limit !== undefined && limit !== null ? "read_limited" : "read_unverified",
+  };
 }
 
 /**
@@ -457,10 +541,16 @@ export function planSupersedeWrites(records, config = {}) {
 
     if (typeof record.tool === "string" && options.writeTools.has(record.tool)) {
       if (!timeline.confirmedWrites.has(record.order)) {
+        stats.ambiguousWriteCount += 1;
         stats.ambiguousResultCount += 1;
         continue;
       }
       stats.confirmedWriteCount += 1;
+      const protectReason = protectedReason(record, options);
+      if (protectReason) {
+        increment(stats.skippedReasons, protectReason);
+        continue;
+      }
       const identity = timeline.identityByOrder.get(record.order) ?? fileIdentityOf(record);
       if (!identity) {
         increment(stats.skippedReasons, "write_unresolved_path");
@@ -481,13 +571,16 @@ export function planSupersedeWrites(records, config = {}) {
     }
 
     if (typeof record.tool === "string" && options.readTools.has(record.tool)) {
-      const accepted = options.requireFullRead
-        ? isFullRead(record, options)
-        : isReadCandidate(record, options);
-      if (!accepted) {
+      stats.observedReadCount += 1;
+      const inspection = options.requireFullRead
+        ? inspectRead(record, options)
+        : { full: isReadCandidate(record, options), reason: "read_partial" };
+      if (!inspection.full) {
         stats.ambiguousResultCount += 1;
+        increment(stats.readRejectedReasons, inspection.reason || "read_incomplete");
         continue;
       }
+      stats.confirmedReadCount += 1;
       stats.fullReadCount += 1;
       const identity = fileIdentityOf(record);
       if (!identity) {
@@ -506,8 +599,15 @@ export function planSupersedeWrites(records, config = {}) {
     }
   }
 
+  // Eligible = confirmed writes with a resolvable canonical file identity.
+  // Candidate = eligible write whose file identity also has an accepted full
+  // read (the version relation is checked later, per read).
   stats.candidateCount = 0;
-  for (const list of writesByFile.values()) stats.candidateCount += list.length;
+  for (const [identity, list] of writesByFile.entries()) {
+    stats.candidateCount += list.length;
+    if ((readsByFile.get(identity)?.length ?? 0) > 0) stats.fileMatchCount += list.length;
+  }
+  stats.eligibleCount = stats.candidateCount;
 
   const decisions = [];
   const decide = (candidate, read) => {
@@ -597,6 +697,10 @@ export function planSupersedeWrites(records, config = {}) {
             if (!candidate.blockedReason) candidate.blockedReason = "intervening_broad_mutation";
             continue;
           }
+          // Reached this point only after the read is complete, the file
+          // identity matches, and the version relation (happens-before, no
+          // overlap, no intervening mutation) is verified.
+          stats.versionVerifiedCount += 1;
           decide(candidate, read);
         }
       }
@@ -619,6 +723,8 @@ export function planSupersedeWrites(records, config = {}) {
   }
 
   decisions.sort((left, right) => left.order - right.order);
+  stats.markedCount = decisions.length;
+  stats.prunableCount = stats.fileMatchCount;
   stats.plannedPruneCount = decisions.length;
   stats.preservedCount = Math.max(0, stats.candidateCount - decisions.length);
   stats.highConfidencePruneCount = decisions.length;

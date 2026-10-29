@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""导出 Token 用量卡片数据：data/token-usage*.jsonl → tools/token-usage-card/token-usage-data.js。
+"""导出 Token 用量卡片数据：~/.config/opencode/token-usage/token-usage*.jsonl → tools/token-usage-card/token-usage-data.js。
 
 卡片页是静态 HTML，file:// 下无法 fetch 本地 jsonl，因此由本脚本生成可直接 <script> 加载的快照。
 只保留卡片需要的字段，并按 schema 语义归一：
 - 输入总量：v3 = input_tokens；v2 = input_tokens + cached_input_tokens + cache_write_tokens
 - 输出总量：v3 = output_tokens；v2 = output_tokens + reasoning_tokens
-- 每条策略记录 [removed_tokens, scanned_records, candidate_items, removed_items]；
+- 每条策略记录 [removed_tokens, scanned_records, candidate_items, removed_items,
++  eligible_items, marked_items]（后两项对旧记录回退为 candidate_items/removed_items）；
   该次请求没有该策略时记 null，卡片据此区分“未采集”与“采集到 0”。
 跨文件逐字节相同的行只计一次（与 readUsageLog 口径一致），损坏行跳过并计数。
 """
@@ -19,8 +20,16 @@ import sys
 from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DATA_DIR = os.path.join(ROOT, "data")
-OUT_FILE = os.path.join(ROOT, "tools", "token-usage-card", "token-usage-data.js")
+# Central archive shared by every project. Env overrides let the UI
+# consistency test run against a temporary fixture without touching it.
+DATA_DIR = os.path.expanduser(
+    os.environ.get("VIBE_TOKEN_USAGE_DATA_DIR")
+    or os.environ.get("VIBE_TOKEN_USAGE_HOME")
+    or "~/.config/opencode/token-usage"
+)
+OUT_FILE = os.environ.get("VIBE_TOKEN_USAGE_OUT_FILE") or os.path.join(
+    ROOT, "tools", "token-usage-card", "token-usage-data.js"
+)
 FILE_RE = re.compile(r"^token-usage(-\d{4}-\d{2}-\d{2})?\.jsonl$")
 # 与 .opencode/context-dedup/token-usage.js 的 pruning.order 对齐：即使历史记录尚未采集
 # 某条策略，卡片也保留该行（值为 0），避免策略在界面上“消失”。
@@ -122,12 +131,16 @@ def main() -> int:
                 # 该次请求的日志还没有这条策略（旧版插件），卡片据此显示“未记录”。
                 per_strategy.append(None)
                 continue
+            candidate_items = int(summary.get("candidate_items") or 0)
+            removed_items = int(summary.get("removed_items") or 0)
             per_strategy.append(
                 [
                     value_of(summary.get("removed_tokens")),
                     int(summary.get("scanned_records") or 0),
-                    int(summary.get("candidate_items") or 0),
-                    int(summary.get("removed_items") or 0),
+                    candidate_items,
+                    removed_items,
+                    int(summary.get("eligible_items", candidate_items) or 0),
+                    int(summary.get("marked_items", removed_items) or 0),
                 ]
             )
         removed_total = value_of(pruning.get("total_removed_tokens"))

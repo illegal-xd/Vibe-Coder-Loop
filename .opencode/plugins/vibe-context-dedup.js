@@ -38,12 +38,12 @@ function sanitizeError(error, directory = "") {
   return text.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
-async function loadConfig(directory) {
-  if (isTruthy(process.env.VIBE_CONTEXT_DEDUP_DISABLED)) {
+async function loadConfig(directory, env = process.env) {
+  if (isTruthy(env.VIBE_CONTEXT_DEDUP_DISABLED)) {
     return { ...DEFAULT_CONFIG, enabled: false };
   }
 
-  const explicit = process.env.VIBE_CONTEXT_DEDUP_CONFIG;
+  const explicit = env.VIBE_CONTEXT_DEDUP_CONFIG;
   const explicitPath = typeof explicit === "string" && explicit.trim().length > 0;
   const configPath = explicitPath
     ? path.resolve(directory, explicit.trim())
@@ -59,7 +59,7 @@ async function loadConfig(directory) {
       throw error;
     }
   }
-  return resolveConfig(raw, process.env);
+  return resolveConfig(raw, env);
 }
 
 function sessionIdOf(messages) {
@@ -83,10 +83,13 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     typeof input.directory === "string" && input.directory.length > 0
       ? input.directory
       : process.cwd();
+  // `input.env` is an explicit seam for tests and embedders; the runtime
+  // passes no env, so process.env is used.
+  const env = input.env && typeof input.env === "object" ? input.env : process.env;
   let config;
   let configError = "";
   try {
-    config = await loadConfig(directory);
+    config = await loadConfig(directory, env);
   } catch (error) {
     config = { ...DEFAULT_CONFIG, enabled: false };
     configError =
@@ -98,6 +101,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
   const usageLogger = createUsageLogger({
     directory,
     config,
+    env,
     onFailure: (reason) => {
       void reportUsageFailure(reason);
     },
@@ -208,14 +212,17 @@ export const VibeContextDedupPlugin = async (input = {}) => {
         }
         result.stats.changed = false;
         result.stats.prunedCount = 0;
+        result.stats.changedCount = 0;
         result.stats.tokenSavingsEstimated = 0;
         result.stats.outputBytesRemovedActual = 0;
         // The request copy was not accepted, so no strategy's removals reached
-        // the model; keep nested counters consistent with reality.
+        // the model; keep nested counters consistent with reality. `markedCount`
+        // is kept: the decisions existed, they just did not change the request.
         for (const strategy of ["errorPurge", "supersedeWrites"]) {
           if (!result.stats[strategy]) continue;
           result.stats[strategy].changed = false;
           result.stats[strategy].prunedCount = 0;
+          result.stats[strategy].changedCount = 0;
           result.stats[strategy].tokenSavingsEstimated = 0;
           result.stats[strategy].outputBytesRemovedActual = 0;
         }

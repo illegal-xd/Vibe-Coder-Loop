@@ -18,6 +18,17 @@
  * Repeated identical failures are a separate, medium-confidence rule: older
  * duplicates may be pruned while the newest equivalent failure is retained.
  * If no later evidence exists, the error is preserved.
+ *
+ * When a rule fires, the failed call's bulky input strings are redacted too
+ * (parity with the reference implementation's "prune errored tool inputs").
+ * This is lossless by construction: the surviving equivalent call carries the
+ * same arguments, so the content still exists later in the conversation. The
+ * error message itself is only replaced when that replacement is smaller.
+ *
+ * An optional, disabled-by-default rule (`staleInputAfterUserTurns`) redacts
+ * the input of confirmed errors older than N user turns without touching the
+ * error message. The reference implementation prunes on turn age alone; this
+ * port keeps that behavior opt-in so the default stays evidence-based.
  */
 
 import {
@@ -29,6 +40,8 @@ import {
   estimateTokens,
   isPlainObject,
   isPrunedOutput,
+  protectedReason,
+  textTokenUnits,
 } from "./core.js";
 
 export const DEFAULT_ERROR_PLACEHOLDER =
@@ -38,6 +51,71 @@ export const DEFAULT_ERROR_PLACEHOLDER =
 export const DUPLICATE_ERROR_PLACEHOLDER =
   `${PRUNE_MARKER} Earlier duplicate failure output omitted; ` +
   "the latest equivalent failure is retained.";
+
+export const DEFAULT_ERROR_INPUT_PLACEHOLDER =
+  `${PRUNE_MARKER} Failed call input omitted: an equivalent newer call ` +
+  "retains the same arguments. The failure status is retained.";
+
+export const DEFAULT_STALE_INPUT_PLACEHOLDER =
+  `${PRUNE_MARKER} Failed call input omitted: the failure is older than the ` +
+  "retention window. The failure status and error message are retained.";
+
+/**
+ * Input keys that identify *what* failed (paths, selectors, short labels).
+ * They are small and diagnostically useful, so they are never redacted.
+ */
+const ERROR_INPUT_KEEP_KEYS = new Set([
+  "filePath",
+  "path",
+  "file",
+  "filename",
+  "fileName",
+  "cwd",
+  "directory",
+  "dir",
+  "root",
+  "worktree",
+  "pattern",
+  "glob",
+  "include",
+  "exclude",
+  "query",
+  "url",
+  "name",
+  "id",
+  "description",
+]);
+
+/**
+ * Redact the bulky string values of a failed call's input. Returns null when
+ * nothing is worth redacting, otherwise `{ input, savedTokens }`.
+ *
+ * Only top-level strings larger than the placeholder are replaced, so the
+ * object shape and every identifying field stay intact.
+ */
+export function redactErrorInput(input, placeholder) {
+  if (!isPlainObject(input)) return null;
+  const placeholderUnits = textTokenUnits(placeholder);
+  const redacted = Object.create(null);
+  let savedUnits = 0;
+  let changed = false;
+  for (const key of Object.keys(input)) {
+    const value = input[key];
+    if (
+      typeof value === "string" &&
+      !ERROR_INPUT_KEEP_KEYS.has(key) &&
+      textTokenUnits(value) > placeholderUnits
+    ) {
+      redacted[key] = placeholder;
+      savedUnits += textTokenUnits(value) - placeholderUnits;
+      changed = true;
+      continue;
+    }
+    redacted[key] = value;
+  }
+  if (!changed) return null;
+  return { input: redacted, savedTokens: Math.ceil(savedUnits) };
+}
 
 export const HIGH_CONFIDENCE = "high";
 export const MEDIUM_CONFIDENCE = "medium";
@@ -50,6 +128,12 @@ export function createErrorPurgeStats() {
     confirmedErrorCount: 0,
     ambiguousResultCount: 0,
     candidateCount: 0,
+    eligibleCount: 0,
+    // Candidates that have at least one later same-signature success. This is
+    // the funnel step between "eligible" and "marked": failures with no later
+    // equivalent success can never be pruned.
+    potentialSupersedeCount: 0,
+    markedCount: 0,
     plannedPruneCount: 0,
     wouldPruneCount: 0,
     prunedCount: 0,
@@ -57,6 +141,7 @@ export function createErrorPurgeStats() {
     highConfidencePruneCount: 0,
     mediumConfidencePruneCount: 0,
     decisionKinds: {},
+    inputRedactedCount: 0,
     skippedReasons: {},
     tokenSavingsEstimated: 0,
     tokenSavingsEstimatedIfApplied: 0,
@@ -98,6 +183,18 @@ function normalizeOptions(config = {}) {
     Number.isInteger(config.minSuccesses) && config.minSuccesses >= 1
       ? config.minSuccesses
       : 1;
+  const protectedTools = Array.isArray(config.protectedTools)
+    ? config.protectedTools.filter((tool) => typeof tool === "string" && tool.trim().length > 0)
+    : [];
+  const protectedFilePatterns = Array.isArray(config.protectedFilePatterns)
+    ? config.protectedFilePatterns.filter(
+        (pattern) => typeof pattern === "string" && pattern.trim().length > 0,
+      )
+    : [];
+  const staleInputAfterUserTurns =
+    Number.isInteger(config.staleInputAfterUserTurns) && config.staleInputAfterUserTurns > 0
+      ? config.staleInputAfterUserTurns
+      : 0;
 
   return {
     enabled,
@@ -106,11 +203,23 @@ function normalizeOptions(config = {}) {
       config.duplicatePlaceholder,
       DUPLICATE_ERROR_PLACEHOLDER,
     ),
+    inputPlaceholder: validPlaceholder(
+      config.inputPlaceholder,
+      DEFAULT_ERROR_INPUT_PLACEHOLDER,
+    ),
+    staleInputPlaceholder: validPlaceholder(
+      config.staleInputPlaceholder,
+      DEFAULT_STALE_INPUT_PLACEHOLDER,
+    ),
     readOnlyTools,
     preserveAcrossUserTurns: config.preserveAcrossUserTurns !== false,
     preserveOnStateChanges: config.preserveOnStateChanges !== false,
     pruneRepeatedFailures: config.pruneRepeatedFailures !== false,
     minSuccesses,
+    redactInputPayload: config.redactInputPayload !== false,
+    staleInputAfterUserTurns,
+    protectedTools,
+    protectedFilePatterns,
   };
 }
 
@@ -229,7 +338,7 @@ function barrierReason(candidate, newer, options, timeline) {
   return all > sameOperation ? "intervening_state_change" : "";
 }
 
-function candidateError(record, stats, signature) {
+function candidateError(record, stats, signature, options) {
   if (typeof record.tool !== "string" || record.tool.length === 0) {
     increment(stats.skippedReasons, "invalid_tool");
     return null;
@@ -258,6 +367,11 @@ function candidateError(record, stats, signature) {
     increment(stats.skippedReasons, "already_pruned");
     return null;
   }
+  const protectReason = protectedReason(record, options);
+  if (protectReason) {
+    increment(stats.skippedReasons, protectReason);
+    return null;
+  }
   if (!signature) {
     increment(stats.skippedReasons, "invalid_args");
     return null;
@@ -270,6 +384,7 @@ function candidateError(record, stats, signature) {
     userSegment: userSegmentOf(record),
     order: record.order,
     blockedReason: "",
+    rule1Reason: "",
     decided: false,
   };
 }
@@ -371,7 +486,7 @@ export function planErrorPurge(records, config = {}) {
     // irrelevant to Error Purge and is skipped without stringification.
     if (kind === "success" && !candidateTools.has(record.tool)) continue;
     if (kind === "error" && (typeof record.tool !== "string" || record.tool.length === 0)) {
-      const candidate = candidateError(record, stats, "");
+      const candidate = candidateError(record, stats, "", options);
       if (candidate) candidates.push(candidate);
       continue;
     }
@@ -398,7 +513,7 @@ export function planErrorPurge(records, config = {}) {
     }
 
     if (kind === "error") {
-      const candidate = candidateError(record, stats, signature);
+      const candidate = candidateError(record, stats, signature, options);
       if (candidate) candidates.push(candidate);
       continue;
     }
@@ -415,10 +530,33 @@ export function planErrorPurge(records, config = {}) {
   }
 
   const decisions = [];
+  // Every candidate that at least one rule could prune. A Set keeps Rule 1
+  // (later equivalent success) and Rule 2 (repeated identical failure) from
+  // double counting the same record in the funnel.
+  const prunableOrders = new Set();
 
-  const decide = (candidate, keeper, kind, confidence, replacement) => {
-    const estimatedTokensSaved =
-      estimateTokens(candidate.errorText) - estimateTokens(replacement);
+  const decide = (
+    candidate,
+    keeper,
+    kind,
+    confidence,
+    replacement,
+    redactionOverride,
+    inputPlaceholderOverride,
+  ) => {
+    // The error message is only replaced when the replacement is smaller;
+    // redacting the input is a separate, independently profitable change.
+    const errorSaved = estimateTokens(candidate.errorText) - estimateTokens(replacement);
+    const replaceError = errorSaved > 0;
+    const inputPlaceholder = inputPlaceholderOverride ?? options.inputPlaceholder;
+    const redaction =
+      redactionOverride !== undefined
+        ? redactionOverride
+        : options.redactInputPayload
+          ? redactErrorInput(candidate.record.args, inputPlaceholder)
+          : null;
+    const inputSaved = redaction ? redaction.savedTokens : 0;
+    const estimatedTokensSaved = (replaceError ? errorSaved : 0) + inputSaved;
     if (estimatedTokensSaved <= 0) {
       if (!candidate.blockedReason) candidate.blockedReason = "no_token_benefit";
       return false;
@@ -429,13 +567,22 @@ export function planErrorPurge(records, config = {}) {
       confidence,
       tool: candidate.record.tool,
       order: candidate.order,
-      keeperId: keeper.record.id,
-      keeperOrder: keeper.order,
+      keeperId: keeper?.record?.id,
+      keeperOrder: keeper?.order,
       field: "error",
       expectedValue: candidate.errorText,
-      replacement,
+      replacement: replaceError ? replacement : candidate.errorText,
+      replaceError,
       estimatedTokensSaved,
     };
+    if (redaction) {
+      // Reference, not a copy: the adapter verifies identity before applying
+      // and never duplicates the payload as a string.
+      decision.expectedInput = candidate.record.args;
+      decision.redactedInput = redaction.input;
+      decision.inputPlaceholder = inputPlaceholder;
+      stats.inputRedactedCount += 1;
+    }
     decisions.push(decision);
     candidate.decided = true;
     stats.tokenSavingsEstimated += estimatedTokensSaved;
@@ -448,11 +595,20 @@ export function planErrorPurge(records, config = {}) {
   // Rule 1: a later equivalent success supersedes an earlier failure.
   for (const candidate of candidates) {
     const allSuccesses = successesBySignature.get(candidate.signature);
-    if (!allSuccesses || allSuccesses.length === 0) continue;
+    if (!allSuccesses || allSuccesses.length === 0) {
+      // Diagnostic only: repeated identical failures (Rule 2) may still prune.
+      if (!candidate.rule1Reason) candidate.rule1Reason = "no_success_for_signature";
+      continue;
+    }
     const laterSuccesses = allSuccesses.filter(
       (success) => success.order > candidate.order,
     );
-    if (laterSuccesses.length === 0) continue;
+    if (laterSuccesses.length === 0) {
+      if (!candidate.rule1Reason) candidate.rule1Reason = "success_only_before_error";
+      continue;
+    }
+    stats.potentialSupersedeCount += 1;
+    prunableOrders.add(candidate.order);
 
     let blockedReason = "";
     const qualifying = [];
@@ -503,6 +659,7 @@ export function planErrorPurge(records, config = {}) {
     for (const byError of groups.values()) {
       for (const group of byError.values()) {
         if (group.length < 2) continue;
+        for (const member of group) prunableOrders.add(member.order);
         group.sort((left, right) => left.order - right.order);
         const keeper = group[group.length - 1];
         for (const candidate of group.slice(0, -1)) {
@@ -548,13 +705,56 @@ export function planErrorPurge(records, config = {}) {
     }
   }
 
+  // Optional third rule (parity with the reference implementation's turn-based
+  // purge): redact the input payload of confirmed errors older than N user
+  // turns while preserving the error message. Disabled by default so the
+  // default policy still requires positive evidence that the failure is dead.
+  if (options.redactInputPayload && options.staleInputAfterUserTurns > 0) {
+    let latestUserSegment = 0;
+    for (const record of records) {
+      if (record && Number.isFinite(record.userSegment)) {
+        latestUserSegment = Math.max(latestUserSegment, record.userSegment);
+      }
+    }
+    for (const candidate of candidates) {
+      if (candidate.decided) continue;
+      if (latestUserSegment - candidate.userSegment < options.staleInputAfterUserTurns) {
+        continue;
+      }
+      const redaction = redactErrorInput(
+        candidate.record.args,
+        options.staleInputPlaceholder,
+      );
+      if (!redaction) continue;
+      if (
+        decide(
+          candidate,
+          null,
+          "stale_failure_input",
+          MEDIUM_CONFIDENCE,
+          candidate.errorText,
+          redaction,
+          options.staleInputPlaceholder,
+        )
+      ) {
+        prunableOrders.add(candidate.order);
+      }
+    }
+  }
+
   for (const candidate of candidates) {
     if (candidate.decided) continue;
-    increment(stats.skippedReasons, candidate.blockedReason || "no_superseding_evidence");
+    increment(
+      stats.skippedReasons,
+      candidate.blockedReason || candidate.rule1Reason || "no_superseding_evidence",
+    );
   }
 
   decisions.sort((left, right) => left.order - right.order);
   stats.candidateCount = candidates.length;
+  stats.eligibleCount = candidates.length;
+  stats.markedCount = decisions.length;
+  stats.prunableCount = prunableOrders.size;
   stats.plannedPruneCount = decisions.length;
   stats.preservedCount = Math.max(0, candidates.length - decisions.length);
   return { decisions, stats };

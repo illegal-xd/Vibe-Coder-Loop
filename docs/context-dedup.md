@@ -2,7 +2,7 @@
 
 > 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**与**写操作上下文覆盖（Supersede Writes）**。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现并通过 **199 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现并通过 **260 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
@@ -10,7 +10,7 @@
 - Dedup 只处理默认白名单 `read` / `grep` / `glob`；Error Purge 只处理**结构化确认**的工具失败；Supersede Writes 只处理**确认成功**的写工具。
 - Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败；只认 `ToolPart.state.status === "error"` 且有非空 `state.error`。
 - Supersede Writes **只**在同一文件的后续**完整、成功、足够新鲜**的读取之后，抹去旧写操作的正文载荷（`state.input` 的内容字段与 `state.output`），保留文件路径、`status`、callID、metadata、消息顺序与审计身份。
-- 过期错误只替换为明确说明原因的占位文本，**保留 `status: "error"`、callID、input、metadata、消息顺序**；不删除消息或 ToolPart。
+- Error Purge 只把确认失败的 `state.error` 替换为说明原因的占位文本；当输入载荷的裁剪收益为正时，同时抹去该失败调用输入中的大体积字符串（路径与标识字段保留）。`status: "error"`、callID、metadata、消息顺序均不改变；不删除消息或 ToolPart。
 - 原始会话对象不被修改：Adapter 只克隆受影响的 ToolPart 与消息，再替换本次请求的 `output.messages`。
 - 任何结构异常、环境不明确、结果不完整、范围不一致、存在状态变更或引用关系时，**保留原文**。
 - 二次执行幂等：占位文本会被识别并跳过。
@@ -119,13 +119,13 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留；
 3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障；
 4. 错误 callID 在后续上下文中**未被引用**；
-5. 估算 `state.error` token 数大于占位符；
+5. error 文本或失败调用的输入载荷至少有一项带来正收益（error 文本小于占位符时保留原文，只裁剪输入）；
 6. 满足 `minSuccesses`（默认 1；设为 2 可要求连续两次成功）。
 
 满足时：
 
 - `confidence: "high"`；
-- 只替换 `state.error` 为“已被后续等价成功取代”的占位文本；
+- 替换 `state.error` 为“已被后续等价成功取代”的占位文本；若失败调用的输入仍含大体积字符串，同时替换为输入占位文本；
 - `state.status` 仍为 `"error"`，保留失败事实，不伪装成成功。
 
 > 默认的 `preserveOnStateChanges: true` 会保留“失败 → 修改代码 → 成功”的旧错误，避免丢失修复依据。需要更激进的裁剪时显式设为 `false`；这会让修复后成功也取代旧错误。
@@ -146,9 +146,37 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|---|
 | `superseded_by_success` | high | 通过全部守卫才裁剪 |
 | `duplicate_failure` | medium | 保留最新等价失败，裁剪更早重复项 |
+| `stale_failure_input` | medium | 仅在 `staleInputAfterUserTurns` 开启时裁剪输入，error 原文保留 |
 | 无后续成功 / 跨轮次 / 状态变更 / 引用 / 范围不一致 / 短文本 | — | 保留 |
 
 统计中分别记录 high/medium 决策数、`preservedCount` 与 `skippedReasons`。
+
+### 4.6 失败调用的输入载荷
+
+上游 DCP 的 Error Purge 只裁剪失败调用的 **input**；本实现此前只处理 error 文本。现在两条规则命中时，会同时评估输入载荷：
+
+- 只替换**顶层字符串**中 token 估算大于占位符的字段；
+- `filePath` / `path` / `file` / `filename` / `fileName` / `cwd` / `root` / `pattern` / `glob` / `include` / `exclude` / `query` / `url` / `name` / `id` / `description` 永不替换；
+- 对象结构与字段类型不变，`state.input` 只做字段值替换；
+- 安全性来自签名等价：命中的 keeper（后续成功或最新的同签名失败）携带**相同参数**，被抹去的载荷在上下文中仍然可得；
+- 收益独立计算：`error` 文本小于占位符时保留原文，只裁剪输入；两项都没有正收益则不产生决策（`no_token_benefit`）；
+- `errorPurge.redactInputPayload: false` 可整体关闭输入裁剪。
+
+### 4.7 可选：按 user turn 年龄清理陈旧失败输入
+
+上游按“轮次阈值”裁剪失败输入。本实现默认不采用**无证据**裁剪，但提供等价的 opt-in 规则：
+
+```json
+{ "errorPurge": { "staleInputAfterUserTurns": 4 } }
+```
+
+- 仅处理**确认错误**；`error` 原文、`status`、callID、metadata 全部保留；
+- 年龄 = 最新 `userSegment` − 该错误的 `userSegment`，达到阈值才处理；
+- 只裁剪 4.6 定义的“大体积字符串”，路径与标识字段保留；
+- 默认 `null`（关闭）；开启后每个决策计入 `decisionKinds.stale_failure_input`，输入使用独立的 `staleInputPlaceholder`（不声称存在“更新的等价调用”）；
+- 与 Rule 1 / Rule 2 互斥：已有证据的候选先按高/中置信度规则处理。
+
+
 
 ## 四·五、Supersede Writes 规则
 
@@ -169,9 +197,15 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 1. 工具名在 `supersedeWrites.readTools`（默认仅 `read`；`grep` / `glob` 是部分结果，不参与）；
 2. `state.status === "completed"`，无结构化失败信号，`state.output` 非空且不是占位文本；
-3. 参数没有 `limit` / `count` / `maxLines` 等显式上限；`offset` / `startLine` / `from` 缺省或为 0/1（从文件头开始）；
+3. `offset` / `startLine` / `from` 缺省，或为 0/1（从文件头开始）；大于 1 即显式片段，一律拒绝；
 4. 结构化元数据未标记 `truncated:true`、`loaded:false`、`partial:true`、`complete:false`；
-5. 输出开头或结尾不含明显的截断提示（只用于拒绝，不用于接受）。
+5. 输出开头或结尾不含明显的截断提示（只用于拒绝，不用于接受）；
+6. **完整性的结构性证明**（按顺序取一个）：
+   - 运行时显式报告未截断：`metadata.truncated === false`（OpenCode 的 `read` 工具对每个读取都会写入 `metadata.truncated`，是该运行时可靠的 EOF 信号）；或
+   - `metadata.display` 给出 `{ lineStart, lineEnd, totalLines }` 且 `lineStart <= 1` 且 `lineEnd >= totalLines`；或
+   - **遗留形态**：既无 `offset` 也无 `limit`（无切片参数的读取）。
+
+> **运行时注意**：OpenCode 会把 `offset`（默认 1）与 `limit`（按剩余行数计算的上限）规范化进**每一次**读取的 `state.input`。因此**不能**仅凭 `state.input.limit` 出现就判定为片段读取——那会让全部读取被拒绝、Supersede Writes 贡献恒为 0。`limit` 只在缺少上述 EOF 证明时才作为保守拒绝依据（拒绝原因 `read_limited`）。被拒绝的读取原因记入 `stats.readRejectedReasons` 与 `skippedReasons`（`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` 等）。
 
 行范围读取、分页、片段、截断、读取失败、仅元数据读取、来源不确定的读取**一律不触发**整文件覆盖。当前未实现区间级 Supersede，因此采用保守策略：部分读取不清理任何写上下文。
 
@@ -215,6 +249,27 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `Write(A) → bash → Read(A, full)` | 保守保留（广义变更屏障） |
 | `Write(A) → Read(A, partial)` | 保留（部分读取不算完整） |
 
+## 附：与上游 DCP 的对照（复查记录）
+
+参照仓库：`opencode-dynamic-context-pruning`（`@tarquinen/opencode-dcp` v3.2.0，HEAD `f8232fd`）。上游只有 `deduplicate` 与 `purgeErrors` 两条自动策略，**没有 Supersede Writes**（`grep -i supersede` 只命中占位文案），因此 Supersede 只能与本实现的既有规则对照。
+
+| 维度 | 上游 DCP | 本实现 | 结论 |
+|---|---|---|---|
+| Dedup 条件 | 同 tool + 规范化参数即裁剪旧项、保留最新 | 额外要求输出**逐字节相同**，且中间无副作用屏障 | 本实现更严格，不采用“同参必同结果”假设 |
+| 参数归一化 | 丢弃 `undefined`/`null`，递归排序 key | 递归排序 key；`undefined` 删除、`null` 保留 | 对齐；`null` 差异只会少裁剪 |
+| 受保护工具 | `strategies.*.protectedTools`（默认 `[]`） | 顶层 `protectedTools`（三条策略共用，支持 glob） | 已补齐 |
+| 受保护文件 | `protectedFilePatterns`（默认 `[]`；覆盖 filePath/path、multiedit.edits、apply_patch.patchText、execute.toolCalls） | 同名顶层字段，另支持项目相对路径 | 已补齐 |
+| Error Purge 主体 | 按**轮次年龄**裁剪失败调用 input，保留 error 文本 | 按“后续等价成功”裁剪 error 文本 + 失败 input；年龄规则为 opt-in | 默认保持证据模型，年龄规则可显式开启 |
+| 失败输入清理范围 | 所有 string 字段（含路径） | 仅大于占位符的字符串；路径/标识字段保留 | 本实现更保守 |
+| edit/write 输出 | `pruneToolOutputs` 永不替换 edit/write 的 output | Supersede 在完整读取验证后替换写 output | 本实现有证据门槛 |
+| 回合保护 | `turnProtection`（默认关闭，按 step 年龄） | 无独立开关；Dedup 保留最新一份，Error/Supersede 需后续证据 | 记录为差异，不引入无证据裁剪 |
+| 手动模式 | `manualMode.automaticStrategies` | 无命令体系，不适用 | 不适用 |
+| question 输入 | 对已裁剪的 question 替换 `input.questions` | 没有规则会标记 question | 不适用 |
+| 统计口径 | 累计 `stats.totalPruneTokens` | 每请求 scanned/eligible/candidate/marked/changed 漏斗 + 跳过原因 | 本实现更细 |
+| 应用方式 | 就地修改，无结构校验 | 克隆 + 逐字段结构校验 + 失败回退 | 本实现更严格 |
+
+复查结论：三项策略的核心语义未被上游证伪；真正缺失的是**受保护工具/文件**这道用户侧安全阀，以及 Error Purge 对**失败调用输入载荷**的覆盖。两者已按上面的更保守口径补齐，默认值不改变既有行为。
+
 ## 五、消息安全
 
 - **只改请求副本**：`transformMessages` 不修改输入消息对象；受影响的 `message` 与 `state` 都是浅克隆。
@@ -244,6 +299,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   "barrierOnNonWhitelistedTools": true,
   "protectCallIdReferences": true,
   "mutationTools": ["bash", "edit", "write", "patch", "multiedit", "apply_patch", "task", "skill", "webfetch", "websearch", "todowrite", "question"],
+  "protectedTools": [],
+  "protectedFilePatterns": [],
   "deduplication": {
     "enabled": true
   },
@@ -252,6 +309,10 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "preview": null,
     "placeholder": "[vibe-context-dedup] Error output omitted: a later equivalent successful result superseded it. The failure status is retained.",
     "duplicatePlaceholder": "[vibe-context-dedup] Earlier duplicate failure output omitted; the latest equivalent failure is retained.",
+    "inputPlaceholder": "[vibe-context-dedup] Failed call input omitted: an equivalent newer call retains the same arguments. The failure status is retained.",
+    "staleInputPlaceholder": "[vibe-context-dedup] Failed call input omitted: the failure is older than the retention window. The failure status and error message are retained.",
+    "redactInputPayload": true,
+    "staleInputAfterUserTurns": null,
     "preserveAcrossUserTurns": true,
     "preserveOnStateChanges": true,
     "pruneRepeatedFailures": true,
@@ -291,11 +352,17 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `barrierOnNonWhitelistedTools` | Dedup 依赖屏障 | `true` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
 | `mutationTools` | Dedup 硬拒绝的变更工具；Error Purge 也将其视为状态变更 | 见上 |
+| `protectedTools` | 三条策略共用：工具名（支持 `*`/`?` glob）永不裁剪 | `[]` |
+| `protectedFilePatterns` | 三条策略共用：文件 glob 永不裁剪；匹配原始参数、cwd 绝对路径与项目相对路径 | `[]` |
 | `deduplication.enabled` | Dedup 独立开关 | `true` |
 | `errorPurge.enabled` | Error Purge 独立开关 | `true` |
 | `errorPurge.preview` | Error Purge 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `errorPurge.placeholder` | 成功取代错误时的占位文本 | 见上 |
 | `errorPurge.duplicatePlaceholder` | 重复失败占位文本 | 见上 |
+| `errorPurge.inputPlaceholder` | 规则 1/2 命中时失败调用输入的占位文本 | 见上 |
+| `errorPurge.staleInputPlaceholder` | 年龄规则命中时失败调用输入的占位文本（错误原文保留） | 见上 |
+| `errorPurge.redactInputPayload` | 命中规则时是否同时裁剪失败调用的大体积输入字符串 | `true` |
+| `errorPurge.staleInputAfterUserTurns` | 可选：确认错误超过 N 个 user turn 后只裁剪其输入（error 原文保留）；`null` 关闭 | `null` |
 | `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误 | `true` |
 | `errorPurge.preserveOnStateChanges` | 失败与成功之间存在状态变更工具时保留 | `true` |
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
@@ -315,7 +382,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `log.path` | 日志路径；相对路径相对项目根，支持 `~` | `~/.vibe-loop/context-dedup/events.jsonl` |
 | `log.maxBytes` | 超过后轮转为 `.1`；`.1` 已存在则暂停追加 | `524288` |
 | `tokenUsage.enabled` | 独立的 Token 用量记录开关；与三条裁剪策略互不影响 | `true` |
-| `tokenUsage.path` | 基准文件路径；每日文件沿用其目录与基名（`token-usage.jsonl` → `token-usage-YYYY-MM-DD.jsonl`）。相对路径相对项目根，支持 `~`；缺省 `<project>/data/token-usage.jsonl` | `null` |
+| `tokenUsage.path` | 基准文件路径；每日文件沿用其目录与基名（`token-usage.jsonl` → `token-usage-YYYY-MM-DD.jsonl`）。相对路径相对项目根，支持 `~`；缺省 `~/.config/opencode/token-usage/token-usage.jsonl`（跨项目共享归档） | `null` |
 
 环境变量：
 
@@ -330,6 +397,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `VIBE_CONTEXT_DEDUP_LOG_DISABLED=1` | 关闭聚合日志 |
 | `VIBE_CONTEXT_DEDUP_CONFIG=<path>` | 指定配置文件 |
 | `VIBE_TOKEN_USAGE_LOG_DISABLED=1` | 仅关闭 Token 用量记录（裁剪与聚合日志不受影响） |
+| `VIBE_TOKEN_USAGE_HOME=<dir>` | 重定位 Token 用量归档目录（缺省 `~/.config/opencode/token-usage`；测试/非标准 HOME 使用） |
 
 配置非法（类型错误、白名单为空、占位符不合规等）→ 插件禁用并记录一次 `config_error`，不猜测默认值继续。配置在插件初始化时读取一次；修改后重启 OpenCode。
 
@@ -337,14 +405,29 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 每次实际处理生成聚合统计；**不记录**工具输入、错误正文、工具输出、完整路径、session id、凭证。
 
+**统一计数漏斗**（顶层 Dedup、`errorPurge`、`supersedeWrites` 均遵循）：
+
+| 漏斗步 | 字段 | 含义 |
+|---|---|---|
+| 扫描 | `recordsTotal` | 进入策略视野的全部 ToolPart |
+| 合格 | `eligibleCount` | 通过工具白名单/状态/环境/参数校验的记录（= 旧 `candidateCount`） |
+| 可裁剪候选 | `prunableCount` | 真正可进入裁剪判定的对象：Dedup=处于完全重复组内的记录（`duplicateCandidateCount`）；Error Purge=存在后续等价成功的错误（`potentialSupersedeCount`）；Supersede=与某条完整读取同身份的写（`fileMatchCount`） |
+| 标记 | `markedCount`（= `plannedPruneCount`） | 通过全部守卫后产生的决策数 |
+| 变更 | `prunedCount` / `changedCount` | 实际改动了请求副本的决策数（观察模式为 0） |
+
+> **不要把 `eligibleCount`（合格）当作可裁剪数量**：多数会话里合格记录远多于可裁剪候选（例如 Dedup 的合格读取几乎都不构成完全重复组，Supersede 的合格写入也未必有后续同文件完整读取）。`removed_items` 仅在 `changed` 时累加。`candidate_items` 一律指**可裁剪候选**，而非合格记录，避免“候选 18 / 裁剪 0”被误读为故障。
+
 顶层（Dedup）：
 
 | 字段 | 含义 |
 |---|---|
 | `deduplicationEnabled` | Dedup 是否启用 |
-| `candidateCount` / `duplicateGroupCount` | 候选数 / 完全重复组数 |
-| `plannedPruneCount` / `wouldPruneCount` / `prunedCount` | 规则计划 / 引用守卫后 / 实际应用 |
-| `skippedReasons` | `unsupported_tool` / `not_completed` / `intervening_side_effect` / `referenced_later` / `no_token_benefit` / `apply_*` 等 |
+| `candidateCount` / `eligibleCount` | 合格记录数（旧字段保留，新字段为漏斗步） |
+| `duplicateGroupCount` / `duplicateCandidateCount` | 完全重复组数 / 组内记录数（可裁剪候选） |
+| `uniqueSignatureCount` / `sameSignatureDifferentOutputCount` | 合格记录中“签名唯一”/“签名相同但输出不同”的数量（解释为何不可裁剪） |
+| `sameSignatureDifferentOutputGroups` | 同签名不同输出的签名组数 |
+| `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
+| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_signature_different_output` / `intervening_side_effect` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省 |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的全部决策估算节省 |
 | `tokenCounting` | `estimate_heuristic_v1` |
@@ -358,12 +441,14 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `enabled` / `preview` / `changed` | 策略开关 / 观察模式 / 是否实际变更 |
 | `confirmedErrorCount` | 结构化确认错误数 |
 | `ambiguousResultCount` | 空错误、取消、pending/running、completed+failure metadata 等歧义结果数 |
-| `candidateCount` | 通过环境/参数检查的候选数 |
-| `plannedPruneCount` / `wouldPruneCount` / `prunedCount` | 规则计划 / 引用守卫后 / 实际应用 |
+| `candidateCount` / `eligibleCount` | 合格候选错误数 |
+| `potentialSupersedeCount` / `prunableCount` | 存在后续等价成功的候选数（可裁剪候选） |
+| `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
 | `preservedCount` | 保留的候选错误数 |
 | `highConfidencePruneCount` / `mediumConfidencePruneCount` | 置信度决策数 |
-| `decisionKinds` | `superseded_by_success` / `duplicate_failure` 决策计数 |
-| `skippedReasons` | `across_user_turn` / `intervening_state_change` / `referenced_later` / `no_token_benefit` / `latest_failure_retained` / `apply_*` 等 |
+| `decisionKinds` | `superseded_by_success` / `duplicate_failure` / `stale_failure_input` 决策计数 |
+| `inputRedactedCount` | 决策中同时裁剪了失败调用输入载荷的数量 |
+| `skippedReasons` | `no_success_for_signature` / `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -375,18 +460,23 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|
 | `enabled` / `preview` / `changed` | 策略开关 / 观察模式 / 是否实际变更 |
 | `confirmedWriteCount` | 结构化确认成功的写操作数 |
-| `fullReadCount` | 通过完整读取判定的读取数 |
-| `ambiguousResultCount` | 失败写、部分读取、非白名单工具等歧义结果数 |
-| `candidateCount` | 可进入待覆盖状态的写记录数 |
-| `plannedPruneCount` / `wouldPruneCount` / `prunedCount` | 规则计划 / 引用守卫后 / 实际应用 |
+| `ambiguousWriteCount` / `ambiguousResultCount` | 歧义写数 / 歧义写+读总和 |
+| `observedReadCount` / `confirmedReadCount` / `fullReadCount` | 观测读取 / 确认成功读取 / 通过完整读取判定 |
+| `readRejectedReasons` | 读取被拒原因：`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` / `read_not_loaded` 等 |
+| `candidateCount` / `eligibleCount` | 可进入待覆盖状态的写记录数（合格） |
+| `fileMatchCount` / `prunableCount` | 与某条完整读取同身份的写数（可裁剪候选） |
+| `versionVerifiedCount` | 通过完整性+身份+版本（happens-before、无重叠、无屏障）校验的对数 |
+| `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
 | `preservedCount` | 保留的候选写上下文数 |
 | `highConfidencePruneCount` | 高置信度覆盖决策数 |
 | `decisionKinds` | `superseded_by_read` 决策计数 |
-| `skippedReasons` | `no_superseding_read` / `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `apply_*` 等 |
+| `skippedReasons` | `no_superseding_read` / `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
 | `outputBytesRemovedActual` | 实际移除的 UTF-8 字节数（输入载荷 + 输出） |
+
+**跨策略去重**：Dedup 改写已完成只读工具的 `state.output`；Error Purge 改写失败工具的 `state.error`；Supersede Writes 改写已完成写工具的 `state.input`+`state.output`。三者目标域互不相交，且 `transformMessages` 在决策阶段用 `attributedIds` 集合显式排除已被某策略认领的记录（`cross_strategy_conflict`），保证同一 ToolPart 不被多策略重复计入 `removed_tokens`。
 
 Token 估算：ASCII 约 `1/4 token/字符`，非 ASCII 约 `1 token/字符`，向上取整。**这是估算，不是模型 tokenizer 的真实计数**；`actualTokenSavings: null` 表示真实值不可得。Error Purge 只估算被替换的 `state.error`；Supersede Writes 估算被脱敏的输入内容字段与被替换的 `state.output`，不包含 metadata 中的潜在诊断内容。
 
@@ -400,10 +490,11 @@ bash scripts/tests/test-context-dedup.sh
 node --test tests/context-dedup/*.test.mjs
 ```
 
-**199 项测试**覆盖（其中 64 项 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
+**260 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
 
 - Dedup：相同工具/参数/成功结果重复；不同参数/工具/环境；失败调用；副作用工具；输出不同；依赖屏障；引用守卫；消息结构；幂等；空/异常输入；预览；配置；日志脱敏；OpenCode 类型契约。
-- Error Purge 正向：等价命令/测试/构建成功取代失败；重复相同失败保留最新；多个过期错误；过期与仍相关错误混合。
+- 保护规则：glob（`**`/`*`/`?`）匹配；multiedit/apply_patch/execute 路径提取；工具名与路径保护在三条策略中一致生效；默认空列表不改变行为。
+- Error Purge 正向：等价命令/测试/构建成功取代失败；重复相同失败保留最新；多个过期错误；过期与仍相关错误混合；失败输入载荷脱敏（大字符串替换、路径保留、短错误只裁输入）；可选年龄规则。
 - Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；后续失败；缺失/畸形关联。
 - Supersede Writes 正向：写后完整读取；连续写入后统一覆盖；跨 user turn 默认允许；相对/绝对路径归一；预览与独立开关。
 - Supersede Writes 负向：写入失败/超时/pending；重复写入后新写入保留；读取 A 不清理 B；同名不同目录/不同 workspace；行范围/offset/limit/截断/空输出/读取失败；读取早于写入或与写入重叠；并发写入；广义变更屏障；引用守卫；路径无法解析；净收益不足；二次执行幂等；状态不一致回退。
@@ -523,15 +614,24 @@ Runtime 归一化为：
 ### 存储（按 UTC 自然日分文件）
 
 - **唯一写入入口**：`createUsageLogger().append(record)`。每次追加都从记录自身的 `timestamp`（事件时间）计算 UTC 自然日，再选择 `token-usage-YYYY-MM-DD.jsonl`；**不使用写入时的系统日期**。
-- 默认目录为 `<project>/data/`，基准路径为 `token-usage.jsonl`，因此默认文件是 `<project>/data/token-usage-YYYY-MM-DD.jsonl`。`tokenUsage.path` 只改变目录与基名：配置 `logs/usage.jsonl` → `logs/usage-YYYY-MM-DD.jsonl`。
+- **跨项目统一归档**：默认目录为 `~/.config/opencode/token-usage/`，基准路径为 `token-usage.jsonl`，因此默认文件是 `~/.config/opencode/token-usage/token-usage-YYYY-MM-DD.jsonl`；**不再写入各项目的 `data/` 目录**。`VIBE_TOKEN_USAGE_HOME` 可重定位归档根目录；`tokenUsage.path` 只改变目录与基名：配置 `logs/usage.jsonl` → `logs/usage-YYYY-MM-DD.jsonl`（相对项目根）。
 - **日期与时区**：统一按 UTC 自然日归档。`2026-10-28T23:59:59.999Z` → `2026-10-28`；`2026-10-29T00:00:00.000Z` → `2026-10-29`；带偏移的 `2026-10-28T23:30:00-02:00` → `2026-10-29`（先换算为 UTC）。毫秒不参与日期判断。
 - **无效时间戳**：缺失、无法解析或**没有显式 `Z`/时区偏移**的时间戳会被拒绝（`record_timestamp_invalid`），不会按设备本地时区猜测日期，也不写入任何文件。记录的 `timestamp` 原值不被修改。
 - **仅追加**：每个日期文件一次 `appendFile`，进程内串行化（promise 链）；已存在的日期文件继续追加，永不覆盖或清空。父目录只惰性创建一次，写入路径不扫描历史文件。
 - **空日期不建文件**；跨天、补写、重放事件按各自事件日期落盘。
 - 父目录 `0700`、文件 `0600` 创建；写入失败**不抛出**，经限频（5 分钟一次）回写聚合日志的 `error: token_usage_log_failed:*`。
 - **并发范围**：同一插件实例的写入完全串行；跨进程依赖本地文件系统的 `O_APPEND` 单次小写入原子性（网络文件系统不保证）。本期不引入文件锁、常驻进程或数据库。
-- **旧日志兼容**：升级前的单文件 `<project>/data/token-usage.jsonl` 保留原样，不迁移、不删除、不覆盖。`readUsageLog()` 统一读取旧文件与每日文件；同一条记录（逐字节相同）只计一次。旧文件没有日期索引，按范围读取时会扫描它并按记录时间过滤；每日文件按文件名日期选择，备份/临时/不符合命名规则的文件一律忽略。损坏行、非对象行、无效时间戳、文件名与记录日期不一致都会进入 `invalid` 诊断列表，不会被静默转成有效记录。
+- **旧日志兼容**：归档目录内的旧单文件 `token-usage.jsonl` 保留原样，不迁移、不删除、不覆盖；`readUsageLog()` 统一读取它与每日文件。历史项目内 `data/token-usage-*.jsonl` 不再自动读取；如需保留历史，可手动复制到归档目录（逐字节相同的记录只计一次）。旧文件没有日期索引，按范围读取时会扫描它并按记录时间过滤；每日文件按文件名日期选择，备份/临时/不符合命名规则的文件一律忽略。损坏行、非对象行、无效时间戳、文件名与记录日期不一致都会进入 `invalid` 诊断列表，不会被静默转成有效记录。
 - 记录中**不含** prompt、tool 输出正文、原始响应、错误正文、文件路径、凭证；未知键一律丢弃。
+
+### 卡片服务（实时读取归档）
+
+- 启动：`bash scripts/token-usage/serve_card.sh`（等价 `node tools/token-usage-card/server.mjs`），默认监听 `http://127.0.0.1:8787/`。
+- 参数：`--port <n>`（默认 8787，0 为随机端口）、`--host <addr>`（默认 `127.0.0.1`）、`--data-dir <dir>`（默认 `VIBE_TOKEN_USAGE_HOME` 或 `~/.config/opencode/token-usage`）。
+- 数据链路：`GET /api/usage` **每次请求都重新读取**归档 JSONL，响应 `Cache-Control: no-store`；页面每 15 秒静默刷新，页面隐藏时暂停，重新可见时立即刷新，也可点“刷新”按钮。不再依赖预生成的 `token-usage-data.js`。
+- 静态资源仅允许 `/`、`/index.html`、`/app.js`、`/styles.css`；其余路径 404，不做目录遍历。仅监听本机回环地址，不暴露到网络。
+- 诊断：`GET /api/health` 返回归档目录；`GET /api/usage?from=YYYY-MM-DD&to=YYYY-MM-DD` 支持 UTC 日期范围（仅用于按需裁剪返回量，页面默认返回全部再由前端按本地自然日过滤）。
+- 离线快照（可选）：`python3 scripts/token-usage/export_card_data.py` 仍可生成 `token-usage-data.js`（同一行契约），但页面默认不加载；仅在无 Node 服务时用于手工注入。
 
 ### AspireCode 会话上下文面板对照
 
@@ -584,7 +684,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
     "deduplication": {
       "enabled": true, "preview": false,
       "scanned_records": 47,
-      "candidate_items": 2, "removed_items": 1, "preserved_items": 1,
+      "eligible_items": 2, "candidate_items": 2, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 1,
       "candidate_tokens": { "value": null, "source": "unavailable" },
       "removed_tokens": { "value": 300, "source": "estimated_tokens_from_chars" },
       "preserved_tokens": { "value": null, "source": "unavailable" },
@@ -596,13 +696,15 @@ msg.tokens.cache.read + msg.tokens.cache.write
     },
     "error_purge": {
       "enabled": true, "preview": false,
-      "scanned_records": 47, "candidate_items": 0, "removed_items": 0, "preserved_items": 0,
+      "scanned_records": 47, "eligible_items": 0, "candidate_items": 0, "marked_items": 0, "changed_items": 0, "removed_items": 0, "preserved_items": 0,
       "removed_tokens": { "value": 0, "source": "estimated_tokens_from_chars" },
       "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
     },
     "supersede_writes": {
       "enabled": true, "preview": false,
-      "scanned_records": 47, "candidate_items": 1, "removed_items": 1, "preserved_items": 0,
+      "scanned_records": 47, "eligible_items": 1, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
+      "writes": { "confirmed": 1, "ambiguous": 0, "eligible": 1, "file_matches": 1, "version_verified": 1, "marked": 1, "changed": 1 },
+      "reads": { "observed": 1, "full": 1, "rejected_reasons": {} },
       "removed_tokens": { "value": 180, "source": "estimated_tokens_from_chars" },
       "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
     },
@@ -625,14 +727,20 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | 字段 | 单位 | 说明 |
 |---|---|---|
 | `scanned_records` | 扫描的工具记录数 | 进入策略视野的全部 ToolPart（含被排除的 bash/edit 等） |
-| `candidate_items` | 合格候选数 | 通过工具白名单/状态/环境/参数校验的记录 |
-| `removed_items` | 实际裁剪数 | 被替换为占位符的决策数 |
-| `preserved_items` | 保留候选数 | `candidate_items − removed_items` |
+| `eligible_items` | 合格记录数 | 通过工具白名单/状态/环境/参数校验的记录 |
+| `candidate_items` | 可裁剪候选数 | 真正可进入裁剪判定的对象（Dedup=完全重复组内记录；Error Purge=存在后续等价成功的错误；Supersede=与某条完整读取同身份的写）。旧记录无此字段时卡片回退为 `eligible_items` |
+| `marked_items` | 标记决策数 | 通过全部守卫后产生的决策数；旧记录无此字段时回退为 `removed_items` |
+| `changed_items` / `removed_items` | 实际裁剪数 | 真正改动了请求副本的决策数（`removed_items` 为兼容别名，等于 `changed_items`） |
+| `preserved_items` | 保留候选数 | `candidate_items − changed_items` |
+| `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
+| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `full` / `rejected_reasons`（`read_truncated` 等） |
 | `skipped.record_scan` | 扫描记录数 | 被排除的扫描记录（`unsupported_tool` 计 bash/edit 等非白名单调用，**可合法大于 `candidate_items`**） |
-| `skipped.candidate` | 候选/分组数 | 合格候选被守卫拦截（`referenced_later` / `no_token_benefit` / `across_user_turn` 等） |
+| `skipped.candidate` | 候选/分组数 | 合格候选被守卫拦截（`unique_signature` / `same_signature_different_output` / `no_success_for_signature` / `intervening_side_effect` / `no_token_benefit` / `across_user_turn` 等） |
 | `skipped.application` | 应用阶段决策数 | apply 时因 location/state/校验失败被丢弃 |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
 | `candidate_tokens` / `preserved_tokens` | — | 恒为 `unavailable`：管道未保留每候选 token 量，不为此改动裁剪规则 |
+
+> **卡片行契约**：`server.mjs` 的 `buildCardPayload()` 与可选的 `export_card_data.py` 每策略写 `[removed_tokens, scanned_records, candidate_items, removed_items, eligible_items, marked_items]`；旧四列记录由 `app.js` 回退为 `candidate_items`/`removed_items`，不编造数字。
 
 > **v1 → v2 变更**：`schema_version` 1→2；估算来源 `estimated_char_count`→`estimated_tokens_from_chars`（值是 Token 估算而非字符数）；`usage_status` 的 `unavailable`→`missing`，新增 `unverified`；`pruning.*.skipped_reasons`（扁平、单位混淆）→ `skipped.{record_scan,candidate,application}`（按单位分桶），新增 `scanned_records`。
 >
@@ -663,7 +771,8 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 单个后续成功默认足以 supersede；无法可靠识别 intermittent/flaky failure。需要更严格时设 `minSuccesses: 2`。
 - 无法可靠识别自然语言引用；使用 callID 引用扫描、user-turn 屏障、状态变更屏障作为保守代理。
 - 执行环境只建模 `cwd` / `root` / 参数内显式 `cwd`；不建模环境变量、`.gitignore`、网络状态。
-- 只替换 `state.error`，不清理 `state.metadata` 中可能存在的堆栈/诊断字段；token 节省仅针对错误正文。
+- Error Purge 只替换 `state.error` 与失败调用输入中的大体积顶层字符串；不清理 `state.metadata` 中可能存在的堆栈/诊断字段，也不重写数组/对象型输入（如 `multiedit.edits`）。
+- 受保护规则按工具名与文件路径匹配；无法从参数中解析出路径的工具不会被 `protectedFilePatterns` 命中。
 - Supersede Writes 只脱敏写工具输入中的已知内容字段（`content` / `oldString` / `newString` / `edits` / `patch` / `diff` / `input` 等）与 `state.output`；未知形状的写工具输入即使成功也不会被覆盖。
 - 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`）。若宿主不提供这些信号，只按“无 offset/limit 且输出非空”判定，超大文件被静默截断时无法识别；可通过 `requireFullRead` 保持默认保守策略。
 - 文件版本仅由 `state.time`（写入完成时间、读取开始时间）推断；不读取磁盘 mtime、内容哈希或文件系统锁。读取之后的外部进程修改无法从消息历史中观察，因此不额外失效已经完成的覆盖。
@@ -688,7 +797,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 本机安装的 `@opencode-ai/plugin` 类型定义中存在该 hook，消息结构为 `{ info: Message, parts: Part[] }`。
 - 本机安装的 SDK 类型中 `ToolPart` 含 `callID`、`tool`、`state`；错误态含 `status: "error"` 与 `error: string`，完成态含 `status: "completed"` 与 `output: string`。
 - 参考项目 `opencode-dynamic-context-pruning` 使用同一 hook 并就地修改 `output.messages`。
-- Node/Bun 可加载插件入口并注册 hook；199 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
+- Node/Bun 可加载插件入口并注册 hook；260 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
 
 ## 十三、卸载 / 回滚
 
@@ -698,4 +807,4 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 只关闭 Supersede Writes：设置 `"supersedeWrites": {"enabled": false}`（或 `VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED=1`），前两条策略不受影响。
 - 不需要数据库迁移，不写会话存储，不修改项目源码。
 - 只关闭 Token 用量记录：设置 `"tokenUsage": {"enabled": false}`（或 `VIBE_TOKEN_USAGE_LOG_DISABLED=1`），裁剪与聚合日志不受影响。
-- 日志在 `~/.vibe-loop/context-dedup/`，可按需清理；Token 用量记录在 `<project>/data/token-usage-YYYY-MM-DD.jsonl`（旧单文件 `token-usage.jsonl` 保留），均可按需清理；这不是项目资产。
+- 日志在 `~/.vibe-loop/context-dedup/`，可按需清理；Token 用量记录统一在 `~/.config/opencode/token-usage/token-usage-YYYY-MM-DD.jsonl`（旧单文件 `token-usage.jsonl` 保留），均可按需清理；这不是项目资产。卡片通过 `scripts/token-usage/serve_card.sh` 启动本地 Node 服务实时读取该目录（可选离线快照脚本 `scripts/token-usage/export_card_data.py` 也从该目录读取）。

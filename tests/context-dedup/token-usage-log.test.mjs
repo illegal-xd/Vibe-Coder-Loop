@@ -48,26 +48,56 @@ async function listFiles(directory) {
   }
 }
 
-async function readDaily(directory, date) {
-  return readFile(path.join(directory, "data", dailyName(date)), "utf8");
+function usageEnv(directory) {
+  return { VIBE_TOKEN_USAGE_HOME: path.join(directory, "central") };
 }
+
+function usageDir(directory) {
+  return path.join(directory, "central");
+}
+
+async function readDaily(directory, date) {
+  return readFile(path.join(usageDir(directory), dailyName(date)), "utf8");
+}
+
+test("the default archive is the shared ~/.config/opencode/token-usage directory", () => {
+  const config = resolveConfig({}, {});
+  assert.equal(
+    resolveUsageLogPath(config, "/project", {}),
+    path.join(os.homedir(), ".config", "opencode", "token-usage", "token-usage.jsonl"),
+  );
+  // A relocated home still keeps the same file name.
+  assert.equal(
+    resolveUsageLogPath(config, "/project", { VIBE_TOKEN_USAGE_HOME: "~/usage" }),
+    path.join(os.homedir(), "usage", "token-usage.jsonl"),
+  );
+  // tokenUsage.path remains an explicit override, resolved against the project.
+  assert.equal(
+    resolveUsageLogPath(
+      resolveConfig({ tokenUsage: { path: "logs/usage.jsonl" } }, {}),
+      "/project",
+      {},
+    ),
+    path.join("/project", "logs", "usage.jsonl"),
+  );
+});
 
 test("records of one UTC day share one file and different days split", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     assert.equal(logger.enabled, true);
     assert.equal(
-      resolveUsageLogPath(config, directory),
-      path.join(directory, "data", "token-usage.jsonl"),
+      resolveUsageLogPath(config, directory, usageEnv(directory)),
+      path.join(usageDir(directory), "token-usage.jsonl"),
     );
 
     await logger.append(record("r1", "2026-10-28T09:39:28.674Z"));
     await logger.append(record("r2", "2026-10-28T23:59:59.999Z"));
     await logger.append(record("r3", "2026-10-29T00:00:00.000Z"));
 
-    assert.deepEqual(await listFiles(path.join(directory, "data")), [
+    assert.deepEqual(await listFiles(usageDir(directory)), [
       dailyName(DAY_28),
       dailyName(DAY_29),
     ]);
@@ -93,7 +123,7 @@ test("records of one UTC day share one file and different days split", async () 
 
     // The legacy single file is not created by new writes.
     await assert.rejects(
-      () => readFile(path.join(directory, "data", "token-usage.jsonl"), "utf8"),
+      () => readFile(path.join(usageDir(directory), "token-usage.jsonl"), "utf8"),
       /ENOENT/,
     );
   } finally {
@@ -104,7 +134,7 @@ test("records of one UTC day share one file and different days split", async () 
 test("timezone offsets and milliseconds select the UTC event day", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
-    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}) });
+    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}), env: usageEnv(directory) });
     const offset = {
       ...record("r_offset", "2026-10-28T00:00:00.000Z"),
       timestamp: "2026-10-28T23:30:00-02:00",
@@ -122,7 +152,7 @@ test("timezone offsets and milliseconds select the UTC event day", async () => {
     assert.equal((await logger.append(offset)).ok, true);
     assert.equal((await logger.append(early)).ok, true);
 
-    assert.deepEqual(await listFiles(path.join(directory, "data")), [
+    assert.deepEqual(await listFiles(usageDir(directory)), [
       dailyName("2026-10-27"),
       dailyName(DAY_29),
     ]);
@@ -138,16 +168,16 @@ test("timezone offsets and milliseconds select the UTC event day", async () => {
 test("history and backfilled events are written to their own day file", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
-    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}) });
+    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}), env: usageEnv(directory) });
     await logger.append(record("old", "2025-01-02T03:04:05.000Z"));
     await logger.append(record("new", "2026-10-28T03:04:05.000Z"));
 
-    assert.deepEqual(await listFiles(path.join(directory, "data")), [
+    assert.deepEqual(await listFiles(usageDir(directory)), [
       dailyName("2025-01-02"),
       dailyName(DAY_28),
     ]);
     const old = lines(
-      await readFile(path.join(directory, "data", dailyName("2025-01-02")), "utf8"),
+      await readFile(path.join(usageDir(directory), dailyName("2025-01-02")), "utf8"),
     ).map((line) => JSON.parse(line));
     assert.equal(old.length, 1);
     assert.equal(old[0].request_id, "old");
@@ -161,8 +191,8 @@ test("an existing daily file is appended to, never overwritten", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
-    const logger = createUsageLogger({ directory, config });
-    const file = resolveUsageLogFile(config, directory, DAY_28);
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
+    const file = resolveUsageLogFile(config, directory, DAY_28, usageEnv(directory));
     await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     const first = serializeUsageRecord(
       record("existing", "2026-10-28T01:00:00.000Z"),
@@ -189,6 +219,7 @@ test("a missing zone or invalid timestamp is rejected instead of guessed", async
     const failures = [];
     const logger = createUsageLogger({
       directory,
+      env: usageEnv(directory),
       config: resolveConfig({}, {}),
       onFailure: (reason) => failures.push(reason),
     });
@@ -207,7 +238,7 @@ test("a missing zone or invalid timestamp is rejected instead of guessed", async
     await logger.idle();
 
     assert.equal(failures.length, 3);
-    assert.deepEqual(await listFiles(path.join(directory, "data")), []);
+    assert.deepEqual(await listFiles(usageDir(directory)), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -216,7 +247,7 @@ test("a missing zone or invalid timestamp is rejected instead of guessed", async
 test("a malformed record is never written as a valid line", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
-    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}) });
+    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}), env: usageEnv(directory) });
     const bad = {
       schema_version: 99,
       event_type: "model_request_usage",
@@ -227,7 +258,7 @@ test("a malformed record is never written as a valid line", async () => {
     assert.equal(outcome.error, "record_serialization_failed");
     await logger.idle();
 
-    assert.deepEqual(await listFiles(path.join(directory, "data")), []);
+    assert.deepEqual(await listFiles(usageDir(directory)), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -236,7 +267,7 @@ test("a malformed record is never written as a valid line", async () => {
 test("concurrent appends stay serialized per day and every line parses", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
-    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}) });
+    const logger = createUsageLogger({ directory, config: resolveConfig({}, {}), env: usageEnv(directory) });
     const ids = Array.from({ length: 30 }, (_, index) => `r${index}`);
     await Promise.all(
       ids.map((id, index) =>
@@ -278,8 +309,13 @@ test("separate processes appending the same day keep every line intact", async (
 import { resolveConfig } from ${JSON.stringify(new URL("config.js", modules).href)};
 import { createUsageLogger } from ${JSON.stringify(new URL("token-usage-log.js", modules).href)};
 import { buildUsageRecord } from ${JSON.stringify(new URL("token-usage.js", modules).href)};
+import nodePath from "node:path";
 const [directory, tag] = process.argv.slice(2);
-const logger = createUsageLogger({ directory, config: resolveConfig({}, {}) });
+const logger = createUsageLogger({
+  directory,
+  config: resolveConfig({}, {}),
+  env: { VIBE_TOKEN_USAGE_HOME: nodePath.join(directory, "central") },
+});
 const outcomes = await Promise.all(
   Array.from({ length: 20 }, (_, index) =>
     logger.append(
@@ -337,6 +373,7 @@ test("a write failure is reported and never rejects the caller", async () => {
     const failures = [];
     const logger = createUsageLogger({
       directory,
+      env: usageEnv(directory),
       config: resolveConfig({ tokenUsage: { path: blocked } }, {}),
       onFailure: (reason) => failures.push(reason),
     });
@@ -359,7 +396,7 @@ test("disabled logging leaves behavior unchanged and writes nothing", async () =
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({ tokenUsage: { enabled: false } }, {});
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     assert.equal(logger.enabled, false);
     assert.equal(logger.path, null);
 
@@ -367,7 +404,7 @@ test("disabled logging leaves behavior unchanged and writes nothing", async () =
     assert.deepEqual(outcome, { ok: false, error: "disabled" });
     await logger.idle();
 
-    assert.deepEqual(await listFiles(path.join(directory, "data")), []);
+    assert.deepEqual(await listFiles(usageDir(directory)), []);
     assert.equal(
       isUsageLogEnabled(resolveConfig({}, { VIBE_TOKEN_USAGE_LOG_DISABLED: "1" })),
       false,
@@ -382,7 +419,7 @@ test("custom tokenUsage.path keeps its directory and base name for daily files",
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({ tokenUsage: { path: "logs/usage.jsonl" } }, {});
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     assert.equal(
       logger.pathFor(DAY_28),
       path.join(directory, "logs", `usage-${DAY_28}.jsonl`),
@@ -401,11 +438,11 @@ test("readUsageLog merges daily files and the legacy file without double countin
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     await logger.append(record("r_28", "2026-10-28T05:00:00.000Z"));
     await logger.append(record("r_29", "2026-10-29T05:00:00.000Z"));
 
-    const legacy = resolveUsageLogPath(config, directory);
+    const legacy = resolveUsageLogPath(config, directory, usageEnv(directory));
     const legacyLine = serializeUsageRecord(record("r_legacy", "2026-10-27T05:00:00.000Z"));
     const duplicatedLine = serializeUsageRecord(record("r_28", "2026-10-28T05:00:00.000Z"));
     await mkdir(path.dirname(legacy), { recursive: true, mode: 0o700 });
@@ -418,7 +455,7 @@ test("readUsageLog merges daily files and the legacy file without double countin
       ["r_legacy", "r_28"],
     );
 
-    const all = await readUsageLog(config, directory);
+    const all = await readUsageLog(config, directory, { env: usageEnv(directory) });
     assert.deepEqual(
       all.records.map((entry) => entry.request_id),
       ["r_legacy", "r_28", "r_29"],
@@ -426,13 +463,13 @@ test("readUsageLog merges daily files and the legacy file without double countin
     assert.equal(all.files.length, 3);
     assert.deepEqual(all.invalid, []);
 
-    const single = await readUsageLog(config, directory, { from: DAY_29, to: DAY_29 });
+    const single = await readUsageLog(config, directory, { env: usageEnv(directory), from: DAY_29, to: DAY_29 });
     assert.deepEqual(
       single.records.map((entry) => entry.request_id),
       ["r_29"],
     );
 
-    const range = await readUsageLog(config, directory, { from: DAY_28, to: DAY_29 });
+    const range = await readUsageLog(config, directory, { env: usageEnv(directory), from: DAY_28, to: DAY_29 });
     assert.deepEqual(
       range.records.map((entry) => entry.request_id),
       ["r_28", "r_29"],
@@ -450,6 +487,7 @@ test("readUsageLog merges daily files and the legacy file without double countin
     assert.equal((await logger.append(record("r_30", "2026-10-30T05:00:00.000Z"))).ok, true);
     assert.equal(await readFile(legacy, "utf8"), legacyBefore);
     const nextDay = await readUsageLog(config, directory, {
+      env: usageEnv(directory),
       from: "2026-10-30",
       to: "2026-10-30",
     });
@@ -466,10 +504,10 @@ test("readUsageLog ignores backup, temp, unrelated, and malformed-name files", a
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     await logger.append(record("r1", "2026-10-28T05:00:00.000Z"));
 
-    const data = path.join(directory, "data");
+    const data = usageDir(directory);
     const duplicate = serializeUsageRecord(record("r_shadow", "2026-10-28T06:00:00.000Z"));
     for (const name of [
       "token-usage-2026-10-28.jsonl.1",
@@ -481,7 +519,7 @@ test("readUsageLog ignores backup, temp, unrelated, and malformed-name files", a
       await writeFile(path.join(data, name), duplicate, { encoding: "utf8" });
     }
 
-    const result = await readUsageLog(config, directory);
+    const result = await readUsageLog(config, directory, { env: usageEnv(directory) });
     assert.equal(result.files.length, 1); // only the valid daily file exists
     assert.deepEqual(
       result.records.map((entry) => entry.request_id),
@@ -497,10 +535,10 @@ test("readUsageLog reports broken, mistyped, zone-less, and misplaced lines", as
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     await logger.append(record("good", "2026-10-28T05:00:00.000Z"));
 
-    const data = path.join(directory, "data");
+    const data = usageDir(directory);
     const zoneLess = { ...record("zone_less", "2026-10-28T00:00:00.000Z"), timestamp: "2026-10-28T09:39:28" };
     const misplaced = record("misplaced", "2026-10-29T05:00:00.000Z");
     const file = path.join(data, dailyName(DAY_28));
@@ -516,7 +554,7 @@ test("readUsageLog reports broken, mistyped, zone-less, and misplaced lines", as
       { flag: "a", encoding: "utf8" },
     );
 
-    const result = await readUsageLog(config, directory);
+    const result = await readUsageLog(config, directory, { env: usageEnv(directory) });
     assert.deepEqual(
       result.records.map((entry) => entry.request_id),
       ["good"],
@@ -553,14 +591,14 @@ test("legacy v2 lines stay readable while new records are written as v3", async 
       reasoning_tokens: { value: 46, source: "provider_usage" },
       errors: [],
     };
-    const legacyFile = path.join(directory, "data", dailyName("2026-10-27"));
+    const legacyFile = path.join(usageDir(directory), dailyName("2026-10-27"));
     await mkdir(path.dirname(legacyFile), { recursive: true, mode: 0o700 });
     await writeFile(legacyFile, `${JSON.stringify(legacy)}\n`, "utf8");
 
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({ directory, config, env: usageEnv(directory) });
     assert.equal((await logger.append(record("new-v3", "2026-10-28T05:00:00.000Z"))).ok, true);
 
-    const all = await readUsageLog(config, directory);
+    const all = await readUsageLog(config, directory, { env: usageEnv(directory) });
     assert.deepEqual(
       all.records.map((entry) => [entry.schema_version, entry.request_id]),
       [
@@ -579,14 +617,15 @@ test("readUsageLog returns no data when nothing has been written", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-token-log-"));
   try {
     const config = resolveConfig({}, {});
-    const result = await readUsageLog(config, directory);
+    const result = await readUsageLog(config, directory, { env: usageEnv(directory) });
     assert.deepEqual(result, { records: [], files: [], invalid: [] });
 
     await assert.rejects(
-      () => readUsageLog(config, directory, { from: "2026-02-31" }),
+      () => readUsageLog(config, directory, { env: usageEnv(directory), from: "2026-02-31" }),
       /YYYY-MM-DD/,
     );
     const reversed = await readUsageLog(config, directory, {
+      env: usageEnv(directory),
       from: DAY_29,
       to: DAY_28,
     });

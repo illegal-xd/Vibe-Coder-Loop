@@ -116,3 +116,47 @@ test("isTruthy only accepts explicit truthy tokens", () => {
     assert.equal(isTruthy(value), false);
   }
 });
+
+test("protection lists default to empty and accept empty overrides", () => {
+  const defaults = resolveConfig({}, {});
+  assert.deepEqual(defaults.protectedTools, []);
+  assert.deepEqual(defaults.protectedFilePatterns, []);
+
+  const empty = resolveConfig({ protectedTools: [], protectedFilePatterns: [] }, {});
+  assert.deepEqual(empty.protectedTools, []);
+  assert.deepEqual(empty.protectedFilePatterns, []);
+
+  const custom = resolveConfig(
+    { protectedTools: ["write", "write"], protectedFilePatterns: ["**/.env", "**/.env"] },
+    {},
+  );
+  assert.deepEqual(custom.protectedTools, ["write"]);
+  assert.deepEqual(custom.protectedFilePatterns, ["**/.env"]);
+});
+
+test("error purge input options validate and default conservatively", () => {
+  const defaults = resolveConfig({}, {});
+  assert.equal(defaults.errorPurge.redactInputPayload, true);
+  assert.equal(defaults.errorPurge.staleInputAfterUserTurns, null);
+  assert.ok(defaults.errorPurge.inputPlaceholder.startsWith("[vibe-context-dedup]"));
+
+  const disabled = resolveConfig(
+    { errorPurge: { redactInputPayload: false, staleInputAfterUserTurns: 3 } },
+    {},
+  );
+  assert.equal(disabled.errorPurge.redactInputPayload, false);
+  assert.equal(disabled.errorPurge.staleInputAfterUserTurns, 3);
+
+  assert.throws(
+    () => resolveConfig({ errorPurge: { redactInputPayload: "yes" } }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ errorPurge: { staleInputAfterUserTurns: 0 } }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ errorPurge: { inputPlaceholder: "plain" } }, {}),
+    ConfigError,
+  );
+});

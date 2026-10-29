@@ -13,7 +13,9 @@ import {
   PRUNE_MARKER,
 } from "./core.js";
 import {
+  DEFAULT_ERROR_INPUT_PLACEHOLDER,
   DEFAULT_ERROR_PLACEHOLDER,
+  DEFAULT_STALE_INPUT_PLACEHOLDER,
   DUPLICATE_ERROR_PLACEHOLDER,
 } from "./error-purge.js";
 import {
@@ -32,6 +34,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   barrierOnNonWhitelistedTools: true,
   protectCallIdReferences: true,
   mutationTools: Object.freeze([...DEFAULT_MUTATION_TOOLS]),
+  /** Tools that must never be pruned by any strategy (exact or glob). */
+  protectedTools: Object.freeze([]),
+  /** File globs whose tool records must never be pruned. */
+  protectedFilePatterns: Object.freeze([]),
   deduplication: Object.freeze({
     enabled: true,
   }),
@@ -40,6 +46,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     preview: null,
     placeholder: DEFAULT_ERROR_PLACEHOLDER,
     duplicatePlaceholder: DUPLICATE_ERROR_PLACEHOLDER,
+    inputPlaceholder: DEFAULT_ERROR_INPUT_PLACEHOLDER,
+    staleInputPlaceholder: DEFAULT_STALE_INPUT_PLACEHOLDER,
+    redactInputPayload: true,
+    staleInputAfterUserTurns: null,
     preserveAcrossUserTurns: true,
     preserveOnStateChanges: true,
     pruneRepeatedFailures: true,
@@ -106,6 +116,25 @@ function stringList(value, field, fallback) {
   }
   if (result.length === 0) {
     throw new ConfigError(`${field} must contain at least one tool`);
+  }
+  return result;
+}
+
+/** Like stringList, but an empty list is a valid value (protection opt-out). */
+function optionalStringList(value, field, fallback) {
+  if (value === undefined) return [...fallback];
+  if (!Array.isArray(value)) throw new ConfigError(`${field} must be an array of strings`);
+  const seen = new Set();
+  const result = [];
+  for (const item of value) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      throw new ConfigError(`${field} must contain non-empty strings`);
+    }
+    const normalized = item.trim();
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
   }
   return result;
 }
@@ -177,6 +206,30 @@ function resolveErrorPurge(raw, env, globalPreview) {
       "errorPurge.duplicatePlaceholder",
       DEFAULT_CONFIG.errorPurge.duplicatePlaceholder,
     ),
+    inputPlaceholder: assertPlaceholder(
+      raw.inputPlaceholder,
+      "errorPurge.inputPlaceholder",
+      DEFAULT_CONFIG.errorPurge.inputPlaceholder,
+    ),
+    staleInputPlaceholder: assertPlaceholder(
+      raw.staleInputPlaceholder,
+      "errorPurge.staleInputPlaceholder",
+      DEFAULT_CONFIG.errorPurge.staleInputPlaceholder,
+    ),
+    redactInputPayload:
+      raw.redactInputPayload === undefined
+        ? DEFAULT_CONFIG.errorPurge.redactInputPayload
+        : assertBoolean(raw.redactInputPayload, "errorPurge.redactInputPayload"),
+    staleInputAfterUserTurns:
+      raw.staleInputAfterUserTurns === undefined || raw.staleInputAfterUserTurns === null
+        ? DEFAULT_CONFIG.errorPurge.staleInputAfterUserTurns
+        : Number.isInteger(raw.staleInputAfterUserTurns) && raw.staleInputAfterUserTurns > 0
+          ? raw.staleInputAfterUserTurns
+          : (() => {
+              throw new ConfigError(
+                "errorPurge.staleInputAfterUserTurns must be a positive integer or null",
+              );
+            })(),
     preserveAcrossUserTurns:
       raw.preserveAcrossUserTurns === undefined
         ? DEFAULT_CONFIG.errorPurge.preserveAcrossUserTurns
@@ -368,6 +421,17 @@ export function resolveConfig(raw = {}, env = process.env) {
     DEFAULT_CONFIG.mutationTools,
   );
 
+  const protectedTools = optionalStringList(
+    raw.protectedTools,
+    "protectedTools",
+    DEFAULT_CONFIG.protectedTools,
+  );
+  const protectedFilePatterns = optionalStringList(
+    raw.protectedFilePatterns,
+    "protectedFilePatterns",
+    DEFAULT_CONFIG.protectedFilePatterns,
+  );
+
   const placeholder = assertPlaceholder(
     raw.placeholder,
     "placeholder",
@@ -398,6 +462,8 @@ export function resolveConfig(raw = {}, env = process.env) {
     barrierOnNonWhitelistedTools,
     protectCallIdReferences,
     mutationTools,
+    protectedTools,
+    protectedFilePatterns,
     deduplication,
     errorPurge,
     supersedeWrites,

@@ -9,7 +9,7 @@
 <body>
 
 <div class="notice" id="notice" hidden>
-  未找到 <code>token-usage-data.js</code>。生成方式：<code>python3 scripts/token-usage/export_card_data.py</code>
+  无法读取用量数据。启动本地服务后访问：<code>node tools/token-usage-card/server.mjs</code>
 </div>
 
 <main class="card" aria-labelledby="cardTitle">
@@ -21,7 +21,10 @@
         <button type="button" data-range="today">今天</button>
         <button type="button" data-range="last7" aria-pressed="true">最近 7 天</button>
       </div>
-      <p class="caption" id="rangeCaption" aria-live="polite">—</p>
+      <div class="refresh-row">
+        <p class="caption" id="rangeCaption" aria-live="polite">—</p>
+        <button type="button" class="refresh" id="refreshButton" title="立即从本地服务刷新">刷新</button>
+      </div>
     </div>
   </header>
 
@@ -57,10 +60,9 @@
   <p class="footnote">
     扫描 / 候选为每请求均值，实际裁剪为区间累计项数；贡献值为估算 token（字符加权），按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。
   </p>
-  <p class="snapshot" id="snapshot"></p>
+  <p class="snapshot" id="snapshot" aria-live="polite"></p>
 </main>
 
-<script src="token-usage-data.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

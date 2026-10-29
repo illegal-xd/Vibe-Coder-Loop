@@ -13,7 +13,7 @@
  * estimation, JSONL append overhead, and retained heap per fixture.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -312,7 +312,17 @@ for (const [name, build] of fixtures) {
   {
     const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-bench-hook-"));
     try {
-      const plugin = await VibeContextDedupPlugin({ directory });
+      // Keep both logs inside the temp project: the aggregate log via config,
+      // the usage archive via env (it is centralized by default).
+      await mkdir(path.join(directory, ".opencode"), { recursive: true });
+      await writeFile(
+        path.join(directory, ".opencode", "context-dedup.json"),
+        JSON.stringify({ log: { path: "events.jsonl" } }),
+      );
+      const plugin = await VibeContextDedupPlugin({
+        directory,
+        env: { VIBE_TOKEN_USAGE_HOME: directory, VIBE_TOKEN_USAGE_LOG_DISABLED: "1" },
+      });
       const hookMessages = messages.map((message) => ({ info: message.info, parts: message.parts.slice() }));
       for (let index = 0; index < WARMUP; index += 1) {
         await plugin["experimental.chat.messages.transform"]({}, { messages: hookMessages });
@@ -349,7 +359,11 @@ for (const [name, build] of fixtures) {
 {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-bench-log-"));
   try {
-    const logger = createUsageLogger({ directory, config });
+    const logger = createUsageLogger({
+      directory,
+      config,
+      env: { VIBE_TOKEN_USAGE_HOME: directory },
+    });
     const record = buildUsageRecord({
       session_id: SESSION_ID,
       request_id: "msg_bench",

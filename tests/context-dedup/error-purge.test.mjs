@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_ERROR_PLACEHOLDER,
+  DEFAULT_STALE_INPUT_PLACEHOLDER,
   DUPLICATE_ERROR_PLACEHOLDER,
   planErrorPurge,
 } from "../../.opencode/context-dedup/error-purge.js";
@@ -100,7 +101,7 @@ test("Case B/C: different command or build target is not equivalent", () => {
     successRecord({ id: "s1", order: 3, args: { command: "npm test -- --run unit" } }),
   ]);
   assert.equal(differentCommand.decisions.length, 0);
-  assert.equal(reason(differentCommand.stats, "no_superseding_evidence"), 1);
+  assert.equal(reason(differentCommand.stats, "no_success_for_signature"), 1);
 
   const buildVsDeploy = planErrorPurge([
     errorRecord({ id: "e1", order: 1, args: { command: "npm run build" } }),
@@ -393,4 +394,98 @@ test("an intervening retry of the same operation is not a state-change barrier",
   assert.equal(decisions.length, 1);
   assert.equal(decisions[0].id, "e1");
   assert.equal(decisions[0].keeperId, "s1");
+});
+
+test("a superseded failure also redacts its bulky input, keeping paths", () => {
+  const payload = "const generated = 1;\n".repeat(400);
+  const args = { filePath: "/repo/src/generated.js", content: payload, mode: "overwrite" };
+  const { decisions, stats } = planErrorPurge([
+    errorRecord({ id: "e1", order: 1, tool: "write", args }),
+    successRecord({ id: "s1", order: 3, tool: "write", args, output: "written" }),
+  ]);
+
+  assert.equal(decisions.length, 1);
+  const decision = decisions[0];
+  assert.equal(decision.replaceError, true);
+  assert.equal(decision.expectedInput, args);
+  assert.equal(decision.redactedInput.filePath, "/repo/src/generated.js");
+  assert.equal(decision.redactedInput.mode, "overwrite");
+  assert.notEqual(decision.redactedInput.content, payload);
+  assert.equal(stats.inputRedactedCount, 1);
+  // Savings cover both the error text and the redacted payload.
+  assert.ok(decision.estimatedTokensSaved > 400);
+});
+
+test("a huge failed input is still pruned when the error text is short", () => {
+  const payload = "line\n".repeat(2000);
+  const args = { filePath: "/repo/src/a.ts", content: payload };
+  const { decisions, stats } = planErrorPurge([
+    errorRecord({ id: "e1", order: 1, tool: "write", args, error: "EPERM" }),
+    successRecord({ id: "s1", order: 3, tool: "write", args, output: "written" }),
+  ]);
+
+  assert.equal(decisions.length, 1);
+  // The message is already smaller than any placeholder, so it is preserved.
+  assert.equal(decisions[0].replaceError, false);
+  assert.equal(decisions[0].replacement, "EPERM");
+  assert.ok(decisions[0].estimatedTokensSaved > 1000);
+  assert.equal(reason(stats, "no_token_benefit"), 0);
+});
+
+test("redactInputPayload: false keeps the failed call's input untouched", () => {
+  const payload = "x\n".repeat(2000);
+  const args = { filePath: "/repo/src/a.ts", content: payload };
+  const { decisions } = planErrorPurge(
+    [
+      errorRecord({ id: "e1", order: 1, tool: "write", args }),
+      successRecord({ id: "s1", order: 3, tool: "write", args, output: "written" }),
+    ],
+    { redactInputPayload: false },
+  );
+  assert.equal(decisions.length, 1);
+  assert.equal("redactedInput" in decisions[0], false);
+});
+
+test("stale input rule is opt-in, preserves the error text, and respects age", () => {
+  const payload = "trace line\n".repeat(500);
+  const args = { filePath: "/repo/a.ts", content: payload };
+  const records = [
+    errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 1 }),
+    successRecord({ id: "r1", order: 2, tool: "read", args: { filePath: "/repo/b.ts" }, userSegment: 2 }),
+  ];
+
+  const disabled = planErrorPurge(records);
+  assert.equal(disabled.decisions.length, 0);
+  assert.equal(reason(disabled.stats, "no_success_for_signature"), 1);
+
+  const enabled = planErrorPurge(records, { staleInputAfterUserTurns: 1 });
+  assert.equal(enabled.decisions.length, 1);
+  assert.equal(enabled.decisions[0].kind, "stale_failure_input");
+  assert.equal(enabled.decisions[0].confidence, "medium");
+  assert.equal(enabled.decisions[0].replaceError, false);
+  assert.equal(enabled.decisions[0].replacement, enabled.decisions[0].expectedValue);
+  assert.equal(enabled.decisions[0].inputPlaceholder, DEFAULT_STALE_INPUT_PLACEHOLDER);
+  assert.notEqual(DEFAULT_STALE_INPUT_PLACEHOLDER, DEFAULT_ERROR_PLACEHOLDER);
+  assert.equal(enabled.stats.inputRedactedCount, 1);
+  assert.deepEqual(enabled.stats.decisionKinds, { stale_failure_input: 1 });
+
+  const tooRecent = planErrorPurge(
+    [errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 3 })],
+    { staleInputAfterUserTurns: 1 },
+  );
+  // latest user segment is 3, so age 0 < 1: retained.
+  assert.equal(tooRecent.decisions.length, 0);
+});
+
+test("stale input rule never fires on an already-redacted payload", () => {
+  const args = {
+    filePath: "/repo/a.ts",
+    content: "[vibe-context-dedup] already redacted",
+  };
+  const records = [
+    errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 1 }),
+    successRecord({ id: "r1", order: 2, tool: "read", args: { filePath: "/repo/b.ts" }, userSegment: 4 }),
+  ];
+  const { decisions } = planErrorPurge(records, { staleInputAfterUserTurns: 1 });
+  assert.equal(decisions.length, 0);
 });

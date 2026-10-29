@@ -63,7 +63,12 @@ async function tmpProjectDirectory(prefix = "vibe-token-plugin-") {
 }
 
 async function loadPlugin(directory) {
-  const plugin = await VibeContextDedupPlugin({ directory });
+  // Redirect the shared archive into the temp project so tests never touch
+  // the real ~/.config/opencode/token-usage.
+  const plugin = await VibeContextDedupPlugin({
+    directory,
+    env: { VIBE_TOKEN_USAGE_HOME: path.join(directory, "central") },
+  });
   return plugin;
 }
 
@@ -71,7 +76,7 @@ const DAILY_FILE_PATTERN = /^token-usage-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
 /** Read every daily usage file; the file name and record date are checked by tests. */
 async function usageEntries(directory) {
-  const dataDirectory = path.join(directory, "data");
+  const dataDirectory = path.join(directory, "central");
   let names;
   try {
     names = await readdir(dataDirectory);

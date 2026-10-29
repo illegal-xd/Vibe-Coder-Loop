@@ -2,14 +2,17 @@
  * Append-only writer and read helper for the token-usage JSONL log.
  *
  * Storage layout (after the per-day split):
- * - one file per UTC calendar day: `token-usage-YYYY-MM-DD.jsonl`;
+ * - one central archive, independent of the project being edited:
+ *   `~/.config/opencode/token-usage/token-usage-YYYY-MM-DD.jsonl`;
  * - the day is derived from the record's own `timestamp` (event time), never
  *   from the wall clock, so backfilled and replayed events land in their own
  *   day;
  * - timestamps must carry an explicit `Z` or numeric offset; a zone-less
  *   timestamp is rejected instead of silently using the device time zone;
- * - the pre-split single file (`token-usage.jsonl`) is never rewritten or
- *   deleted and remains readable through `readUsageLog`.
+ * - the archive's pre-split single file (`token-usage.jsonl`) is never
+ *   rewritten or deleted and remains readable through `readUsageLog`;
+ * - `VIBE_TOKEN_USAGE_HOME` relocates the archive (tests, non-standard homes);
+ *   `tokenUsage.path` still overrides the exact base file.
  *
  * Guarantees:
  * - one `appendFile` call per record, so a record can never be split by a
@@ -49,17 +52,28 @@ function expandHome(value) {
   return value;
 }
 
+/** Default central archive directory, shared by every project on this machine. */
+export function resolveUsageHome(env = process.env) {
+  const configured = env?.VIBE_TOKEN_USAGE_HOME;
+  if (typeof configured === "string" && configured.trim().length > 0) {
+    return path.resolve(expandHome(configured.trim()));
+  }
+  return path.join(os.homedir(), ".config", "opencode", "token-usage");
+}
+
 /**
  * Base path used before the per-day split. New writes never use it directly;
- * it stays the location of the legacy history and the anchor for daily files.
- * Project-relative default: `<project>/data/token-usage.jsonl`.
+ * it stays the anchor for daily files and remains readable when it exists.
+ * Default: `<usage home>/token-usage.jsonl`, where the usage home is
+ * `~/.config/opencode/token-usage`. `tokenUsage.path` overrides the base file
+ * (relative to the project directory, `~` supported).
  */
-export function resolveUsageLogPath(config, directory) {
+export function resolveUsageLogPath(config, directory, env = process.env) {
   const configured = config?.tokenUsage?.path;
   if (typeof configured === "string" && configured.trim().length > 0) {
     return path.resolve(directory, expandHome(configured.trim()));
   }
-  return path.join(directory, "data", "token-usage.jsonl");
+  return path.join(resolveUsageHome(env), "token-usage.jsonl");
 }
 
 /**
@@ -96,11 +110,11 @@ function dateKeyToBase(basePath, dateKey) {
 }
 
 /** Daily file path for one validated `YYYY-MM-DD` key. */
-export function resolveUsageLogFile(config, directory, dateKey) {
+export function resolveUsageLogFile(config, directory, dateKey, env = process.env) {
   if (!isValidDateKey(dateKey)) {
     throw new TypeError("dateKey must be a valid YYYY-MM-DD date");
   }
-  return dateKeyToBase(resolveUsageLogPath(config, directory), dateKey);
+  return dateKeyToBase(resolveUsageLogPath(config, directory, env), dateKey);
 }
 
 export function isUsageLogEnabled(config, env = process.env) {
@@ -134,7 +148,7 @@ export function createUsageLogger({
     if (dateKey === null) throw new Error("record_timestamp_invalid");
     const line = serializeUsageRecord(record);
     if (line === null) throw new Error("record_serialization_failed");
-    const file = resolveUsageLogFile(config, directory, dateKey);
+    const file = resolveUsageLogFile(config, directory, dateKey, env);
     if (!directoryReady) {
       await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
       directoryReady = true;
@@ -147,10 +161,10 @@ export function createUsageLogger({
   return {
     enabled,
     /** Legacy single-file path; kept for compatibility, not written by this writer. */
-    path: enabled ? resolveUsageLogPath(config, directory) : null,
+    path: enabled ? resolveUsageLogPath(config, directory, env) : null,
     /** Target daily file for one `YYYY-MM-DD` key; pure path computation. */
     pathFor(dateKey) {
-      return resolveUsageLogFile(config, directory, dateKey);
+      return resolveUsageLogFile(config, directory, dateKey, env);
     },
     /** Resolves to an outcome object; never rejects. */
     append(record) {
@@ -264,7 +278,11 @@ async function listDailyFiles(basePath, from, to) {
  *
  * @returns {Promise<{records: object[], files: string[], invalid: {file: string, line: number, reason: string}[]}>}
  */
-export async function readUsageLog(config, directory, { from = null, to = null } = {}) {
+export async function readUsageLog(
+  config,
+  directory,
+  { from = null, to = null, env = process.env } = {},
+) {
   for (const [label, value] of [
     ["from", from],
     ["to", to],
@@ -275,7 +293,7 @@ export async function readUsageLog(config, directory, { from = null, to = null }
   }
   if (from && to && from > to) return { records: [], files: [], invalid: [] };
 
-  const basePath = resolveUsageLogPath(config, directory);
+  const basePath = resolveUsageLogPath(config, directory, env);
   const dailyFiles = await listDailyFiles(basePath, from, to);
 
   const records = [];

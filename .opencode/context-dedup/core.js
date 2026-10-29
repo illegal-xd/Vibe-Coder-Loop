@@ -13,6 +13,8 @@
  *   canonical arguments, execution environment, AND byte-identical output;
  * - a non-whitelisted tool call between the two observations is treated as a
  *   dependency barrier;
+ * - records whose tool or file path matches the user's protection rules are
+ *   never pruned (same guard as the reference implementation);
  * - call-ID references are checked by the adapter because only it can see the
  *   surrounding message text.
  */
@@ -83,9 +85,15 @@ const nodeByteLength =
  * @property {boolean} enabled
  * @property {boolean} preview
  * @property {number} recordsTotal
- * @property {number} candidateCount
- * @property {number} duplicateGroupCount
+ * @property {number} candidateCount Eligible records (pass every safety filter)
+ * @property {number} eligibleCount Alias of candidateCount for the funnel
+ * @property {number} duplicateGroupCount Groups of >=2 byte-identical outputs
+ * @property {number} duplicateCandidateCount Records inside those groups
+ * @property {number} uniqueSignatureCount Eligible records with a unique signature
+ * @property {number} sameSignatureDifferentOutputCount Eligible records whose
+ *   signature matches another call but whose output differs
  * @property {number} sameSignatureDifferentOutputGroups
+ * @property {number} markedCount Decisions produced by the planner
  * @property {number} plannedPruneCount
  * @property {number} wouldPruneCount
  * @property {number} prunedCount
@@ -106,8 +114,13 @@ export function createStats() {
     preview: false,
     recordsTotal: 0,
     candidateCount: 0,
+    eligibleCount: 0,
     duplicateGroupCount: 0,
+    duplicateCandidateCount: 0,
+    uniqueSignatureCount: 0,
+    sameSignatureDifferentOutputCount: 0,
     sameSignatureDifferentOutputGroups: 0,
+    markedCount: 0,
     plannedPruneCount: 0,
     wouldPruneCount: 0,
     prunedCount: 0,
@@ -236,6 +249,180 @@ export function normalizePath(value, base) {
   return absolute ? `/${joined}` : joined || ".";
 }
 
+const REGEXP_SPECIALS = /[.*+?^${}()|[\]\\]/;
+
+function escapeRegExpChar(character) {
+  return REGEXP_SPECIALS.test(character) ? `\\${character}` : character;
+}
+
+/**
+ * Match a path against a shell-style glob. Supports `**`, `*` and `?`:
+ * - `**` (optionally followed by `/`) spans zero or more directories;
+ * - `*` matches within one segment; `?` matches one non-separator character.
+ * Both sides are path-normalized (backslashes become `/`). Invalid patterns
+ * fail closed (no match) instead of throwing.
+ */
+export function matchesGlob(inputPath, pattern) {
+  if (typeof inputPath !== "string" || typeof pattern !== "string" || pattern.length === 0) {
+    return false;
+  }
+  const input = inputPath.replace(/\\/g, "/");
+  const glob = pattern.replace(/\\/g, "/");
+  let regex = "^";
+  for (let index = 0; index < glob.length; index += 1) {
+    const character = glob[index];
+    if (character === "*") {
+      if (glob[index + 1] === "*") {
+        if (glob[index + 2] === "/") {
+          regex += "(?:.*/)?";
+          index += 2;
+        } else {
+          regex += ".*";
+          index += 1;
+        }
+        continue;
+      }
+      regex += "[^/]*";
+      continue;
+    }
+    if (character === "?") {
+      regex += "[^/]";
+      continue;
+    }
+    regex += escapeRegExpChar(character);
+  }
+  regex += "$";
+  try {
+    return new RegExp(regex).test(input);
+  } catch {
+    return false;
+  }
+}
+
+/** Argument keys that carry a file path in the supported tool inputs. */
+export const PATH_ARGUMENT_KEYS = Object.freeze([
+  "filePath",
+  "path",
+  "file",
+  "filename",
+  "fileName",
+]);
+
+const PATCH_PATH_PATTERN = /^\*\*\* (?:Add|Delete|Update) File: (.+)$/gm;
+
+function collectPathArgs(target, value) {
+  if (!isPlainObject(value)) return;
+  for (const key of PATH_ARGUMENT_KEYS) {
+    const raw = value[key];
+    if (typeof raw === "string" && raw.trim().length > 0) target.push(raw.trim());
+  }
+}
+
+/**
+ * Every file path a tool record refers to, in raw (unresolved) form.
+ *
+ * Covers the OpenCode and V2 shapes the reference implementation protects:
+ * direct `filePath`/`path`, `multiedit`'s nested `edits[]`, `apply_patch`'s
+ * `patchText`, and V2 code-mode nested `metadata.toolCalls`.
+ */
+export function recordFilePaths(record) {
+  const paths = [];
+  const args = record && isPlainObject(record.args) ? record.args : null;
+  if (args) {
+    collectPathArgs(paths, args);
+    if (Array.isArray(args.edits)) {
+      for (const edit of args.edits) collectPathArgs(paths, edit);
+    }
+    if (
+      typeof args.patchText === "string" &&
+      (record.tool === "apply_patch" || record.tool === "patch")
+    ) {
+      PATCH_PATH_PATTERN.lastIndex = 0;
+      let match = PATCH_PATH_PATTERN.exec(args.patchText);
+      while (match !== null) {
+        const value = match[1].trim();
+        if (value.length > 0) paths.push(value);
+        match = PATCH_PATH_PATTERN.exec(args.patchText);
+      }
+    }
+  }
+  const metadata = record && isPlainObject(record.metadata) ? record.metadata : null;
+  if (metadata && Array.isArray(metadata.toolCalls)) {
+    for (const call of metadata.toolCalls) {
+      if (isPlainObject(call)) collectPathArgs(paths, call.input);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+function isToolNameProtected(tool, patterns) {
+  for (const pattern of patterns) {
+    if (typeof pattern !== "string" || pattern.length === 0) continue;
+    if (pattern === tool) return true;
+    if (/[*?]/.test(pattern) && matchesGlob(tool, pattern)) return true;
+  }
+  return false;
+}
+
+/**
+ * Shared protection guard (parity with the reference implementation's
+ * `isToolProtected`): a record the user marked as protected is never pruned by
+ * any strategy. Returns the skip-reason key, or "" when the record is prunable.
+ *
+ * Path matching runs against both the raw argument and the canonical
+ * cwd-resolved path, so `src/**` and `/repo/src/**` both work.
+ */
+export function protectedReason(record, options = {}) {
+  if (!record || typeof record !== "object") return "";
+  const tool = typeof record.tool === "string" ? record.tool : "";
+  const protectedTools = Array.isArray(options.protectedTools) ? options.protectedTools : [];
+  if (tool && protectedTools.length > 0 && isToolNameProtected(tool, protectedTools)) {
+    return "protected_tool";
+  }
+  // V2 code mode keeps one combined output for nested calls; protect it when
+  // any nested tool matches, mirroring the reference implementation.
+  const metadata = isPlainObject(record.metadata) ? record.metadata : null;
+  if (protectedTools.length > 0 && metadata && Array.isArray(metadata.toolCalls)) {
+    for (const call of metadata.toolCalls) {
+      if (
+        isPlainObject(call) &&
+        typeof call.tool === "string" &&
+        isToolNameProtected(call.tool, protectedTools)
+      ) {
+        return "protected_tool";
+      }
+    }
+  }
+
+  const patterns = Array.isArray(options.protectedFilePatterns)
+    ? options.protectedFilePatterns
+    : [];
+  if (patterns.length === 0) return "";
+  const paths = recordFilePaths(record);
+  if (paths.length === 0) return "";
+
+  const cwd =
+    record.env && typeof record.env.cwd === "string" && record.env.cwd.length > 0
+      ? record.env.cwd
+      : "";
+  const normalizedCwd = cwd ? normalizePath(cwd, null) : "";
+  const cwdPrefix = normalizedCwd ? `${normalizedCwd.replace(/\/+$/, "")}/` : "";
+  for (const rawPath of paths) {
+    const resolved = cwd ? normalizePath(rawPath, cwd) : rawPath;
+    const candidates = [rawPath, resolved];
+    // Also match project-relative patterns (`src/**`) against absolute paths.
+    if (cwdPrefix && resolved.startsWith(cwdPrefix)) {
+      candidates.push(resolved.slice(cwdPrefix.length));
+    }
+    for (const pattern of patterns) {
+      if (candidates.some((candidate) => matchesGlob(candidate, pattern))) {
+        return "protected_path";
+      }
+    }
+  }
+  return "";
+}
+
 function canonicalize(value, key, cwd, seen = new WeakSet()) {
   if (value === null) return null;
   const type = typeof value;
@@ -322,12 +509,22 @@ function normalizeOptions(config = {}) {
     typeof config.placeholder === "string" && config.placeholder.startsWith(PRUNE_MARKER)
       ? config.placeholder
       : DEFAULT_PLACEHOLDER;
+  const protectedTools = Array.isArray(config.protectedTools)
+    ? config.protectedTools.filter((tool) => typeof tool === "string" && tool.trim().length > 0)
+    : [];
+  const protectedFilePatterns = Array.isArray(config.protectedFilePatterns)
+    ? config.protectedFilePatterns.filter(
+        (pattern) => typeof pattern === "string" && pattern.trim().length > 0,
+      )
+    : [];
   return {
     enabled,
     toolSet,
     mutationTools,
     placeholder,
     barrierOnNonWhitelistedTools: config.barrierOnNonWhitelistedTools !== false,
+    protectedTools,
+    protectedFilePatterns,
   };
 }
 
@@ -438,6 +635,12 @@ export function planDeduplication(records, config = {}) {
     }
     seenIds.add(record.id);
 
+    const protectReason = protectedReason(record, options);
+    if (protectReason) {
+      increment(stats.skippedReasons, protectReason);
+      continue;
+    }
+
     let signature;
     try {
       signature = buildOperationSignature(record);
@@ -459,6 +662,7 @@ export function planDeduplication(records, config = {}) {
   }
 
   stats.candidateCount = eligible.length;
+  stats.eligibleCount = eligible.length;
 
   const bySignature = new Map();
   for (const entry of eligible) {
@@ -470,6 +674,15 @@ export function planDeduplication(records, config = {}) {
   const decisions = [];
   const placeholderTokens = estimateTokens(options.placeholder);
   for (const signatureGroup of bySignature.values()) {
+    // Classify every eligible record so zero contribution is explainable:
+    // a unique signature has nothing to deduplicate, and a matching signature
+    // with a different output cannot be deduplicated without changing meaning.
+    if (signatureGroup.length === 1) {
+      stats.uniqueSignatureCount += 1;
+      increment(stats.skippedReasons, "unique_signature");
+      continue;
+    }
+
     const distinctOutputs = new Set(signatureGroup.map((entry) => entry.output));
     if (distinctOutputs.size > 1) stats.sameSignatureDifferentOutputGroups += 1;
 
@@ -481,8 +694,13 @@ export function planDeduplication(records, config = {}) {
     }
 
     for (const outputGroup of byOutput.values()) {
-      if (outputGroup.length < 2) continue;
+      if (outputGroup.length < 2) {
+        stats.sameSignatureDifferentOutputCount += outputGroup.length;
+        increment(stats.skippedReasons, "same_signature_different_output", outputGroup.length);
+        continue;
+      }
       stats.duplicateGroupCount += 1;
+      stats.duplicateCandidateCount += outputGroup.length;
       outputGroup.sort((left, right) => left.order - right.order);
 
       let keeper = outputGroup[0];
@@ -514,6 +732,8 @@ export function planDeduplication(records, config = {}) {
   }
 
   decisions.sort((left, right) => left.order - right.order);
+  stats.markedCount = decisions.length;
+  stats.prunableCount = stats.duplicateCandidateCount;
   stats.plannedPruneCount = decisions.length;
   stats.tokenSavingsEstimated = decisions.reduce(
     (total, decision) => total + decision.estimatedTokensSaved,

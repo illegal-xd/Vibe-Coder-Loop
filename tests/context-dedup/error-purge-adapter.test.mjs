@@ -7,6 +7,7 @@ import path from "node:path";
 import { resolveConfig } from "../../.opencode/context-dedup/config.js";
 import {
   DEFAULT_ERROR_PLACEHOLDER,
+  DEFAULT_STALE_INPUT_PLACEHOLDER,
   DUPLICATE_ERROR_PLACEHOLDER,
 } from "../../.opencode/context-dedup/error-purge.js";
 import { transformMessages } from "../../.opencode/context-dedup/opencode.js";
@@ -453,4 +454,119 @@ test("OpenCode plugin hook applies Error Purge in place", async () => {
     else process.env.VIBE_CONTEXT_DEDUP_CONFIG = previousConfig;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+function writeFailureConversation({ filePath = "/repo/src/generated.js", content } = {}) {
+  const args = { filePath, content };
+  return [
+    userMessage({ id: "u1", text: "write the file" }),
+    assistantMessage({
+      id: "a_err",
+      parentID: "u1",
+      parts: [
+        toolPart({
+          messageID: "a_err",
+          callID: "werr",
+          tool: "write",
+          input: args,
+          status: "error",
+          error: "EACCES: permission denied, open '/repo/src/generated.js'\n".repeat(12),
+          time: { start: 1, end: 2 },
+        }),
+      ],
+    }),
+    assistantMessage({
+      id: "a_ok",
+      parentID: "u1",
+      parts: [
+        toolPart({
+          messageID: "a_ok",
+          callID: "wok",
+          tool: "write",
+          input: args,
+          output: "File written successfully",
+          status: "completed",
+          time: { start: 3, end: 4 },
+        }),
+      ],
+    }),
+  ];
+}
+
+test("Error Purge redacts the failed call's bulky input and validates the transform", () => {
+  const content = "const generated = 1;\n".repeat(400);
+  const messages = writeFailureConversation({ content });
+  const original = clone(messages);
+  const result = transformMessages(messages, CONFIG);
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.errorPurge.prunedCount, 1);
+  assert.equal(result.stats.errorPurge.inputRedactedCount, 1);
+  assert.equal(result.stats.errorPurge.error, undefined);
+  assert.ok(result.stats.errorPurge.outputBytesRemovedActual > content.length);
+
+  const errorPart = result.messages[1].parts[0];
+  const successPart = result.messages[2].parts[0];
+  assert.equal(errorPart.state.error, DEFAULT_ERROR_PLACEHOLDER);
+  assert.equal(errorPart.state.status, "error");
+  assert.equal(errorPart.state.input.filePath, "/repo/src/generated.js");
+  assert.notEqual(errorPart.state.input.content, content);
+  assert.match(errorPart.state.input.content, /^\[vibe-context-dedup\]/);
+  // The successful call keeps the original arguments and output.
+  assert.equal(successPart.state.input.content, content);
+  assert.equal(successPart.state.output, "File written successfully");
+  // Input message objects are never mutated.
+  assert.equal(original[1].parts[0].state.input.content, content);
+  assert.equal(original[1].parts[0].state.error.startsWith("[vibe-context-dedup]"), false);
+});
+
+test("Error Purge input redaction is idempotent", () => {
+  const content = "const generated = 1;\n".repeat(400);
+  const first = transformMessages(writeFailureConversation({ content }), CONFIG);
+  const second = transformMessages(first.messages, CONFIG);
+  assert.equal(second.changed, false);
+  assert.equal(second.stats.errorPurge.prunedCount, 0);
+});
+
+test("Error Purge stale-input rule redacts old failed inputs but keeps the message", () => {
+  const content = "const generated = 1;\n".repeat(400);
+  // No later equivalent success: only the age-based rule can reclaim the
+  // failed payload.
+  const messages = [writeFailureConversation({ content })[1]];
+  messages.push(userMessage({ id: "u2", text: "next" }));
+  messages.push(
+    assistantMessage({
+      id: "a_later",
+      parentID: "u2",
+      parts: [
+        toolPart({
+          messageID: "a_later",
+          callID: "r1",
+          tool: "read",
+          input: { filePath: "/repo/other.js" },
+          output: "other",
+        }),
+      ],
+    }),
+  );
+  const config = resolveConfig({ errorPurge: { staleInputAfterUserTurns: 1 } }, {});
+  const result = transformMessages(messages, config);
+  assert.equal(result.stats.errorPurge.prunedCount, 1);
+  assert.deepEqual(result.stats.errorPurge.decisionKinds, { stale_failure_input: 1 });
+
+  const errorPart = result.messages[0].parts[0];
+  assert.equal(
+    errorPart.state.error,
+    "EACCES: permission denied, open '/repo/src/generated.js'\n".repeat(12),
+  );
+  assert.equal(errorPart.state.input.content, DEFAULT_STALE_INPUT_PLACEHOLDER);
+});
+
+test("Error Purge leaves protected file paths untouched", () => {
+  const content = "const generated = 1;\n".repeat(400);
+  const config = resolveConfig({ protectedFilePatterns: ["src/**"] }, {});
+  const result = transformMessages(writeFailureConversation({ content }), config);
+  assert.equal(result.changed, false);
+  assert.equal(result.stats.errorPurge.prunedCount, 0);
+  assert.equal(result.stats.errorPurge.skippedReasons.protected_path, 1);
 });

@@ -467,25 +467,73 @@ function partitionSkippedReasons(reasons) {
  * placeholder) already computed by the existing pipeline; it is an estimated
  * TOKEN count derived from `char_weight_v1`, never a billed-usage delta.
  */
+/**
+ * One strategy's funnel, all counts in the same unit (records/decisions):
+ *   scanned_items  -> every tool record the planner looked at
+ *   eligible_items -> records that passed every safety filter
+ *   candidate_items-> eligible records that are actually prunable
+ *                      (dedup: inside an identical-output group;
+ *                       error purge: has a later same-signature success;
+ *                       supersede: shares identity with a full read)
+ *   marked_items   -> decisions produced after every guard
+ *   changed_items  -> decisions that really modified the request copy
+ * `removed_items` stays as an alias of `changed_items` for existing readers.
+ */
 function strategySummary(stats, fallbackEnabled) {
   if (!stats || typeof stats !== "object") return null;
-  const removedItems = intOrNull(stats.prunedCount) ?? 0;
-  const candidates = intOrNull(stats.candidateCount) ?? 0;
-  const preserved =
-    intOrNull(stats.preservedCount) ?? Math.max(0, candidates - removedItems);
+  const changedItems = intOrNull(stats.changedCount) ?? intOrNull(stats.prunedCount) ?? 0;
+  const eligibleItems = intOrNull(stats.eligibleCount) ?? intOrNull(stats.candidateCount) ?? 0;
+  const candidateItems = intOrNull(stats.prunableCount) ?? eligibleItems;
+  const markedItems =
+    intOrNull(stats.markedCount) ?? intOrNull(stats.plannedPruneCount) ?? changedItems;
+  const preserved = Math.max(0, candidateItems - changedItems);
   const removed = nonNegativeNumber(stats.tokenSavingsEstimated);
-  return {
+  const summary = {
     enabled: stats.enabled !== false && fallbackEnabled !== false,
     preview: stats.preview === true,
     scanned_records: intOrNull(stats.recordsTotal) ?? 0,
-    candidate_items: candidates,
-    removed_items: removedItems,
+    eligible_items: eligibleItems,
+    candidate_items: candidateItems,
+    marked_items: markedItems,
+    changed_items: changedItems,
+    removed_items: changedItems,
     preserved_items: preserved,
     candidate_tokens: unavailableMeasure(),
     removed_tokens: removed !== null ? measure(removed, SOURCE.ESTIMATED_TOKENS_FROM_CHARS) : unavailableMeasure(),
     preserved_tokens: unavailableMeasure(),
     skipped: partitionSkippedReasons(stats.skippedReasons),
   };
+
+  // Supersede Writes exposes the write/read funnel so a zero can be explained
+  // without guessing: writes -> reads -> completeness -> identity -> version.
+  if (stats.observedReadCount !== undefined || stats.fileMatchCount !== undefined) {
+    summary.writes = {
+      confirmed: intOrNull(stats.confirmedWriteCount) ?? 0,
+      ambiguous: intOrNull(stats.ambiguousWriteCount) ?? 0,
+      eligible: eligibleItems,
+      file_matches: intOrNull(stats.fileMatchCount) ?? 0,
+      version_verified: intOrNull(stats.versionVerifiedCount) ?? 0,
+      marked: markedItems,
+      changed: changedItems,
+    };
+    summary.reads = {
+      observed: intOrNull(stats.observedReadCount) ?? 0,
+      full: intOrNull(stats.fullReadCount) ?? 0,
+      rejected_reasons: sanitizeReasonMap(stats.readRejectedReasons),
+    };
+  }
+
+  return summary;
+}
+
+function sanitizeReasonMap(value) {
+  const result = {};
+  if (!value || typeof value !== "object") return result;
+  for (const [key, count] of Object.entries(value)) {
+    const rounded = intOrNull(count) ?? 0;
+    if (rounded > 0) result[String(key).slice(0, 64)] = rounded;
+  }
+  return result;
 }
 
 /**
@@ -506,6 +554,9 @@ export function summarizePruning(stats) {
       preview: stats.preview,
       recordsTotal: stats.recordsTotal,
       candidateCount: stats.candidateCount,
+      eligibleCount: stats.eligibleCount,
+      prunableCount: stats.duplicateCandidateCount,
+      markedCount: stats.markedCount ?? stats.plannedPruneCount,
       prunedCount: stats.prunedCount,
       tokenSavingsEstimated: stats.tokenSavingsEstimated,
       skippedReasons: stats.skippedReasons,
