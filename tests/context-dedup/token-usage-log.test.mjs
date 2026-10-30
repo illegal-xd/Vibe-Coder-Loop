@@ -476,6 +476,7 @@ test("readUsageLog merges daily files and the legacy file without double countin
     );
 
     const empty = await readUsageLog(config, directory, {
+      env: usageEnv(directory),
       from: "2026-10-30",
       to: "2026-10-30",
     });
