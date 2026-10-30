@@ -16,6 +16,9 @@
   --accent: #3b82f6;
   --accent-2: #14a08a;
   --accent-3: #d97706;
+  --accent-4: #7c3aed;
+  --accent-5: #db2777;
+  --accent-6: #0d9488;
 
   --radius-card: 22px;
   --ease: cubic-bezier(0.23, 1, 0.32, 1);
@@ -199,7 +202,22 @@ h2 {
   margin-bottom: 4px;
 }
 
+.strategy-title {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
 .strategy-name { font-size: 16px; line-height: 1.4; }
+
+.strategy-note {
+  color: var(--ink-lo);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
 
 .strategy-value {
   font-size: 16px;
@@ -233,6 +251,9 @@ h2 {
 
 .bar.s2 > span { background: var(--accent-2); }
 .bar.s3 > span { background: var(--accent-3); }
+.bar.s4 > span { background: var(--accent-4); }
+.bar.s5 > span { background: var(--accent-5); }
+.bar.s6 > span { background: var(--accent-6); }
 
 .strategy-hint {
   margin: 14px 0 0;

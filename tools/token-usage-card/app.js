@@ -9,6 +9,58 @@
 
   var REFRESH_MS = 15000;
 
+  // Canonical rows mirrored from server.mjs. Older snapshots only list the
+  // first three strategies; append the missing rows so a stale snapshot still
+  // renders the new strategies at zero instead of hiding them.
+  var DEFAULT_STRATEGIES = [
+    { key: 'deduplication', label: 'Deduplication' },
+    { key: 'error_purge', label: 'Error Purge' },
+    { key: 'supersede_writes', label: 'Supersede Writes' },
+    { key: 'tool_descriptions', label: 'Tool Descriptions' },
+    { key: 'compact_read', label: 'Compact Read' },
+    { key: 'line_range_edit', label: 'Line Range Edit' }
+  ];
+
+  // 策略标题后的简短中文说明；只用于展示，不参与聚合。
+  var STRATEGY_NOTES = {
+    deduplication: '重复只读结果去重',
+    error_purge: '过期工具错误裁剪',
+    supersede_writes: '写操作上下文覆盖',
+    tool_descriptions: '内置工具描述压缩',
+    compact_read: 'read 输出压缩',
+    line_range_edit: 'edit 行区间展开'
+  };
+
+  // 固定颜色与稳定排序的兜底顺序；展示顺序另按贡献度动态排序。
+  var STRATEGY_ORDER = {};
+  DEFAULT_STRATEGIES.forEach(function (item, index) {
+    STRATEGY_ORDER[item.key] = index;
+  });
+
+  function sortStrategies(strategies) {
+    return (Array.isArray(strategies) ? strategies.slice() : []).sort(function (left, right) {
+      var byTokens = (right.tokens || 0) - (left.tokens || 0);
+      if (byTokens !== 0) return byTokens;
+      var byItems = (right.removedItems || 0) - (left.removedItems || 0);
+      if (byItems !== 0) return byItems;
+      var leftOrder = STRATEGY_ORDER[left.key];
+      var rightOrder = STRATEGY_ORDER[right.key];
+      return (leftOrder === undefined ? 99 : leftOrder) -
+        (rightOrder === undefined ? 99 : rightOrder);
+    });
+  }
+
+  function resolveStrategies(dataStrategies) {
+    var list = Array.isArray(dataStrategies) ? dataStrategies.slice() : [];
+    DEFAULT_STRATEGIES.forEach(function (item) {
+      var exists = list.some(function (candidate) {
+        return candidate && candidate.key === item.key;
+      });
+      if (!exists) list.push({ key: item.key, label: item.label });
+    });
+    return list;
+  }
+
   function boundsFor(mode, now) {
     var year = now.getFullYear();
     var month = now.getMonth();
@@ -26,7 +78,7 @@
 
   function aggregate(data, mode, now) {
     var bounds = boundsFor(mode, now);
-    var strategies = data.strategies || [];
+    var strategies = resolveStrategies(data.strategies);
     var result = {
       from: bounds.from,
       to: bounds.to,
@@ -148,6 +200,7 @@
   var api = {
     boundsFor: boundsFor,
     aggregate: aggregate,
+    sortStrategies: sortStrategies,
     formatCompact: formatCompact,
     formatPercent: formatPercent,
     formatAverage: formatAverage,
@@ -191,16 +244,29 @@
   function renderStrategies(result) {
     if (!strategyList) return;
     strategyList.textContent = '';
-    result.strategies.forEach(function (strategy, index) {
+    sortStrategies(result.strategies).forEach(function (strategy, index) {
       var row = document.createElement('div');
       row.className = 'strategy';
 
       var head = document.createElement('div');
       head.className = 'strategy-head';
 
+      var title = document.createElement('span');
+      title.className = 'strategy-title';
+
       var name = document.createElement('span');
       name.className = 'strategy-name';
       name.textContent = strategy.label;
+      title.appendChild(name);
+
+      var noteText = STRATEGY_NOTES[strategy.key];
+      var note = null;
+      if (noteText) {
+        note = document.createElement('span');
+        note.className = 'strategy-note';
+        note.textContent = noteText;
+        title.appendChild(note);
+      }
 
       var value = document.createElement('span');
       value.className = 'strategy-value';
@@ -231,7 +297,10 @@
       counts.textContent = countsText;
 
       var bar = document.createElement('div');
-      bar.className = 'bar s' + ((index % 3) + 1);
+      var colorIndex = STRATEGY_ORDER[strategy.key];
+      bar.className = 'bar s' + (
+        colorIndex === undefined ? ((index % 6) + 1) : ((colorIndex % 6) + 1)
+      );
       bar.setAttribute('role', 'progressbar');
       bar.setAttribute('aria-label', strategy.label + ' 贡献');
       bar.setAttribute('aria-valuemin', '0');
@@ -247,7 +316,7 @@
           ? Math.min(100, (strategy.tokens / result.removed) * 100).toFixed(2) + '%'
           : '0%';
 
-      head.appendChild(name);
+      head.appendChild(title);
       head.appendChild(value);
       bar.appendChild(fill);
       row.appendChild(head);

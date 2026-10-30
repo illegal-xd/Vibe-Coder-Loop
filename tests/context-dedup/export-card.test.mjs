@@ -196,3 +196,23 @@ test("four-column snapshots still render (eligible/marked fall back)", async () 
   assert.equal(result.strategies[0].marked, 2);
   assert.equal(result.strategies[0].removedItems, 2);
 });
+
+test("strategy rows sort by contribution without mutating the payload", async () => {
+  const card = loadCard(await readFile(CARD, "utf8"));
+  const input = [
+    { key: "compact_read", tokens: 0, removedItems: 0 },
+    { key: "tool_descriptions", tokens: 120, removedItems: 3 },
+    { key: "line_range_edit", tokens: 0, removedItems: 2 },
+    { key: "deduplication", tokens: 120, removedItems: 1 },
+    { key: "error_purge", tokens: 300, removedItems: 1 },
+  ];
+  const sorted = card.sortStrategies(input);
+  assert.deepEqual(
+    sorted.map((strategy) => strategy.key),
+    ["error_purge", "tool_descriptions", "deduplication", "line_range_edit", "compact_read"],
+  );
+  assert.deepEqual(
+    input.map((strategy) => strategy.key),
+    ["compact_read", "tool_descriptions", "line_range_edit", "deduplication", "error_purge"],
+  );
+});

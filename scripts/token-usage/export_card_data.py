@@ -33,11 +33,21 @@ OUT_FILE = os.environ.get("VIBE_TOKEN_USAGE_OUT_FILE") or os.path.join(
 FILE_RE = re.compile(r"^token-usage(-\d{4}-\d{2}-\d{2})?\.jsonl$")
 # 与 .opencode/context-dedup/token-usage.js 的 pruning.order 对齐：即使历史记录尚未采集
 # 某条策略，卡片也保留该行（值为 0），避免策略在界面上“消失”。
-CANONICAL_STRATEGIES = ("deduplication", "error_purge", "supersede_writes")
+CANONICAL_STRATEGIES = (
+    "deduplication",
+    "error_purge",
+    "supersede_writes",
+    "tool_descriptions",
+    "compact_read",
+    "line_range_edit",
+)
 LABELS = {
     "deduplication": "Deduplication",
     "error_purge": "Error Purge",
     "supersede_writes": "Supersede Writes",
+    "tool_descriptions": "Tool Descriptions",
+    "compact_read": "Compact Read",
+    "line_range_edit": "Line Range Edit",
 }
 
 

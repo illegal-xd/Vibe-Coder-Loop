@@ -22,7 +22,7 @@
 | Skill 运行时（加载计划 / 回写 / 外置） | `python3 skills/vibe-coder-loop/backup/memory_tool.py preflight\|touch\|metrics\|artifact\|backup\|restore\|verify\|list\|check-keys\|export-rules` | `preflight` / `list` / `verify` / `check-keys` 只读；`touch` / `metrics` / `restore` 写库；`backup` / `export-rules` / `artifact put` 写文件；`artifact page` 读文件；`artifact release` **删除产物目录**（不可逆；Checkpoint 仍在引用的 ref 会失效）；`restore` / `export-rules` 支持 `--dry-run` |
 | 记忆迁移 / 审计 / 蒸馏 | `python3 scripts/memory/{migrate,audit_memory,distill}.py` | `distill` / `audit_memory` 只读库（`--out-*` 写报告）；`migrate` 默认 dry-run，但仍会写冻结计划 `.plan-*.json` 到 `--backup-dir`；`--apply` 写库并备份；`--restore` 需 `--yes` |
 | 查看器数据导出 | `python3 scripts/memory/export_viewer_data.py` | 只读 SQLite（`mode=ro`），写 `tools/memory-viewer/memory-data.json`（gitignore） |
-| OpenCode 上下文裁剪（可选） | `.opencode/plugins/vibe-context-dedup.js`（宿主自动加载；测试用 `node --test tests/context-dedup/*.test.mjs`） | 只改本次模型请求的 `output.messages`（Dedup: `state.output`；Error Purge: `state.error`）；不写会话存储；日志写 `~/.vibe-loop/context-dedup/events.jsonl` |
+| OpenCode 上下文裁剪（可选） | `.opencode/plugins/vibe-context-dedup.js`（宿主自动加载；测试用 `node --test tests/context-dedup/*.test.mjs`） | 改本次模型请求的 `output.messages`（Dedup: `state.output`；Error Purge: `state.error`），以及工具 hook 的工具描述 / read 输出 / `edit` 行区间（Slim Edit）；不写会话存储；日志写 `~/.vibe-loop/context-dedup/events.jsonl` 与 `~/.config/opencode/token-usage/token-usage-YYYY-MM-DD.jsonl` |
 | 公开面审计 | `bash scripts/audit.sh scan\|check\|report\|verify` | 默认只读；`report` 写 Markdown；契约见 `docs/audits/audit-tool.md` |
 | 软链校验 | `bash scripts/verify-symlinks.sh [--host]` | 只读 |
 | Skill 自检 | `bash skills/vibe-coder-loop/scripts/smoke-check.sh` | 只读 |

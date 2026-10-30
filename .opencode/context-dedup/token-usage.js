@@ -483,7 +483,8 @@ function strategySummary(stats, fallbackEnabled) {
   if (!stats || typeof stats !== "object") return null;
   const changedItems = intOrNull(stats.changedCount) ?? intOrNull(stats.prunedCount) ?? 0;
   const eligibleItems = intOrNull(stats.eligibleCount) ?? intOrNull(stats.candidateCount) ?? 0;
-  const candidateItems = intOrNull(stats.prunableCount) ?? eligibleItems;
+  const candidateItems =
+    intOrNull(stats.prunableCount) ?? intOrNull(stats.candidateCount) ?? eligibleItems;
   const markedItems =
     intOrNull(stats.markedCount) ?? intOrNull(stats.plannedPruneCount) ?? changedItems;
   const preserved = Math.max(0, candidateItems - changedItems);
@@ -546,9 +547,16 @@ function sanitizeReasonMap(value) {
  * cannot act on the same record, so sequential summation does not double
  * count. Attribution is summed from the applied decisions, not from candidate
  * size, so a candidate that was preserved contributes nothing.
+ *
+ * `slim` carries the OpenSlimedit-derived counters (tool descriptions, read
+ * output, line-range edits). Those strategies touch tool definitions/results,
+ * not the message array, so they never overlap with the three pruning domains.
  */
-export function summarizePruning(stats) {
-  if (!stats || typeof stats !== "object") return null;
+export function summarizePruning(stats, slim = null) {
+  if (!stats || typeof stats !== "object") {
+    if (!slim) return null;
+    stats = { deduplicationEnabled: false };
+  }
 
   const deduplication = strategySummary(
     {
@@ -567,10 +575,21 @@ export function summarizePruning(stats) {
   );
   const errorPurge = strategySummary(stats.errorPurge);
   const supersedeWrites = strategySummary(stats.supersedeWrites);
+  // OpenSlimedit-derived strategies run on tool hooks rather than on the
+  // message array; their counters arrive through the optional `slim` state.
+  const toolDescriptions = strategySummary(slim?.toolDescriptions);
+  const compactRead = strategySummary(slim?.compactRead);
+  const lineRangeEdit = strategySummary(slim?.lineRangeEdit);
 
-  if (!deduplication && !errorPurge && !supersedeWrites) return null;
-
-  const parts = [deduplication, errorPurge, supersedeWrites].filter(Boolean);
+  const parts = [
+    deduplication,
+    errorPurge,
+    supersedeWrites,
+    toolDescriptions,
+    compactRead,
+    lineRangeEdit,
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
   let total = 0;
   let measured = true;
   for (const part of parts) {
@@ -582,10 +601,20 @@ export function summarizePruning(stats) {
   }
 
   return {
-    order: ["deduplication", "error_purge", "supersede_writes"],
+    order: [
+      "deduplication",
+      "error_purge",
+      "supersede_writes",
+      "tool_descriptions",
+      "compact_read",
+      "line_range_edit",
+    ],
     deduplication: deduplication ?? null,
     error_purge: errorPurge ?? null,
     supersede_writes: supersedeWrites ?? null,
+    tool_descriptions: toolDescriptions ?? null,
+    compact_read: compactRead ?? null,
+    line_range_edit: lineRangeEdit ?? null,
     total_removed_tokens: measured ? measure(total, SOURCE.ESTIMATED_TOKENS_FROM_CHARS) : unavailableMeasure(),
     measurement_source: SOURCE.ESTIMATED_TOKENS_FROM_CHARS,
     attribution: "incremental_sequential",

@@ -25,6 +25,7 @@ import {
   DEFAULT_SUPERSEDE_READ_TOOLS,
   DEFAULT_WRITE_TOOLS,
 } from "./supersede-writes.js";
+import { DEFAULT_SLIM_EDIT } from "./slim-edit.js";
 
 export const DEFAULT_LOG_MAX_BYTES = 512 * 1024;
 
@@ -72,6 +73,8 @@ export const DEFAULT_CONFIG = Object.freeze({
     protectReferences: true,
     requireFullRead: true,
   }),
+  /** OpenSlimedit-derived definition/output slimming (see slim-edit.js). */
+  slimEdit: Object.freeze({ ...DEFAULT_SLIM_EDIT }),
   log: Object.freeze({
     enabled: true,
     onlyWhenActive: true,
@@ -386,6 +389,53 @@ function resolveSupersedeWrites(raw, env, globalPreview) {
   };
 }
 
+function resolveSlimEdit(raw, env, globalPreview) {
+  env = env ?? {};
+  if (raw === undefined) {
+    return {
+      ...DEFAULT_SLIM_EDIT,
+      enabled: isTruthy(env.VIBE_CONTEXT_SLIM_EDIT_DISABLED)
+        ? false
+        : DEFAULT_SLIM_EDIT.enabled,
+      preview: isTruthy(env.VIBE_CONTEXT_SLIM_EDIT_PREVIEW)
+        ? true
+        : globalPreview,
+    };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConfigError("slimEdit must be an object");
+  }
+
+  const bool = (value, field, fallback) =>
+    value === undefined ? fallback : assertBoolean(value, field);
+
+  const enabled = bool(raw.enabled, "slimEdit.enabled", DEFAULT_SLIM_EDIT.enabled);
+  const preview =
+    raw.preview === undefined || raw.preview === null
+      ? globalPreview
+      : assertBoolean(raw.preview, "slimEdit.preview");
+
+  return {
+    enabled: isTruthy(env.VIBE_CONTEXT_SLIM_EDIT_DISABLED) ? false : enabled,
+    preview: isTruthy(env.VIBE_CONTEXT_SLIM_EDIT_PREVIEW) ? true : preview,
+    toolDescriptions: bool(
+      raw.toolDescriptions,
+      "slimEdit.toolDescriptions",
+      DEFAULT_SLIM_EDIT.toolDescriptions,
+    ),
+    compactRead: bool(
+      raw.compactRead,
+      "slimEdit.compactRead",
+      DEFAULT_SLIM_EDIT.compactRead,
+    ),
+    lineRangeEdit: bool(
+      raw.lineRangeEdit,
+      "slimEdit.lineRangeEdit",
+      DEFAULT_SLIM_EDIT.lineRangeEdit,
+    ),
+  };
+}
+
 /**
  * Resolve the token-usage log settings. Independent of the pruning switches:
  * disabling pruning must not stop measurement, and disabling measurement must
@@ -472,6 +522,7 @@ export function resolveConfig(raw = {}, env = process.env) {
   const deduplication = resolveDeduplication(raw.deduplication);
   const errorPurge = resolveErrorPurge(raw.errorPurge, env, preview);
   const supersedeWrites = resolveSupersedeWrites(raw.supersedeWrites, env, preview);
+  const slimEdit = resolveSlimEdit(raw.slimEdit, env, preview);
 
   return {
     enabled: isTruthy(env.VIBE_CONTEXT_DEDUP_DISABLED) ? false : enabled,
@@ -486,6 +537,7 @@ export function resolveConfig(raw = {}, env = process.env) {
     deduplication,
     errorPurge,
     supersedeWrites,
+    slimEdit,
     log,
     tokenUsage,
   };

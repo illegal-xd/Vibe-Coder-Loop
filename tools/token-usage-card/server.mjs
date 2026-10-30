@@ -37,12 +37,18 @@ export const CANONICAL_STRATEGIES = Object.freeze([
   "deduplication",
   "error_purge",
   "supersede_writes",
+  "tool_descriptions",
+  "compact_read",
+  "line_range_edit",
 ]);
 
 const LABELS = Object.freeze({
   deduplication: "Deduplication",
   error_purge: "Error Purge",
   supersede_writes: "Supersede Writes",
+  tool_descriptions: "Tool Descriptions",
+  compact_read: "Compact Read",
+  line_range_edit: "Line Range Edit",
 });
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;

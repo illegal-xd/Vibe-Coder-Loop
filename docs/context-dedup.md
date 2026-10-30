@@ -1,12 +1,12 @@
-# OpenCode 上下文裁剪（Dedup + Error Purge + Supersede Writes）
+# OpenCode 上下文裁剪（Dedup + Error Purge + Supersede Writes + Slim Edit）
 
-> 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**与**写操作上下文覆盖（Supersede Writes）**。不包含压缩摘要或其他上下文治理策略。
+> 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**、**写操作上下文覆盖（Supersede Writes）**与 **Slim Edit**（工具描述压缩 / read 输出压缩 / 行区间编辑展开，改编自 [openslimedit](https://github.com/ASidorenkoCode/openslimedit)，MIT）。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现；**267 项 Node 测试全部通过**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现；**276 项 Node 测试全部通过**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
-- 三条策略共用一个 OpenCode 入口与消息提取/裁剪基础设施，但**独立开关、独立预览、独立统计**。
+- 六条策略共用同一插件入口与统计漏斗，但**独立开关、独立预览、独立统计**：三条消息裁剪走 `experimental.chat.messages.transform`，三条 Slim Edit 走工具 hook。
 - Dedup 只处理默认白名单 `read` / `grep` / `glob`；Error Purge 只处理**结构化确认**的工具失败；Supersede Writes 只处理**确认成功**的写工具。
 - Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败；默认只认 `ToolPart.state.status === "error"` 且有非空 `state.error`。对 `bash`，本机运行时把失败也报成 `completed` + `exit:0`，因此默认 `shellExitReliable:false`，`completed` shell 不作为 superseder；可显式开启保守的 shell 失败文本识别（见 4.8）。
 - Supersede Writes **只**在同一文件的后续**完整、成功、足够新鲜**的读取之后，抹去旧写操作的正文载荷（`state.input` 的内容字段与 `state.output`），保留文件路径、`status`、callID、metadata、消息顺序与审计身份。
@@ -26,6 +26,7 @@
     ├── core.js                          # Dedup 纯规则 + 共享签名/token/占位符
     ├── error-purge.js                   # Error Purge 纯规则 + 统计
     ├── supersede-writes.js              # Supersede Writes 纯规则 + 文件身份 + 统计
+    ├── slim-edit.js                     # 工具描述 / read 输出 / 行区间编辑瘦身
     ├── config.js                        # 配置解析 / 校验 / 环境变量
     ├── opencode.js                      # 消息提取 / 引用守卫 / 字段应用 / 结构校验 / 组合
     ├── token-usage.js                   # Token 用量测量（纯函数：估算 / usage 提取 / schema / 归因）
@@ -52,10 +53,11 @@ scripts/tests/test-context-dedup.sh      # Node 内置 test runner 门禁
 | `core.js` | Dedup 签名、分组、依赖屏障、正收益判断 | OpenCode hook / SDK / 文件系统 |
 | `error-purge.js` | 确认错误、成功/歧义分类、supersession、重复失败、置信度 | OpenCode hook / SDK / 文件系统 |
 | `supersede-writes.js` | 确认写入、完整读取判定、文件身份、版本/并发、屏障、正收益 | OpenCode hook / SDK / 文件系统 |
+| `slim-edit.js` | 工具描述压缩、read 输出压缩、行区间 `oldString` 展开与统计 | 消息裁剪规则 |
 | `opencode.js` | `{info, parts}` 提取、callID 引用扫描、字段克隆替换、结构校验、回退 | 不实现业务规则 |
 | `vibe-context-dedup.js` | 注册 `experimental.chat.messages.transform`、加载配置、日志、数组就地替换 | 不直接改消息内容 |
 
-接入点是 OpenCode 的 `experimental.chat.messages.transform` 与 `event`。前者在每次模型请求传输前给出完整 `messages` 数组（裁剪与请求估算都在此度量）；后者在流式终态 `message.updated` 时给出 Runtime 归一化后的 `AssistantMessage.tokens`（真实用量）。`chat.params` / `chat.message` 提供当前请求的 providerID / modelID；本实现改为直接从终态 assistant 消息读取 providerID / modelID，避免对 hook 调用顺序做假设。消息结构来自本机安装的 `@opencode-ai/plugin` / `@opencode-ai/sdk` 类型，而不是文档示例假设：
+接入点是 OpenCode 的 `experimental.chat.messages.transform`、`tool.definition`、`tool.execute.before` / `tool.execute.after` 与 `event`。`transform` 在每次模型请求传输前给出完整 `messages` 数组（裁剪与请求估算都在此度量）；三个工具 hook 承载 Slim Edit 的定义压缩、read 输出压缩与行区间展开；`event` 在流式终态 `message.updated` 时给出 Runtime 归一化后的 `AssistantMessage.tokens`（真实用量）。`chat.params` / `chat.message` 提供当前请求的 providerID / modelID；本实现改为直接从终态 assistant 消息读取 providerID / modelID，避免对 hook 调用顺序做假设。消息结构来自本机安装的 `@opencode-ai/plugin` / `@opencode-ai/sdk` 类型，而不是文档示例假设：
 
 ```text
 { info: Message, parts: Part[] }
@@ -352,6 +354,13 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "protectReferences": true,
     "requireFullRead": true
   },
+  "slimEdit": {
+    "enabled": true,
+    "preview": null,
+    "toolDescriptions": true,
+    "compactRead": true,
+    "lineRangeEdit": true
+  },
   "log": {
     "enabled": true,
     "onlyWhenActive": true,
@@ -367,8 +376,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 | 字段 | 作用 | 缺省 |
 |---|---|---|
-| `enabled` | 插件总开关（三条策略） | `true` |
-| `preview` | 全局观察模式；Dedup 直接使用，Error Purge / Supersede Writes 默认继承 | `false` |
+| `enabled` | 插件总开关（所有策略） | `true` |
+| `preview` | 全局观察模式；Dedup 直接使用，其余策略默认继承 | `false` |
 | `tools` | Dedup 只读白名单；同时作为 Error Purge 的“只读工具”集合 | `["read","grep","glob"]` |
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
 | `barrierOnNonWhitelistedTools` | Dedup 依赖屏障 | `true` |
@@ -401,11 +410,16 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `supersedeWrites.barrierOnBroadMutations` | 写与读之间出现任何非只读/非确认成功写入的记录时保留 | `true` |
 | `supersedeWrites.protectReferences` | 写 callID 被后续引用时保留 | `true` |
 | `supersedeWrites.requireFullRead` | 只允许完整读取触发覆盖（关闭后风险自负） | `true` |
+| `slimEdit.enabled` | Slim Edit 总开关 | `true` |
+| `slimEdit.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
+| `slimEdit.toolDescriptions` | 压缩内置工具描述 | `true` |
+| `slimEdit.compactRead` | 缩短 read 路径、去掉 type/footer | `true` |
+| `slimEdit.lineRangeEdit` | 允许 `oldString: "55-64"` 展开为真实行 | `true` |
 | `log.enabled` | 关闭日志 | `true` |
 | `log.onlyWhenActive` | 只在有候选/变更/错误时写日志 | `true` |
 | `log.path` | 日志路径；相对路径相对项目根，支持 `~` | `~/.vibe-loop/context-dedup/events.jsonl` |
 | `log.maxBytes` | 超过后按 `.1`→`.3` 顺序轮转；全部占用时继续追加主文件，绝不覆盖/删除已有文件 | `524288` |
-| `tokenUsage.enabled` | 独立的 Token 用量记录开关；与三条裁剪策略互不影响 | `true` |
+| `tokenUsage.enabled` | 独立的 Token 用量记录开关；与所有裁剪/瘦身策略互不影响 | `true` |
 | `tokenUsage.path` | 基准文件路径；每日文件沿用其目录与基名（`token-usage.jsonl` → `token-usage-YYYY-MM-DD.jsonl`）。相对路径相对项目根，支持 `~`；缺省 `~/.config/opencode/token-usage/token-usage.jsonl`（跨项目共享归档） | `null` |
 
 环境变量：
@@ -413,11 +427,13 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | 变量 | 作用 |
 |---|---|
 | `VIBE_CONTEXT_DEDUP_DISABLED=1` | 插件总关闭（不读配置文件） |
-| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 顶层预览（三条策略默认继承） |
+| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 顶层预览（所有策略默认继承） |
 | `VIBE_CONTEXT_ERROR_PURGE_DISABLED=1` | 仅关闭 Error Purge |
 | `VIBE_CONTEXT_ERROR_PURGE_PREVIEW=1` | 仅 Error Purge 预览 |
 | `VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED=1` | 仅关闭 Supersede Writes |
 | `VIBE_CONTEXT_SUPERSEDE_WRITES_PREVIEW=1` | 仅 Supersede Writes 预览 |
+| `VIBE_CONTEXT_SLIM_EDIT_DISABLED=1` | 仅关闭 Slim Edit |
+| `VIBE_CONTEXT_SLIM_EDIT_PREVIEW=1` | 仅 Slim Edit 预览 |
 | `VIBE_CONTEXT_DEDUP_LOG_DISABLED=1` | 关闭聚合日志 |
 | `VIBE_CONTEXT_DEDUP_CONFIG=<path>` | 指定配置文件 |
 | `VIBE_TOKEN_USAGE_LOG_DISABLED=1` | 仅关闭 Token 用量记录（裁剪与聚合日志不受影响） |
@@ -440,6 +456,16 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | 变更 | `prunedCount` / `changedCount` | 实际改动了请求副本的决策数（观察模式为 0） |
 
 > **不要把 `eligibleCount`（合格）当作可裁剪数量**：多数会话里合格记录远多于可裁剪候选（例如 Dedup 的合格读取几乎都不构成完全重复组，Supersede 的合格写入也未必有后续同文件完整读取）。`removed_items` 仅在 `changed` 时累加。`candidate_items` 一律指**可裁剪候选**，而非合格记录，避免“候选 18 / 裁剪 0”被误读为故障。
+
+Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的 `pruning` 下（不写入 `events.jsonl` 的 transform 事件）：
+
+| 策略键 | 扫描对象 | 可裁剪候选 | 实际变更 |
+|---|---|---|---|
+| `tool_descriptions` | 每次 `tool.definition` | 描述与精简版不同且收益为正 | 描述已被替换（每次请求重复计） |
+| `compact_read` | 每次 `read` 结果 | 路径/type/footer 至少一项可缩短 | 输出字符串确实变短 |
+| `line_range_edit` | 每次 `edit` 调用 | `oldString` 是合法行区间且文件可读 | `oldString` 已展开为真实行 |
+
+`removed_tokens` 对 `tool_descriptions` / `compact_read` 是提示词侧估算节省；对 `line_range_edit` 是模型原本需要生成的 `oldString` 文本与行区间标记之间的估算差，均不是账单实际节省量。
 
 顶层（Dedup）：
 
@@ -516,7 +542,7 @@ bash scripts/tests/test-context-dedup.sh
 node --test tests/context-dedup/*.test.mjs
 ```
 
-**267 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3/v4 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
+**276 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3/v4 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
 
 - Dedup：相同工具/参数/成功结果重复；不同参数/工具/环境；失败调用；副作用工具；输出不同；依赖屏障；引用守卫；消息结构；幂等；空/异常输入；预览；配置；日志脱敏；OpenCode 类型契约。
 - 保护规则：glob（`**`/`*`/`?`）匹配；multiedit/apply_patch/execute 路径提取；工具名与路径保护在三条策略中一致生效；默认空列表不改变行为。
@@ -524,7 +550,8 @@ node --test tests/context-dedup/*.test.mjs
 - Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；completed shell exit 不可信（默认不作 superseder）；shell 硬失败文本（默认歧义、opt-in 确认错误）；后续失败；缺失/畸形关联。
 - Supersede Writes 正向：写后完整读取；连续写入后统一覆盖；跨 user turn 默认允许；相对/绝对路径归一；预览与独立开关。
 - Supersede Writes 负向：写入失败/超时/pending；重复写入后新写入保留；读取 A 不清理 B；同名不同目录/不同 workspace；行范围/offset/limit/截断/空输出/读取失败；读取早于写入或与写入重叠；并发写入；广义变更屏障；引用守卫；路径无法解析；净收益不足；二次执行幂等；状态不一致回退。
-- 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；三条策略同请求独立生效；插件 hook 就地应用；日志不落错误正文或文件内容。
+- Slim Edit：工具描述压缩、read 路径/footer 压缩、行区间展开、字面匹配优先、预览不修改、独立开关，以及三个 tool hook 的统计归因到 usage 记录。
+- 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；三条消息策略同请求独立生效；插件 hook 就地应用；日志不落错误正文或文件内容。
 
 环境契约测试读取本机安装的 `@opencode-ai/plugin` 与 SDK 类型，断言 hook 与 `ToolPart` 字段存在；未安装类型时跳过，不伪造通过。
 
@@ -632,7 +659,7 @@ Runtime 归一化为：
 
 ### 归因（无双重计数）
 
-- Dedup 只替换 `state.output`（completed），Error Purge 只替换 `state.error`（error），Supersede Writes 只替换写工具的 `state.input` 内容字段与 `state.output`；三条策略**作用于不同记录/不同字段**，按执行顺序 `["deduplication", "error_purge", "supersede_writes"]` 求和不会重复计数。
+- Dedup 只替换 `state.output`（completed），Error Purge 只替换 `state.error`（error），Supersede Writes 只替换写工具的 `state.input` 内容字段与 `state.output`；三条策略**作用于不同记录/不同字段**，按执行顺序 `["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"]` 求和不会重复计数；后三者作用于工具定义/工具结果，与前两者不相交。
 - `removed_tokens` 是**净节省**（被替换内容 − 占位符），来自既有 `tokenSavingsEstimated`，不等于“真实输入 token 节省”（实际还受 system prompt、工具定义、provider 序列化、缓存等影响）。
 - v4 删除了恒为 `unavailable` 的 `candidate_tokens` / `preserved_tokens`：管道未保留每条候选的 token 量，重复的空 holder 只增加记录体积；漏斗计数已足以表达候选/保留数量。
 - 当某策略有 `removed_items > 0` 但 `removed_tokens` 不可得时，`total_removed_tokens` 记为 `unavailable`（不编造 0）。
@@ -706,7 +733,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
     "after_pruning": { "value": 9500, "source": "estimated_tokens_from_chars" }
   },
   "pruning": {
-    "order": ["deduplication", "error_purge", "supersede_writes"],
+    "order": ["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"],
     "deduplication": {
       "enabled": true, "preview": false,
       "scanned_records": 47,
@@ -732,7 +759,25 @@ msg.tokens.cache.read + msg.tokens.cache.write
       "removed_tokens": { "value": 180, "source": "estimated_tokens_from_chars" },
       "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
     },
-    "total_removed_tokens": { "value": 480, "source": "estimated_tokens_from_chars" },
+    "tool_descriptions": {
+      "enabled": true, "preview": false,
+      "scanned_records": 9, "eligible_items": 9, "candidate_items": 9, "marked_items": 9, "changed_items": 9, "removed_items": 9, "preserved_items": 0,
+      "removed_tokens": { "value": 120, "source": "estimated_tokens_from_chars" },
+      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+    },
+    "compact_read": {
+      "enabled": true, "preview": false,
+      "scanned_records": 2, "eligible_items": 2, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
+      "removed_tokens": { "value": 25, "source": "estimated_tokens_from_chars" },
+      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+    },
+    "line_range_edit": {
+      "enabled": true, "preview": false,
+      "scanned_records": 1, "eligible_items": 1, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
+      "removed_tokens": { "value": 15, "source": "estimated_tokens_from_chars" },
+      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+    },
+    "total_removed_tokens": { "value": 640, "source": "estimated_tokens_from_chars" },
     "measurement_source": "estimated_tokens_from_chars",
     "attribution": "incremental_sequential",
     "token_unit": "estimated_tokens_char_weight_v1"
@@ -805,6 +850,8 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 同一文件的中间写入会与更早写入一起被后续完整读取覆盖；这是预期行为（读取代表最终状态），但不是区间级 Supersede。
 - 未实现区间级上下文追踪；部分读取一律不清理整文件写上下文。
 - 只支持当前 `{ info, parts }` / `ToolPart` 结构；若宿主改成独立 tool-role 消息，会安全 no-op。
+- Slim Edit 的工具描述压缩只覆盖 `slim-edit.js` 中列出的工具 ID；未知工具或改版描述保持原样。`compactRead` 依赖 `read` 输出中的 `<path>` / `<type>` / footer 结构，格式变化时安全 no-op。`lineRangeEdit` 在文件不可读、字面 `oldString` 已存在、行号越界或写入只读时保留原参数。
+- Slim Edit 的行区间节省是对模型原本需要生成的 `oldString` 文本做字符加权估算，不是 provider 计费差额；`total_removed_tokens` 因而不等同于提示词实际缩减量。
 - 没有真实 tokenizer；所有 token 节省都是估算。Token 用量记录的 `context_estimates` / `pruning` 估算同样使用 `char_weight_v1` 启发式，未用真实 DeepSeek 用量校准。
 - Token 用量记录的 provider usage 来自 Runtime 归一化结果（`tokens.total` / `input` / `output` / `cache.read` / `reasoning`）。真实样本确认 OpenAI 兼容代理会透传 `prompt_tokens_details.cached_tokens` 与 `completion_tokens_details.reasoning_tokens`；Runtime 再归一化为未缓存 input 与可见 output。
 - 历史 v2 记录（schema v2，修复前写入）的 `input_tokens` 实际是未缓存输入、`output_tokens` 实际是 Runtime 原始 output（当前 Runtime 为可见输出），`total_tokens` 为本地加法总和。这些记录保留原值不迁移；分析时需按 v2 语义换算（总输入 = `input_tokens + cached_input_tokens + cache_write_tokens`，总输出 = `output_tokens + reasoning_tokens`）。v3 新记录已直接给出总量。
@@ -814,7 +861,8 @@ msg.tokens.cache.read + msg.tokens.cache.write
 **未在本机真机验证：**
 
 - `experimental.chat.messages.transform` 的真实调用时机、`output.messages` 是否为请求副本、就地修改是否被宿主采纳。
-- 实际模型请求下的端到端裁剪与 token 计费变化。
+- `tool.definition` / `tool.execute.before` / `tool.execute.after` 与 `experimental.chat.messages.transform` 的真实调用顺序；当前实现按“定义/工具结果先发生、用量记录后发生”的保守假设归属统计。
+- 实际模型请求下的端到端裁剪、Slim Edit 行为与 token 计费变化。
 - 与其他插件（如 advisor、DCP）同时加载时的 handler 顺序与叠加效果。
 - OpenCode 各工具实际写入 `state.metadata` 的失败信号形态；当前只做保守的结构化歧义判断。
 - **已确认（2026-10-30）**：本机 OpenCode 对失败的 `bash` 命令也写 `status:"completed"`、空 `error`、`metadata.exit:0`，退出码不可信。因此适配层默认 `shellExitReliable:false`，所有 `completed` shell 记录都不能作为 superseder；只有显式设为 `true`（并可选 `shellFailureDetection:"error"`）才会恢复 shell 成功取代失败。

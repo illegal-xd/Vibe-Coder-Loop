@@ -18,6 +18,14 @@ import { DEFAULT_CONFIG, isTruthy, resolveConfig } from "../context-dedup/config
 import { appendStats } from "../context-dedup/log.js";
 import { transformMessages } from "../context-dedup/opencode.js";
 import {
+  compactReadOutput,
+  createSlimEditStore,
+  expandLineRangeEdit,
+  hasSlimActivity,
+  mergeSlimStats,
+  slimToolDefinition,
+} from "../context-dedup/slim-edit.js";
+import {
   buildUsageRecord,
   createPendingPruneStore,
   createSeenIdSet,
@@ -108,6 +116,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
   });
   const measuring = usageLogger.enabled;
   const pendingPrune = createPendingPruneStore();
+  const slimStore = createSlimEditStore(config.slimEdit);
   const loggedMessages = createSeenIdSet();
   /**
    * Retry attempt per assistant message id. The runtime reuses the same
@@ -233,12 +242,12 @@ export const VibeContextDedupPlugin = async (input = {}) => {
             (result.stats.skippedReasons?.apply_validation_failed ?? 0) + 1,
         };
         await appendStats({ directory, config }, result.stats);
-        return { pruning: summarizePruning(result.stats), contextUnits: result.contextUnits ?? null };
+        return { stats: result.stats, contextUnits: result.contextUnits ?? null };
       }
     }
 
     await appendStats({ directory, config }, result.stats);
-    return { pruning: summarizePruning(result.stats), contextUnits: result.contextUnits ?? null };
+    return { stats: result.stats, contextUnits: result.contextUnits ?? null };
   }
 
   /**
@@ -278,14 +287,31 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     const sessionID =
       typeof info.sessionID === "string" && info.sessionID.length > 0 ? info.sessionID : null;
     const pending = sessionID ? pendingPrune.take(sessionID) : null;
+    // Tool hooks recorded definition/read/edit savings since the previous
+    // usage record. They are merged with the transform's pruning stats here,
+    // at the one point where every strategy's counters are available.
+    const slim = sessionID ? slimStore.takeSession(sessionID) : null;
+    const slimActive = hasSlimActivity(slim);
+    const baseStats = pending?.stats ?? null;
 
     const usage = extractProviderUsage(info, {
       transport: USAGE_TRANSPORT,
       terminal: completed === true,
     });
 
+    const pruning =
+      baseStats || slimActive
+        ? summarizePruning(
+            baseStats ?? {
+              deduplicationEnabled: false,
+              preview: config.preview,
+            },
+            slimActive ? slim : null,
+          )
+        : null;
+
     const errors = [...usage.errors];
-    if (!pending || !pending.pruning) errors.push("pruning_unavailable");
+    if (!pruning) errors.push("pruning_unavailable");
 
     const record = buildUsageRecord({
       session_id: sessionID,
@@ -293,7 +319,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
       attempt,
       usage,
       context_estimates: pending ? pending.context_estimates : null,
-      pruning: pending ? pending.pruning : null,
+      pruning,
       errors,
     });
 
@@ -329,12 +355,57 @@ export const VibeContextDedupPlugin = async (input = {}) => {
       try {
         outcome = await applyTransform(output);
       } finally {
+        if (sessionID) {
+          // Definitions are built once per request without a session id; move
+          // them onto the session that is about to be sent.
+          mergeSlimStats(slimStore.session(sessionID), slimStore.definitions());
+          slimStore.resetDefinitions();
+        }
         if (measuring && sessionID) {
           pendingPrune.set(sessionID, {
             context_estimates: contextEstimatesFrom(outcome, output.messages),
-            pruning: outcome?.pruning ?? null,
+            stats: outcome?.stats ?? null,
           });
         }
+      }
+    },
+
+    "tool.definition": async (input, output) => {
+      if (!config.enabled || !config.slimEdit.enabled) return;
+      try {
+        slimToolDefinition(input, output, slimStore.definitions(), config.slimEdit);
+      } catch {
+        // Definition slimming is best-effort; never fail a request.
+      }
+    },
+
+    "tool.execute.after": async (input, output) => {
+      if (!config.enabled || !config.slimEdit.enabled) return;
+      try {
+        compactReadOutput(
+          directory,
+          input,
+          output,
+          slimStore.session(input?.sessionID),
+          config.slimEdit,
+        );
+      } catch {
+        // Tool output compaction is best-effort.
+      }
+    },
+
+    "tool.execute.before": async (input, output) => {
+      if (!config.enabled || !config.slimEdit.enabled) return;
+      try {
+        expandLineRangeEdit(
+          directory,
+          input,
+          output,
+          slimStore.session(input?.sessionID),
+          config.slimEdit,
+        );
+      } catch {
+        // Line-range expansion is best-effort; the native edit stays intact.
       }
     },
 

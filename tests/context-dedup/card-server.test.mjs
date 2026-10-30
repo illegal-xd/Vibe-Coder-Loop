@@ -29,7 +29,7 @@ function pruning({ dedup = 1, error = 0, supersede = 1 } = {}) {
     removed_tokens: { value: removedTokens, source: "estimated_tokens_from_chars" },
   });
   return {
-    order: ["deduplication", "error_purge", "supersede_writes"],
+    order: ["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"],
     deduplication: row(dedup, 300),
     error_purge: row(error, 0),
     supersede_writes: row(supersede, 200),
@@ -84,7 +84,7 @@ test("buildCardPayload normalizes v3 records and keeps the strategy order", () =
 
   assert.deepEqual(
     payload.strategies.map((item) => item.key),
-    ["deduplication", "error_purge", "supersede_writes"],
+    ["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"],
   );
   assert.equal(payload.records.length, 1);
   const [at, input, output, cached, removed, rows] = payload.records[0];
@@ -205,7 +205,7 @@ test("GET /api/usage returns the live payload with no-store", async () => {
     assert.equal(payload.records.length, 2);
     assert.deepEqual(
       payload.strategies.map((item) => item.key),
-      ["deduplication", "error_purge", "supersede_writes"],
+      ["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"],
     );
     assert.equal(payload.diagnostics.records, 2);
   });

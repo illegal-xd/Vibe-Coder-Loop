@@ -468,7 +468,7 @@ function transformStats(overrides = {}) {
 
 test("attributes removals per strategy in execution order without double counting", () => {
   const pruning = summarizePruning(transformStats());
-  assert.deepEqual(pruning.order, ["deduplication", "error_purge", "supersede_writes"]);
+  assert.deepEqual(pruning.order, ["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"]);
   assert.equal(pruning.attribution, "incremental_sequential");
   assert.equal(pruning.supersede_writes, null);
   assert.equal(pruning.deduplication.removed_items, 2);

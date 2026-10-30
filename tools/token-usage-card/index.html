@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vibe Kernel · Token Usage</title>
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=20261030-2">
 </head>
 <body>
 
@@ -58,11 +58,11 @@
   </section>
 
   <p class="footnote">
-    扫描 / 候选为每请求均值，实际裁剪为区间累计项数；贡献值为估算 token（字符加权），按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。
+    策略按估算贡献从高到低动态排序。扫描 / 候选为每请求均值，实际裁剪为区间累计项数；贡献值为估算 token（字符加权），按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。工具描述、读取输出与行区间编辑按实际替换文本估算。
   </p>
   <p class="snapshot" id="snapshot" aria-live="polite"></p>
 </main>
 
-<script src="app.js"></script>
+<script src="app.js?v=20261030-2"></script>
 </body>
 </html>
