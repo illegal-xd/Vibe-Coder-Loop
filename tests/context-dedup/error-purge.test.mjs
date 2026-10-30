@@ -263,6 +263,54 @@ test("completed metadata that signals failure is ambiguous and cannot supersede"
   assert.equal(stats.confirmedErrorCount, 1);
 });
 
+test("completed shell output with unreliable exit is not a success", () => {
+  const { decisions, stats } = planErrorPurge(
+    [
+      errorRecord({ id: "e1", order: 1 }),
+      successRecord({ id: "s1", order: 3, metadata: { exit: 0 } }),
+    ],
+    { shellExitReliable: false },
+  );
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.confirmedErrorCount, 1);
+  assert.equal(stats.unverifiedShellCount, 1);
+});
+
+test("failed shell output is not a successful superseder", () => {
+  const { decisions, stats } = planErrorPurge(
+    [
+      errorRecord({ id: "e1", order: 1 }),
+      successRecord({
+        id: "s1",
+        order: 3,
+        output: "/bin/bash: rg: command not found\n",
+        metadata: { exit: 0 },
+      }),
+    ],
+    { shellExitReliable: true, shellFailureDetection: "ambiguous" },
+  );
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.shellFailureCount, 1);
+  assert.equal(stats.unverifiedShellCount, 0);
+});
+
+test("shell failure detection can opt into confirmed errors", () => {
+  const { decisions, stats } = planErrorPurge(
+    [
+      successRecord({
+        id: "f1",
+        order: 1,
+        output: "ERROR  Build failed with errors.\n",
+        metadata: { exit: 0 },
+      }),
+    ],
+    { shellExitReliable: true, shellFailureDetection: "error" },
+  );
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.confirmedErrorCount, 1);
+  assert.equal(stats.shellFailureCount, 1);
+});
+
 test("pending, running, and later failures do not supersede", () => {
   const running = planErrorPurge([
     errorRecord({ id: "e1", order: 1 }),

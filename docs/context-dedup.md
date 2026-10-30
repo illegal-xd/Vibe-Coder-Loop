@@ -2,13 +2,13 @@
 
 > 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**与**写操作上下文覆盖（Supersede Writes）**。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现并通过 **262 项 Node 测试**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现；**267 项 Node 测试中 266 项通过**（`token-usage-log` 日文件合并用例存在既有失败，与三项策略无关）；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
 - 三条策略共用一个 OpenCode 入口与消息提取/裁剪基础设施，但**独立开关、独立预览、独立统计**。
 - Dedup 只处理默认白名单 `read` / `grep` / `glob`；Error Purge 只处理**结构化确认**的工具失败；Supersede Writes 只处理**确认成功**的写工具。
-- Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败；只认 `ToolPart.state.status === "error"` 且有非空 `state.error`。
+- Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败；默认只认 `ToolPart.state.status === "error"` 且有非空 `state.error`。对 `bash`，本机运行时把失败也报成 `completed` + `exit:0`，因此默认 `shellExitReliable:false`，`completed` shell 不作为 superseder；可显式开启保守的 shell 失败文本识别（见 4.8）。
 - Supersede Writes **只**在同一文件的后续**完整、成功、足够新鲜**的读取之后，抹去旧写操作的正文载荷（`state.input` 的内容字段与 `state.output`），保留文件路径、`status`、callID、metadata、消息顺序与审计身份。
 - Error Purge 只把确认失败的 `state.error` 替换为说明原因的占位文本；当输入载荷的裁剪收益为正时，同时抹去该失败调用输入中的大体积字符串（路径与标识字段保留）。`status: "error"`、callID、metadata、消息顺序均不改变；不删除消息或 ToolPart。
 - 原始会话对象不被修改：Adapter 只克隆受影响的 ToolPart 与消息，再替换本次请求的 `output.messages`。
@@ -97,9 +97,10 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 - `status === "error"` 但 `error` 为空或缺失；
 - `status === "pending"` / `"running"` / 未知；
 - `status === "completed"` 但 `metadata` 明确给出失败信号（非零 `exitCode` / `exit_code` / `exit` / `code`、`success:false`、`ok:false`、`failed:true`、`isError:true`、`timedOut:true`、`status:"error"/"failed"`、非空 `error`/`exception`）；
-- 取消/中止标记。
+- 取消/中止标记；
+- **OpenCode 适配层默认 `shellExitReliable: false`**：`bash` 的 `metadata.exit` 在本机运行时对失败命令也返回 `0`，因此 `completed` + 空 `error` 的 shell 记录**不能证明成功**，计入 `unverifiedShellCount`，不会被用作 superseder。
 
-后两类计入 `ambiguousResultCount`，不会被用作 superseder。
+后几类计入 `ambiguousResultCount` / `unverifiedShellCount`，不会被用作 superseder。
 
 ### 4.2 操作等价
 
@@ -111,11 +112,13 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 不猜测语义等价（如 `npm test` 与 `npm run test` 不会合并）。
 
+`bash` 的 `description` 是 UI 标签，不参与签名；同一 `command` 的重试即使改写了描述文案，仍视为同一操作。`command`、`timeout`、cwd/root 仍参与签名。
+
 ### 4.3 Supersession（Case A/B/C）
 
 一个确认错误被裁剪，必须同时满足：
 
-1. 存在**更晚**的同一签名记录，且 `status === "completed"`、无结构化失败 metadata；
+1. 存在**更晚**的同一签名记录，且 `status === "completed"`、无结构化失败 metadata、不是 `unverified_shell`（见 4.8）；
 2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留；
 3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障；
 4. 错误 callID 在后续上下文中**未被引用**；
@@ -176,7 +179,24 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 - 默认 `null`（关闭）；开启后每个决策计入 `decisionKinds.stale_failure_input`，输入使用独立的 `staleInputPlaceholder`（不声称存在“更新的等价调用”）；
 - 与 Rule 1 / Rule 2 互斥：已有证据的候选先按高/中置信度规则处理。
 
+### 4.8 Shell 失败识别与 exit 可信度
 
+本机 OpenCode 对失败的 `bash` 命令也写入 `state.status === "completed"`、空 `state.error`、`metadata.exit === 0`，只把错误文本放在 `state.output`。由此有两个必须处理的问题：
+
+1. **假成功（P0）**：`completed` + `exit 0` 的 shell 记录不能当作 superseder。OpenCode 适配层默认 `shellExitReliable: false`，这类记录归为 `unverified_shell`，不参与“已被后续成功取代”。
+2. **失败不可见（P1）**：可选开启保守的 shell 失败识别，只匹配明确的硬失败文本（`command not found`、`No such file or directory`、`Cannot find module`、`npm ERR!`、`ERROR Build failed`、`exit=1` 等）。
+
+```json
+{ "errorPurge": { "shellExitReliable": false, "shellFailureDetection": "ambiguous" } }
+```
+
+- `shellExitReliable`：默认 `false`（OpenCode）。设为 `true` 才把 `completed` + 空 `error` + 无失败 metadata 的 shell 记录当作成功；仅在确认宿主能正确上报退出码时开启。
+- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `ambiguous`。
+  - `off`：忽略输出文本，仍受 `shellExitReliable` 约束；
+  - `ambiguous`：命中硬失败文本的 shell 记录归为歧义（保留、不作 superseder，计入 `shellFailureCount`）；
+  - `error`：命中时作为**确认错误**候选（计入 `confirmedErrorCount` / `shellFailureCount`），仍需满足 4.3 的同签名后续成功等全部守卫。生产默认 `shellExitReliable: false` 时，若要真正裁剪 shell 错误，需同时显式设为 `true`。
+- 识别只作用于 `bash`（`SHELL_TOOLS`）；`read`/`write` 等结构化工具不按文本猜测失败。
+- `unverifiedShellCount` 与 `shellFailureCount` 分别统计“exit 不可信”和“命中失败文本”的记录数，便于判断零裁剪原因。
 
 ## 四·五、Supersede Writes 规则
 
@@ -317,7 +337,9 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "preserveOnStateChanges": true,
     "pruneRepeatedFailures": true,
     "protectReferences": true,
-    "minSuccesses": 1
+    "minSuccesses": 1,
+    "shellExitReliable": false,
+    "shellFailureDetection": "ambiguous"
   },
   "supersedeWrites": {
     "enabled": true,
@@ -368,6 +390,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
 | `errorPurge.protectReferences` | 旧错误 callID 被后续引用时保留 | `true` |
 | `errorPurge.minSuccesses` | 需要多少个后续等价成功才 supersede | `1` |
+| `errorPurge.shellExitReliable` | 是否信任 `completed` shell 的 exit；OpenCode 失败命令也报 `0`，默认不信任 | `false` |
+| `errorPurge.shellFailureDetection` | shell 输出硬失败识别：`off` / `ambiguous` / `error` | `ambiguous` |
 | `supersedeWrites.enabled` | Supersede Writes 独立开关 | `true` |
 | `supersedeWrites.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `supersedeWrites.placeholder` | 写上下文被覆盖时的占位文本 | 见上 |
@@ -441,6 +465,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `enabled` / `preview` / `changed` | 策略开关 / 观察模式 / 是否实际变更 |
 | `confirmedErrorCount` | 结构化确认错误数 |
 | `ambiguousResultCount` | 空错误、取消、pending/running、completed+failure metadata 等歧义结果数 |
+| `unverifiedShellCount` | `completed` shell 记录中 exit 不可信、不能作为 superseder 的数量 |
+| `shellFailureCount` | shell 输出命中硬失败文本的数量（按模式归入歧义或确认错误） |
 | `candidateCount` / `eligibleCount` | 合格候选错误数 |
 | `potentialSupersedeCount` / `prunableCount` | 存在后续等价成功的候选数（可裁剪候选） |
 | `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
@@ -490,12 +516,12 @@ bash scripts/tests/test-context-dedup.sh
 node --test tests/context-dedup/*.test.mjs
 ```
 
-**262 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3/v4 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）：
+**267 项测试**覆盖（其中 Token 用量测试见 `token-usage*.test.mjs`，含真实 provider 样本、v2/v3/v4 兼容、按 UTC 日分文件、跨午夜/时区偏移、补写历史、旧日志兼容、损坏行诊断与多进程追加）；当前 266 项通过，`token-usage-log` 日文件合并用例存在既有失败：
 
 - Dedup：相同工具/参数/成功结果重复；不同参数/工具/环境；失败调用；副作用工具；输出不同；依赖屏障；引用守卫；消息结构；幂等；空/异常输入；预览；配置；日志脱敏；OpenCode 类型契约。
 - 保护规则：glob（`**`/`*`/`?`）匹配；multiedit/apply_patch/execute 路径提取；工具名与路径保护在三条策略中一致生效；默认空列表不改变行为。
 - Error Purge 正向：等价命令/测试/构建成功取代失败；重复相同失败保留最新；多个过期错误；过期与仍相关错误混合；失败输入载荷脱敏（大字符串替换、路径保留、短错误只裁输入）；可选年龄规则。
-- Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；后续失败；缺失/畸形关联。
+- Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；completed shell exit 不可信（默认不作 superseder）；shell 硬失败文本（默认歧义、opt-in 确认错误）；后续失败；缺失/畸形关联。
 - Supersede Writes 正向：写后完整读取；连续写入后统一覆盖；跨 user turn 默认允许；相对/绝对路径归一；预览与独立开关。
 - Supersede Writes 负向：写入失败/超时/pending；重复写入后新写入保留；读取 A 不清理 B；同名不同目录/不同 workspace；行范围/offset/limit/截断/空输出/读取失败；读取早于写入或与写入重叠；并发写入；广义变更屏障；引用守卫；路径无法解析；净收益不足；二次执行幂等；状态不一致回退。
 - 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；三条策略同请求独立生效；插件 hook 就地应用；日志不落错误正文或文件内容。
@@ -791,13 +817,14 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 实际模型请求下的端到端裁剪与 token 计费变化。
 - 与其他插件（如 advisor、DCP）同时加载时的 handler 顺序与叠加效果。
 - OpenCode 各工具实际写入 `state.metadata` 的失败信号形态；当前只做保守的结构化歧义判断。
+- **已确认（2026-10-30）**：本机 OpenCode 对失败的 `bash` 命令也写 `status:"completed"`、空 `error`、`metadata.exit:0`，退出码不可信。因此适配层默认 `shellExitReliable:false`，所有 `completed` shell 记录都不能作为 superseder；只有显式设为 `true`（并可选 `shellFailureDetection:"error"`）才会恢复 shell 成功取代失败。
 
 **已验证：**
 
 - 本机安装的 `@opencode-ai/plugin` 类型定义中存在该 hook，消息结构为 `{ info: Message, parts: Part[] }`。
 - 本机安装的 SDK 类型中 `ToolPart` 含 `callID`、`tool`、`state`；错误态含 `status: "error"` 与 `error: string`，完成态含 `status: "completed"` 与 `output: string`。
 - 参考项目 `opencode-dynamic-context-pruning` 使用同一 hook 并就地修改 `output.messages`。
-- Node/Bun 可加载插件入口并注册 hook；262 项 Node 测试通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
+- Node/Bun 可加载插件入口并注册 hook；267 项 Node 测试中 266 项通过（`token-usage-log` 日文件合并用例既有失败）；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
 
 ## 十三、卸载 / 回滚
 

@@ -50,6 +50,15 @@ export const DEFAULT_MUTATION_TOOLS = Object.freeze([
 export const TOKEN_COUNTING = "estimate_heuristic_v1";
 
 const PATH_KEYS = new Set(["filePath", "path", "cwd", "directory", "dir", "root", "worktree"]);
+
+/**
+ * Tool-specific UI-only arguments that must not split operation identity.
+ * OpenCode's bash tool carries a human `description`; retries often change it
+ * while the command itself stays identical.
+ */
+const NON_SEMANTIC_ARGS = Object.freeze({
+  bash: Object.freeze(["description"]),
+});
 const textEncoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
 // Buffer.byteLength computes UTF-8 length without allocating a Uint8Array.
 // TextEncoder.encode (the browser fallback) allocates a buffer the size of the
@@ -460,6 +469,10 @@ export function buildOperationSignature(record) {
   const cwd = typeof env.cwd === "string" ? env.cwd : "";
   const root = typeof env.root === "string" ? env.root : "";
   const args = canonicalize(record.args, "", cwd) ?? {};
+  const ignoredArgs = NON_SEMANTIC_ARGS[record.tool];
+  if (ignoredArgs && isPlainObject(args)) {
+    for (const key of ignoredArgs) delete args[key];
+  }
   const argsJson = JSON.stringify(args);
   const argCwd =
     isPlainObject(record.args) && typeof record.args.cwd === "string"

@@ -20,7 +20,7 @@ import {
   userMessage,
 } from "./helpers.mjs";
 
-const CONFIG = resolveConfig({}, {});
+const CONFIG = resolveConfig({ errorPurge: { shellExitReliable: true } }, {});
 const LONG_CONTENT = "export const value = 42;\n".repeat(120);
 const READ_OUTPUT = "1| export const value = 42;\n".repeat(40);
 

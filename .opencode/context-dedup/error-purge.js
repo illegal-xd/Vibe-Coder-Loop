@@ -6,7 +6,11 @@
  *   ToolPart.state.status === "error" && typeof state.error === "string"
  *
  * It never classifies a completed result as an error just because its output
- * contains words like "error" or "failed".
+ * contains words like "error" or "failed". Shell hard-failure detection is an
+ * opt-in exception: it defaults to `ambiguous` (never successful, never an
+ * error) and only `shellFailureDetection: "error"` treats a match as a
+ * confirmed error. Completed shell output is never assumed successful when the
+ * host's exit status is unreliable.
  *
  * An earlier confirmed error is pruned only when:
  * - a later equivalent operation (same tool, canonical args, cwd/root)
@@ -59,6 +63,27 @@ export const DEFAULT_ERROR_INPUT_PLACEHOLDER =
 export const DEFAULT_STALE_INPUT_PLACEHOLDER =
   `${PRUNE_MARKER} Failed call input omitted: the failure is older than the ` +
   "retention window. The failure status and error message are retained.";
+
+/** Shell tools whose completed state does not prove success in every host. */
+export const SHELL_TOOLS = Object.freeze(["bash"]);
+
+export const DEFAULT_SHELL_FAILURE_DETECTION = "ambiguous";
+export const SHELL_FAILURE_DETECTION_MODES = Object.freeze(["off", "ambiguous", "error"]);
+
+/**
+ * Conservative hard-failure markers for completed shell output. These are
+ * evidence that the call did not succeed; they are never used for formatting
+ * or wording. Detection is opt-in as an error (default: ambiguous) because the
+ * output is still text, not structured state.
+ */
+export const DEFAULT_SHELL_FAILURE_PATTERNS = Object.freeze([
+  /(?:^|\r?\n)(?:\/bin\/)?(?:ba|z|k|fi)?sh: [^\n]*: command not found(?:\r?\n|$)/,
+  /(?:^|\r?\n)grep: [^\n]*: No such file or directory(?:\r?\n|$)/,
+  /(?:^|\r?\n)Error: Cannot find module /,
+  /(?:^|\r?\n)npm ERR!/,
+  /(?:^|\r?\n)ERROR\s+Build failed(?: with errors)?/,
+  /(?:^|\r?\n)exit(?: code)?[=:]\s*[1-9]\d*(?:\r?\n|$)/i,
+]);
 
 /**
  * Input keys that identify *what* failed (paths, selectors, short labels).
@@ -127,6 +152,14 @@ export function createErrorPurgeStats() {
     recordsTotal: 0,
     confirmedErrorCount: 0,
     ambiguousResultCount: 0,
+    // Completed shell records that cannot be trusted as successes because the
+    // host does not propagate a reliable exit status.
+    unverifiedShellCount: 0,
+    // Completed shell records whose output matched an explicit hard-failure
+    // marker (classified as ambiguous or error according to the mode).
+    shellFailureCount: 0,
+    shellExitReliable: true,
+    shellFailureDetection: DEFAULT_SHELL_FAILURE_DETECTION,
     candidateCount: 0,
     eligibleCount: 0,
     // Candidates that have at least one later same-signature success. This is
@@ -195,6 +228,15 @@ function normalizeOptions(config = {}) {
     Number.isInteger(config.staleInputAfterUserTurns) && config.staleInputAfterUserTurns > 0
       ? config.staleInputAfterUserTurns
       : 0;
+  // Host-neutral default is "trusted" for backward compatibility. The
+  // OpenCode adapter resolves `shellExitReliable: false` because that runtime
+  // reports exit 0 even for failed commands.
+  const shellExitReliable = config.shellExitReliable !== false;
+  const shellFailureDetection = SHELL_FAILURE_DETECTION_MODES.includes(
+    config.shellFailureDetection,
+  )
+    ? config.shellFailureDetection
+    : DEFAULT_SHELL_FAILURE_DETECTION;
 
   return {
     enabled,
@@ -218,6 +260,8 @@ function normalizeOptions(config = {}) {
     minSuccesses,
     redactInputPayload: config.redactInputPayload !== false,
     staleInputAfterUserTurns,
+    shellExitReliable,
+    shellFailureDetection,
     protectedTools,
     protectedFilePatterns,
   };
@@ -278,6 +322,38 @@ function isConfirmedSuccess(record) {
     record.status === "completed" &&
     !(typeof record.error === "string" && record.error.trim().length > 0) &&
     !hasFailureMetadata(record.metadata)
+  );
+}
+
+function isShellTool(tool) {
+  return typeof tool === "string" && SHELL_TOOLS.includes(tool);
+}
+
+/**
+ * Detect a hard shell failure encoded only in output. Only completed shell
+ * records are considered; structured errors are handled before this check.
+ */
+function detectShellFailure(record) {
+  if (!record || !isShellTool(record.tool) || record.status !== "completed") {
+    return false;
+  }
+  const output = typeof record.output === "string" ? record.output : "";
+  if (!output) return false;
+  return DEFAULT_SHELL_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+/**
+ * A completed shell call is not proof of success when the host does not
+ * propagate a reliable exit status (OpenCode reports exit 0 for failures).
+ * Such records must never act as a superseder.
+ */
+function isUnverifiedShellSuccess(record, options) {
+  return (
+    !options.shellExitReliable &&
+    record?.status === "completed" &&
+    isShellTool(record.tool) &&
+    !hasFailureMetadata(record.metadata) &&
+    !(typeof record.error === "string" && record.error.trim().length > 0)
   );
 }
 
@@ -434,6 +510,8 @@ export function planErrorPurge(records, config = {}) {
   const options = normalizeOptions(config);
   const stats = createErrorPurgeStats();
   stats.enabled = options.enabled;
+  stats.shellExitReliable = options.shellExitReliable;
+  stats.shellFailureDetection = options.shellFailureDetection;
 
   if (!Array.isArray(records)) {
     increment(stats.skippedReasons, "invalid_input");
@@ -466,7 +544,39 @@ export function planErrorPurge(records, config = {}) {
       }
       continue;
     }
-    classifications[index] = isConfirmedSuccess(record) ? "success" : "ambiguous";
+
+    const shellFailure = detectShellFailure(record);
+    if (
+      shellFailure &&
+      options.shellFailureDetection === "error" &&
+      !hasCancellationMetadata(record)
+    ) {
+      classifications[index] = "error";
+      stats.confirmedErrorCount += 1;
+      stats.shellFailureCount += 1;
+      if (typeof record.tool === "string" && record.tool.length > 0) {
+        candidateTools.add(record.tool);
+      }
+      continue;
+    }
+
+    if (isConfirmedSuccess(record)) {
+      if (shellFailure && options.shellFailureDetection === "ambiguous") {
+        classifications[index] = "ambiguous";
+        stats.shellFailureCount += 1;
+        continue;
+      }
+      if (isUnverifiedShellSuccess(record, options)) {
+        classifications[index] = "unverified_shell";
+        stats.unverifiedShellCount += 1;
+        continue;
+      }
+      classifications[index] = "success";
+      continue;
+    }
+
+    if (shellFailure) stats.shellFailureCount += 1;
+    classifications[index] = "ambiguous";
   }
 
   const timeline = buildBarrierTimeline(records, options);
@@ -480,6 +590,7 @@ export function planErrorPurge(records, config = {}) {
     const record = records[index];
     const kind = classifications[index];
     if (kind === "invalid") continue;
+    if (kind === "unverified_shell") continue;
     if (kind === "ambiguous") {
       stats.ambiguousResultCount += 1;
       continue;

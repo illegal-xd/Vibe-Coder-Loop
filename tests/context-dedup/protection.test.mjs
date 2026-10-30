@@ -12,7 +12,7 @@ import { resolveConfig } from "../../.opencode/context-dedup/config.js";
 import { planSupersedeWrites } from "../../.opencode/context-dedup/supersede-writes.js";
 import { toolRecord } from "./helpers.mjs";
 
-const BASE_CONFIG = resolveConfig({}, {});
+const BASE_CONFIG = resolveConfig({ errorPurge: { shellExitReliable: true } }, {});
 const LONG = "payload line that is long enough to matter\n".repeat(80);
 
 function reason(stats, key) {

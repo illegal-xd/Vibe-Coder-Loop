@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_PLACEHOLDER,
   PRUNE_MARKER,
+  buildOperationSignature,
   estimateTokens,
   isPrunedOutput,
   normalizePath,
@@ -249,6 +250,27 @@ test("canonicalization is key-order independent and does not pollute prototypes"
   );
   assert.equal(decisions.length, 1);
   assert.equal({}.polluted, undefined);
+});
+
+test("bash description is not part of the operation signature", () => {
+  const env = { cwd: "/repo", root: "/repo" };
+  const first = buildOperationSignature({
+    tool: "bash",
+    args: { command: "npm run build", description: "Run build" },
+    env,
+  });
+  const retry = buildOperationSignature({
+    tool: "bash",
+    args: { command: "npm run build", description: "Re-run build after fix" },
+    env,
+  });
+  const differentCommand = buildOperationSignature({
+    tool: "bash",
+    args: { command: "npm run deploy", description: "Run build" },
+    env,
+  });
+  assert.equal(first, retry);
+  assert.notEqual(first, differentCommand);
 });
 
 test("does not process duplicate call ids", () => {

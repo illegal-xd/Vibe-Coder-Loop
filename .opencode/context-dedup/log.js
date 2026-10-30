@@ -52,6 +52,13 @@ function sanitizeErrorPurgeStats(stats) {
     recordsTotal: Number(stats.recordsTotal) || 0,
     confirmedErrorCount: Number(stats.confirmedErrorCount) || 0,
     ambiguousResultCount: Number(stats.ambiguousResultCount) || 0,
+    unverifiedShellCount: Number(stats.unverifiedShellCount) || 0,
+    shellFailureCount: Number(stats.shellFailureCount) || 0,
+    shellExitReliable: stats.shellExitReliable === true,
+    shellFailureDetection:
+      typeof stats.shellFailureDetection === "string"
+        ? stats.shellFailureDetection
+        : "unknown",
     candidateCount: Number(stats.candidateCount) || 0,
     eligibleCount: Number(stats.eligibleCount) || 0,
     potentialSupersedeCount: Number(stats.potentialSupersedeCount) || 0,

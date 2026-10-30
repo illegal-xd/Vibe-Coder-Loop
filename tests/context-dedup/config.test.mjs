@@ -23,6 +23,9 @@ test("defaults are safe and explicit", () => {
   assert.equal(config.errorPurge.pruneRepeatedFailures, true);
   assert.equal(config.errorPurge.protectReferences, true);
   assert.equal(config.errorPurge.minSuccesses, 1);
+  // OpenCode reports exit 0 for failed shell commands: completions are not success.
+  assert.equal(config.errorPurge.shellExitReliable, false);
+  assert.equal(config.errorPurge.shellFailureDetection, "ambiguous");
   assert.deepEqual(config.log, DEFAULT_CONFIG.log);
 });
 
@@ -81,6 +84,14 @@ test("Error Purge invalid fields fail closed", () => {
   );
   assert.throws(
     () => resolveConfig({ errorPurge: { preserveOnStateChanges: "no" } }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ errorPurge: { shellExitReliable: "no" } }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ errorPurge: { shellFailureDetection: "maybe" } }, {}),
     ConfigError,
   );
   assert.throws(() => resolveConfig({ deduplication: [] }, {}), ConfigError);

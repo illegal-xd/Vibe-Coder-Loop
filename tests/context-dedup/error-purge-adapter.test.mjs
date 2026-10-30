@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -20,7 +20,10 @@ import {
   userMessage,
 } from "./helpers.mjs";
 
-const CONFIG = resolveConfig({}, {});
+// These scenarios exercise supersession semantics; opt into trusting shell
+// exit only here. The production default (untrusted) is covered separately.
+const CONFIG = resolveConfig({ errorPurge: { shellExitReliable: true } }, {});
+const SAFE_CONFIG = resolveConfig({}, {});
 const LONG_ERROR =
   "AssertionError: expected response.status to equal 200\n" +
   "  at tests/integration/checkout.test.js:42:17\n".repeat(80);
@@ -138,6 +141,16 @@ test("Error Purge replaces only state.error and preserves call/result integrity"
 
   // Original message objects are untouched.
   assert.deepEqual(messages, original);
+});
+
+test("default config treats completed shell output as unverified, not success", () => {
+  const messages = errorConversation();
+  const result = transformMessages(messages, SAFE_CONFIG);
+
+  assert.equal(result.changed, false);
+  assert.equal(result.stats.errorPurge.prunedCount, 0);
+  assert.equal(result.stats.errorPurge.confirmedErrorCount, 1);
+  assert.equal(result.stats.errorPurge.unverifiedShellCount, 1);
 });
 
 test("different command, workspace, or user turn is preserved", () => {
@@ -281,7 +294,10 @@ test("observation-only mode reports candidates without changing content", () => 
   const original = clone(messages);
   const result = transformMessages(
     messages,
-    resolveConfig({ errorPurge: { preview: true } }, {}),
+    resolveConfig(
+      { errorPurge: { preview: true, shellExitReliable: true } },
+      {},
+    ),
   );
   assert.equal(result.changed, false);
   assert.equal(result.messages, messages);
@@ -438,6 +454,12 @@ test("OpenCode plugin hook applies Error Purge in place", async () => {
   delete process.env.VIBE_CONTEXT_ERROR_PURGE_PREVIEW;
   delete process.env.VIBE_CONTEXT_DEDUP_CONFIG;
   try {
+    await mkdir(path.join(directory, ".opencode"), { recursive: true });
+    await writeFile(
+      path.join(directory, ".opencode", "context-dedup.json"),
+      JSON.stringify({ errorPurge: { shellExitReliable: true } }),
+      "utf8",
+    );
     const plugin = await VibeContextDedupPlugin({ directory });
     const output = { messages: errorConversation() };
     await plugin["experimental.chat.messages.transform"]({}, output);

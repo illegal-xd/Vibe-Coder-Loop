@@ -15,8 +15,10 @@ import {
 import {
   DEFAULT_ERROR_INPUT_PLACEHOLDER,
   DEFAULT_ERROR_PLACEHOLDER,
+  DEFAULT_SHELL_FAILURE_DETECTION,
   DEFAULT_STALE_INPUT_PLACEHOLDER,
   DUPLICATE_ERROR_PLACEHOLDER,
+  SHELL_FAILURE_DETECTION_MODES,
 } from "./error-purge.js";
 import {
   DEFAULT_SUPERSEDE_PLACEHOLDER,
@@ -55,6 +57,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     pruneRepeatedFailures: true,
     protectReferences: true,
     minSuccesses: 1,
+    /** OpenCode reports exit 0 for failed shell commands, so completions are not proof of success. */
+    shellExitReliable: false,
+    shellFailureDetection: DEFAULT_SHELL_FAILURE_DETECTION,
   }),
   supersedeWrites: Object.freeze({
     enabled: true,
@@ -253,6 +258,20 @@ function resolveErrorPurge(raw, env, globalPreview) {
           ? raw.minSuccesses
           : (() => {
               throw new ConfigError("errorPurge.minSuccesses must be a positive integer");
+            })(),
+    shellExitReliable:
+      raw.shellExitReliable === undefined
+        ? DEFAULT_CONFIG.errorPurge.shellExitReliable
+        : assertBoolean(raw.shellExitReliable, "errorPurge.shellExitReliable"),
+    shellFailureDetection:
+      raw.shellFailureDetection === undefined
+        ? DEFAULT_CONFIG.errorPurge.shellFailureDetection
+        : SHELL_FAILURE_DETECTION_MODES.includes(raw.shellFailureDetection)
+          ? raw.shellFailureDetection
+          : (() => {
+              throw new ConfigError(
+                `errorPurge.shellFailureDetection must be one of: ${SHELL_FAILURE_DETECTION_MODES.join(", ")}`,
+              );
             })(),
   };
 }
