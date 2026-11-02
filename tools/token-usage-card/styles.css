@@ -1,73 +1,134 @@
-/* Token 用量卡片 · Apple 风格视觉层
-   原则：大标题 + 分组内嵌统计 + 分段控件 + 发丝分隔线 + 克制动效
-   支持浅色 / 深色，尊重 prefers-reduced-motion。 */
+/* Token 用量卡片 · Apple 设计系统视觉层 (Apple HIG Inspired)
+   核心美学：
+   1. 物理材质感：高饱和模糊玻璃 (Liquid Glass / Material Vibrancy) + 顶部 1px 倒角反光内高光 (Inner Bevel)
+   2. 精致分层：深浅模式层次化环境漫射微光 (Ambient Light) + 物理级多层柔和漫反射投影
+   3. 经典排版：SF Pro 字体栈、等宽数字排版 (Tabular Nums)、高对比度字阶层次
+   4. 原生控件：Apple Inset Grouped 内嵌分组卡片、胶囊分段控件 (Segmented Control) 物理回弹与丝滑位移
+   5. 微交互：呼吸状态点 (Breathing LED)、平滑进度条、悬浮触觉反馈
+   完全兼容系统浅色/深色模式及 prefers-reduced-motion。 */
 
 :root {
   color-scheme: light dark;
 
-  --bg-top: #f5f5f7;
-  --bg-bottom: #ececef;
-  --glow: rgba(0, 113, 227, 0.1);
+  /* 基础环境与微光 (Ambient Background & Glow) */
+  --bg-top: #fbfbfd;
+  --bg-bottom: #f2f2f7;
+  --glow-1: rgba(0, 113, 227, 0.08);
+  --glow-2: rgba(175, 82, 222, 0.05);
 
-  --surface: rgba(255, 255, 255, 0.76);
+  /* 卡片玻璃材质 (Vibrancy Material) */
+  --surface: rgba(255, 255, 255, 0.82);
   --surface-solid: #ffffff;
   --surface-soft: rgba(118, 118, 128, 0.08);
+  --surface-soft-hover: rgba(118, 118, 128, 0.12);
+  --surface-inset: rgba(0, 0, 0, 0.03);
 
-  --ink: #1d1d1f;
-  --ink-mid: #515154;
-  /* 12px secondary text needs >= 4.5:1 on both the card and the soft group. */
-  --ink-lo: #6e6e73;
+  /* 文字系统层级 (Typography Colors - Apple Standard) */
+  --ink: #1d1d1f;            /* Primary Label */
+  --ink-mid: #515154;        /* Secondary Label */
+  --ink-lo: #6e6e73;         /* Tertiary Label (>= 4.5:1 WCAG AA) */
+  --ink-quaternary: #86868b;   /* Quaternary Label */
 
+  /* 分隔线与边框 (Hairline Strokes) */
   --line: rgba(60, 60, 67, 0.12);
-  --line-strong: rgba(60, 60, 67, 0.18);
-  --track: rgba(120, 120, 128, 0.16);
+  --line-subtle: rgba(60, 60, 67, 0.07);
+  --line-strong: rgba(60, 60, 67, 0.22);
+
+  /* 分段控件 (Segmented Control) */
+  --track: rgba(118, 118, 128, 0.12);
+  --track-border: rgba(0, 0, 0, 0.04);
   --thumb: #ffffff;
-  --thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
-  --card-shadow: 0 30px 80px -48px rgba(16, 24, 40, 0.5);
+  --thumb-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.06);
+  --thumb-highlight: inset 0 0.5px 0 0 rgba(255, 255, 255, 0.95);
 
+  /* 物理高光与多层投影 */
+  --card-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.9), inset 0 -1px 0 0 rgba(0, 0, 0, 0.02);
+  --card-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.03),
+    0 10px 30px -8px rgba(0, 0, 0, 0.06),
+    0 28px 70px -16px rgba(0, 0, 0, 0.08);
+
+  /* Apple System Palette 调色盘与光晕色 */
   --accent: #0071e3;
-  --dot-1: #0071e3;
-  --dot-2: #34c759;
-  --dot-3: #ff9500;
-  --dot-4: #af52de;
-  --dot-5: #ff2d55;
-  --dot-6: #5ac8fa;
+  --accent-glow: rgba(0, 113, 227, 0.25);
 
-  --radius-card: 28px;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --dot-1: #0071e3; /* System Blue */
+  --dot-1-glow: rgba(0, 113, 227, 0.35);
+  --dot-2: #34c759; /* System Green */
+  --dot-2-glow: rgba(52, 199, 89, 0.35);
+  --dot-3: #ff9500; /* System Orange */
+  --dot-3-glow: rgba(255, 149, 0, 0.35);
+  --dot-4: #af52de; /* System Purple */
+  --dot-4-glow: rgba(175, 82, 222, 0.35);
+  --dot-5: #ff2d55; /* System Pink */
+  --dot-5-glow: rgba(255, 45, 85, 0.35);
+  --dot-6: #5ac8fa; /* System Teal/Cyan */
+  --dot-6-glow: rgba(90, 200, 250, 0.35);
+
+  /* 圆角几何 */
+  --radius-card: 26px;
+  --radius-group: 18px;
+  --radius-item: 12px;
+
+  /* 弹簧物理缓动 */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-snappy: cubic-bezier(0.25, 1, 0.5, 1);
+
+  /* 字体栈：SF Pro 体系优先 */
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "SF Pro", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg-top: #000000;
-    --bg-bottom: #0b0b0d;
-    --glow: rgba(10, 132, 255, 0.16);
+    --bg-bottom: #0e0e12;
+    --glow-1: rgba(10, 132, 255, 0.12);
+    --glow-2: rgba(191, 90, 242, 0.08);
 
-    --surface: rgba(28, 28, 30, 0.72);
+    --surface: rgba(28, 28, 30, 0.74);
     --surface-solid: #1c1c1e;
-    --surface-soft: rgba(118, 118, 128, 0.2);
+    --surface-soft: rgba(118, 118, 128, 0.18);
+    --surface-soft-hover: rgba(118, 118, 128, 0.26);
+    --surface-inset: rgba(0, 0, 0, 0.3);
 
     --ink: #f5f5f7;
-    --ink-mid: #a8a8ad;
-    --ink-lo: #98989d;
+    --ink-mid: #a1a1a6;
+    --ink-lo: #8e8e93;
+    --ink-quaternary: #636366;
 
-    --line: rgba(255, 255, 255, 0.12);
+    --line: rgba(255, 255, 255, 0.11);
+    --line-subtle: rgba(255, 255, 255, 0.06);
     --line-strong: rgba(255, 255, 255, 0.2);
-    --track: rgba(120, 120, 128, 0.32);
+
+    --track: rgba(118, 118, 128, 0.28);
+    --track-border: rgba(255, 255, 255, 0.06);
     --thumb: #636366;
-    --thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-    --card-shadow: 0 34px 90px -44px rgba(0, 0, 0, 0.9);
+    --thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 3px 8px rgba(0, 0, 0, 0.35);
+    --thumb-highlight: inset 0 0.5px 0 0 rgba(255, 255, 255, 0.2);
+
+    --card-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 0 rgba(0, 0, 0, 0.5);
+    --card-shadow:
+      0 1px 3px rgba(0, 0, 0, 0.4),
+      0 14px 40px -10px rgba(0, 0, 0, 0.65),
+      0 34px 90px -18px rgba(0, 0, 0, 0.88);
 
     --accent: #0a84ff;
+    --accent-glow: rgba(10, 132, 255, 0.35);
+
     --dot-1: #0a84ff;
+    --dot-1-glow: rgba(10, 132, 255, 0.45);
     --dot-2: #30d158;
+    --dot-2-glow: rgba(48, 209, 88, 0.45);
     --dot-3: #ff9f0a;
+    --dot-3-glow: rgba(255, 159, 10, 0.45);
     --dot-4: #bf5af2;
+    --dot-4-glow: rgba(191, 90, 242, 0.45);
     --dot-5: #ff375f;
+    --dot-5-glow: rgba(255, 55, 95, 0.45);
     --dot-6: #64d2ff;
+    --dot-6-glow: rgba(100, 210, 255, 0.45);
   }
 }
 
@@ -82,13 +143,16 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  padding: 48px 24px 64px;
+  padding: 52px 24px 68px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  background:
-    radial-gradient(900px 480px at 50% -8%, var(--glow), transparent 62%),
-    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+  background-color: var(--bg-bottom);
+  background-image:
+    radial-gradient(1100px 580px at 50% -12%, var(--glow-1), transparent 70%),
+    radial-gradient(800px 420px at 85% 15%, var(--glow-2), transparent 60%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  background-attachment: fixed;
   color: var(--ink);
   font-family: var(--sans);
   font-size: 15px;
@@ -101,13 +165,14 @@ body {
 
 .card {
   width: min(960px, 100%);
-  padding: 40px 44px 30px;
+  padding: 40px 44px 34px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--surface);
-  box-shadow: var(--card-shadow);
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--card-highlight), var(--card-shadow);
+  -webkit-backdrop-filter: blur(40px) saturate(190%);
+  backdrop-filter: blur(40px) saturate(190%);
+  transition: box-shadow 0.3s var(--ease);
 }
 
 .card-head {
@@ -117,12 +182,16 @@ body {
   gap: 24px;
 }
 
+.head-titles {
+  min-width: 0;
+}
+
 .eyebrow {
   margin: 0;
-  color: var(--ink-lo);
-  font-size: 11px;
+  color: var(--accent);
+  font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -130,36 +199,38 @@ h1 {
   margin: 6px 0 0;
   font-size: 34px;
   font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.03em;
+  line-height: 1.12;
+  letter-spacing: -0.028em;
 }
 
 .subtitle {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   color: var(--ink-mid);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
 .head-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex: none;
 }
 
-/* ---------------- segmented ---------------- */
+/* ---------------- segmented control ---------------- */
 
 .segmented {
   position: relative;
   display: inline-flex;
   padding: 3px;
+  border: 0.5px solid var(--track-border);
   border-radius: 999px;
   background: var(--track);
+  box-shadow: inset 0 0.5px 1.5px rgba(0, 0, 0, 0.04);
 }
 
-/* Sliding pill measured from the active button's geometry in app.js. Hidden
-   until `has-thumb` is set so a no-JS page keeps the static active style. */
+/* 测量自激活按钮位置的背景滑块（Apple 原生平滑动画） */
 .segmented-thumb {
   position: absolute;
   top: 3px;
@@ -168,10 +239,12 @@ h1 {
   width: 0;
   border-radius: 999px;
   background: var(--thumb);
-  box-shadow: var(--thumb-shadow);
+  box-shadow: var(--thumb-highlight), var(--thumb-shadow);
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.3s var(--ease), width 0.3s var(--ease),
+  transition:
+    transform 0.28s var(--ease),
+    width 0.28s var(--ease),
     opacity 0.2s var(--ease);
 }
 
@@ -182,7 +255,7 @@ h1 {
 .segmented button {
   position: relative;
   z-index: 1;
-  padding: 6px 14px;
+  padding: 6px 15px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -190,31 +263,37 @@ h1 {
   font: inherit;
   font-size: 13px;
   font-weight: 500;
-  line-height: 1.2;
+  line-height: 1.25;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.2s var(--ease);
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    color 0.2s var(--ease),
+    transform 0.15s var(--ease);
 }
 
 .segmented button:hover {
   color: var(--ink);
 }
 
+.segmented button:active {
+  transform: scale(0.96);
+}
+
 .segmented button.is-active {
   background: var(--thumb);
   color: var(--ink);
   font-weight: 600;
-  box-shadow: var(--thumb-shadow);
+  box-shadow: var(--thumb-highlight), var(--thumb-shadow);
 }
 
-/* Once the thumb carries the background, the button must stay transparent so
-   the two layers do not stack their shadows. */
 .segmented.has-thumb button.is-active {
   background: transparent;
   box-shadow: none;
 }
 
-/* ---------------- refresh ---------------- */
+/* ---------------- refresh button ---------------- */
 
 .refresh {
   position: relative;
@@ -223,22 +302,28 @@ h1 {
   width: 36px;
   height: 36px;
   padding: 0;
-  border: 0;
+  border: 1px solid var(--line);
   border-radius: 50%;
   background: var(--surface-soft);
   color: var(--ink-mid);
   cursor: pointer;
-  transition: background-color 0.2s var(--ease), color 0.2s var(--ease),
-    transform 0.2s var(--ease);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.6);
+  transition:
+    background-color 0.2s var(--ease),
+    color 0.2s var(--ease),
+    border-color 0.2s var(--ease),
+    transform 0.18s var(--ease),
+    box-shadow 0.2s var(--ease);
 }
 
 .refresh:hover {
-  background: var(--line);
+  background: var(--surface-soft-hover);
   color: var(--ink);
+  border-color: var(--line-strong);
 }
 
 .refresh:active {
-  transform: scale(0.94);
+  transform: scale(0.92);
 }
 
 .refresh:disabled {
@@ -273,7 +358,7 @@ h1 {
 
 .refresh.is-loading .refresh-spinner {
   opacity: 1;
-  animation: refresh-spin 0.8s linear infinite;
+  animation: refresh-spin 0.75s linear infinite;
 }
 
 @keyframes refresh-spin {
@@ -287,29 +372,43 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-/* ---------------- metrics ---------------- */
+/* ---------------- metrics (Inset Grouped Section) ---------------- */
 
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 34px 0 0;
-  padding: 18px 4px;
-  border-radius: 20px;
+  padding: 18px 8px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-group);
   background: var(--surface-soft);
+  box-shadow: inset 0 1px 2px var(--surface-inset);
 }
 
 .metric {
   position: relative;
   min-width: 0;
-  padding: 2px 20px;
+  padding: 4px 20px;
+  border-radius: var(--radius-item);
+  transition: background-color 0.2s var(--ease);
+}
+
+.metric:hover {
+  background-color: rgba(255, 255, 255, 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  .metric:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+  }
 }
 
 .metric + .metric::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 4px;
-  bottom: 4px;
+  top: 6px;
+  bottom: 6px;
   width: 1px;
   background: var(--line);
 }
@@ -317,9 +416,10 @@ button:focus-visible {
 .metric-label {
   margin: 0;
   color: var(--ink-mid);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
 }
 
 .metric-value {
@@ -329,12 +429,12 @@ button:focus-visible {
   line-height: 1.05;
   letter-spacing: -0.035em;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
-/* Em dash means "no measurement", not a measured zero. */
 .metric-value.is-placeholder {
-  color: var(--ink-lo);
-  font-weight: 600;
+  color: var(--ink-quaternary);
+  font-weight: 500;
 }
 
 .metric-note {
@@ -343,6 +443,7 @@ button:focus-visible {
   font-size: 12px;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
 /* ---------------- strategies ---------------- */
@@ -352,14 +453,14 @@ button:focus-visible {
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
-  margin: 40px 0 4px;
+  margin: 40px 0 6px;
 }
 
 h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 650;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.015em;
 }
 
 .section-total {
@@ -367,25 +468,33 @@ h2 {
   color: var(--ink-lo);
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
   text-align: right;
 }
 
 .strategy {
-  padding: 15px 0;
-  border-bottom: 1px solid var(--line);
+  padding: 14px 14px;
+  margin: 0 -14px;
+  border-bottom: 1px solid var(--line-subtle);
+  border-radius: var(--radius-item);
+  transition: background-color 0.2s var(--ease);
+}
+
+.strategy:hover {
+  background-color: var(--surface-soft);
 }
 
 .strategy:last-child {
-  padding-bottom: 4px;
+  padding-bottom: 8px;
   border-bottom: 0;
 }
 
-.strategy.s1 { --dot: var(--dot-1); }
-.strategy.s2 { --dot: var(--dot-2); }
-.strategy.s3 { --dot: var(--dot-3); }
-.strategy.s4 { --dot: var(--dot-4); }
-.strategy.s5 { --dot: var(--dot-5); }
-.strategy.s6 { --dot: var(--dot-6); }
+.strategy.s1 { --dot: var(--dot-1); --dot-glow: var(--dot-1-glow); }
+.strategy.s2 { --dot: var(--dot-2); --dot-glow: var(--dot-2-glow); }
+.strategy.s3 { --dot: var(--dot-3); --dot-glow: var(--dot-3-glow); }
+.strategy.s4 { --dot: var(--dot-4); --dot-glow: var(--dot-4-glow); }
+.strategy.s5 { --dot: var(--dot-5); --dot-glow: var(--dot-5-glow); }
+.strategy.s6 { --dot: var(--dot-6); --dot-glow: var(--dot-6-glow); }
 
 .strategy-head {
   display: flex;
@@ -399,15 +508,15 @@ h2 {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 2px 8px;
+  gap: 3px 8px;
   min-width: 0;
 }
 
 .strategy-name {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 15px;
+  gap: 9px;
+  font-size: 14.5px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -418,11 +527,22 @@ h2 {
   height: 8px;
   border-radius: 50%;
   background: var(--dot);
+  box-shadow: 0 0 6px var(--dot-glow);
+  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+.strategy:hover .strategy-name::before {
+  transform: scale(1.15);
+  box-shadow: 0 0 10px var(--dot-glow);
 }
 
 .strategy-note {
-  color: var(--ink-lo);
-  font-size: 12px;
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--surface-soft);
+  color: var(--ink-mid);
+  font-size: 11.5px;
   line-height: 1.4;
   white-space: nowrap;
 }
@@ -433,38 +553,41 @@ h2 {
   gap: 8px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
 .strategy-tokens {
   font-size: 15px;
   font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .strategy-share {
-  min-width: 40px;
+  min-width: 42px;
   color: var(--ink-lo);
   font-size: 12px;
   text-align: right;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
 .strategy-counts {
   display: flex;
   flex-wrap: wrap;
-  margin: 0 0 9px;
+  margin: 0 0 10px;
   color: var(--ink-lo);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
-/* One span per stat: a narrow screen wraps between stats, and the separator
-   trails the previous stat instead of leading the wrapped line. */
 .strategy-counts .count {
   white-space: nowrap;
 }
 
 .strategy-counts .count:not(:last-child)::after {
   content: " ·";
+  margin: 0 2px;
 }
 
 .strategy-counts.is-empty {
@@ -475,6 +598,7 @@ h2 {
   height: 6px;
   border-radius: 999px;
   background: var(--track);
+  box-shadow: inset 0 0.5px 1px rgba(0, 0, 0, 0.06);
   overflow: hidden;
 }
 
@@ -484,11 +608,12 @@ h2 {
   height: 100%;
   border-radius: inherit;
   background: var(--dot);
-  transition: width 0.35s var(--ease);
+  box-shadow: 0 0 6px var(--dot-glow);
+  transition: width 0.4s var(--ease);
 }
 
 .strategy-hint {
-  margin: 12px 0 0;
+  margin: 14px 0 0;
   color: var(--ink-lo);
   font-size: 12.5px;
 }
@@ -500,7 +625,7 @@ h2 {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 46px 0 34px;
+  padding: 48px 0 36px;
   text-align: center;
 }
 
@@ -518,8 +643,6 @@ h2 {
   line-height: 1.6;
 }
 
-/* Hidden one-sentence version for screen readers (the count spans are
-   aria-hidden wrapping aids). */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -535,8 +658,8 @@ h2 {
 /* ---------------- footer ---------------- */
 
 .foot {
-  margin-top: 30px;
-  padding-top: 18px;
+  margin-top: 32px;
+  padding-top: 20px;
   border-top: 1px solid var(--line);
 }
 
@@ -548,47 +671,71 @@ h2 {
 }
 
 .snapshot {
-  margin: 10px 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 3px 10px;
+  border: 0.5px solid var(--line-subtle);
+  border-radius: 999px;
+  background: var(--surface-soft);
   color: var(--ink-lo);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
 }
 
 .snapshot[data-source="api"]::before,
 .snapshot[data-source="snapshot"]::before {
   content: "";
   display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
+  width: 6.5px;
+  height: 6.5px;
   border-radius: 50%;
-  vertical-align: 1px;
   background: var(--dot-2);
+  box-shadow: 0 0 0 2px rgba(52, 199, 89, 0.2), 0 0 6px var(--dot-2-glow);
 }
 
 .snapshot[data-source="snapshot"]::before {
   background: var(--dot-3);
+  box-shadow: 0 0 0 2px rgba(255, 149, 0, 0.2), 0 0 6px var(--dot-3-glow);
 }
 
-/* ---------------- notice ---------------- */
+/* ---------------- notice (System Alert Banner) ---------------- */
 
 .notice {
   width: min(960px, 100%);
-  margin: 0 0 14px;
-  padding: 12px 16px;
+  margin: 0 0 16px;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--surface);
   color: var(--ink-mid);
   font-size: 13px;
-  line-height: 1.6;
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  line-height: 1.5;
+  box-shadow: var(--thumb-shadow);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+
+.notice[hidden] {
+  display: none !important;
+}
+
+.notice-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--dot-3);
 }
 
 .notice code {
-  padding: 1px 5px;
-  border-radius: 5px;
+  padding: 2px 6px;
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
   background: var(--surface-soft);
   color: var(--ink);
   font-family: var(--mono);
@@ -600,8 +747,8 @@ h2 {
 @media (max-width: 860px) {
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    row-gap: 22px;
-    padding: 20px 4px;
+    row-gap: 20px;
+    padding: 18px 8px;
   }
 
   .metric {
@@ -617,30 +764,30 @@ h2 {
     display: block;
     position: absolute;
     left: 0;
-    top: 4px;
-    bottom: 4px;
+    top: 6px;
+    bottom: 6px;
     width: 1px;
     background: var(--line);
   }
 
   .metric:nth-child(n + 3) {
-    padding-top: 20px;
+    padding-top: 18px;
     border-top: 1px solid var(--line);
   }
 
   .metric:nth-child(n + 3)::before {
-    top: 20px;
+    top: 18px;
   }
 }
 
 @media (max-width: 640px) {
   body {
-    padding: 20px 14px 40px;
+    padding: 20px 14px 44px;
   }
 
   .card {
     padding: 26px 20px 24px;
-    border-radius: 24px;
+    border-radius: 22px;
   }
 
   .card-head {
@@ -664,6 +811,7 @@ h2 {
   .segmented button {
     flex: 1;
     padding: 7px 10px;
+    font-size: 12.5px;
   }
 
   .metric {
@@ -678,12 +826,17 @@ h2 {
     margin-top: 30px;
   }
 
+  .strategy {
+    padding: 12px 8px;
+    margin: 0 -8px;
+  }
+
   .strategy-head {
     gap: 10px;
   }
 
   .strategy-note {
-    font-size: 11.5px;
+    font-size: 11px;
     white-space: normal;
   }
 
@@ -696,8 +849,11 @@ h2 {
   .segmented-thumb,
   .bar > span,
   .refresh,
-  .refresh-icon {
-    transition: none;
+  .refresh-icon,
+  .strategy,
+  .strategy-name::before,
+  .metric {
+    transition: none !important;
   }
 
   .refresh.is-loading .refresh-spinner {
