@@ -1168,6 +1168,7 @@ export function transformMessages(messages, config = {}) {
     enabled: errorPurgeEnabled,
     readOnlyTools: config.tools,
     mutationTools: config.mutationTools,
+    writeTools: supersedeConfig.writeTools ?? DEFAULT_WRITE_TOOLS,
     protectedTools: config.protectedTools,
     protectedFilePatterns: config.protectedFilePatterns,
   });

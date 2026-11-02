@@ -47,6 +47,15 @@ export const DEFAULT_MUTATION_TOOLS = Object.freeze([
   "question",
 ]);
 
+/** Tools whose input carries written file content (shared by error-purge and supersede-writes). */
+export const DEFAULT_WRITE_TOOLS = Object.freeze([
+  "write",
+  "edit",
+  "multiedit",
+  "patch",
+  "apply_patch",
+]);
+
 export const TOKEN_COUNTING = "estimate_heuristic_v1";
 
 const PATH_KEYS = new Set(["filePath", "path", "cwd", "directory", "dir", "root", "worktree"]);
@@ -530,6 +539,9 @@ function normalizeOptions(config = {}) {
         (pattern) => typeof pattern === "string" && pattern.trim().length > 0,
       )
     : [];
+  const normalizeRead =
+    config.normalizeReadOutput === true ||
+    config.deduplication?.normalizeReadOutput === true;
   return {
     enabled,
     toolSet,
@@ -538,6 +550,7 @@ function normalizeOptions(config = {}) {
     barrierOnNonWhitelistedTools: config.barrierOnNonWhitelistedTools !== false,
     protectedTools,
     protectedFilePatterns,
+    normalizeReadOutput: normalizeRead,
   };
 }
 
@@ -568,7 +581,7 @@ function targetKeyOf(record) {
   return "";
 }
 
-function increment(map, key, amount = 1) {
+export function increment(map, key, amount = 1) {
   if (!key || amount <= 0) return;
   map[key] = (map[key] ?? 0) + amount;
 }
@@ -707,6 +720,13 @@ export function planDeduplication(records, config = {}) {
   const decisions = [];
   const uniqueEntries = [];
   const placeholderTokens = estimateTokens(options.placeholder);
+  const outputKey = (entry) => {
+    if (options.normalizeReadOutput && entry.record?.tool === "read") {
+      return normalizeReadOutput(entry.output);
+    }
+    return entry.output;
+  };
+
   for (const signatureGroup of bySignature.values()) {
     // Classify every eligible record so zero contribution is explainable:
     // a unique signature has nothing to deduplicate, and a matching signature
@@ -717,14 +737,15 @@ export function planDeduplication(records, config = {}) {
       continue;
     }
 
-    const distinctOutputs = new Set(signatureGroup.map((entry) => entry.output));
+    const distinctOutputs = new Set(signatureGroup.map((entry) => outputKey(entry)));
     if (distinctOutputs.size > 1) stats.sameSignatureDifferentOutputGroups += 1;
 
     const byOutput = new Map();
     for (const entry of signatureGroup) {
-      const group = byOutput.get(entry.output);
+      const key = outputKey(entry);
+      const group = byOutput.get(key);
       if (group) group.push(entry);
-      else byOutput.set(entry.output, [entry]);
+      else byOutput.set(key, [entry]);
     }
 
     for (const outputGroup of byOutput.values()) {
@@ -802,3 +823,57 @@ export function planDeduplication(records, config = {}) {
   );
   return { decisions, stats };
 }
+
+/**
+ * A completed result with an explicit failure signal in structured metadata
+ * is ambiguous: the runtime says completed, metadata says failure.
+ * Unified implementation supporting both error-purge and supersede-writes.
+ */
+export function hasFailureMetadata(metadata) {
+  if (!isPlainObject(metadata)) return false;
+  const rawExit = metadata.exitCode ?? metadata.exit_code ?? metadata.exit ?? metadata.code;
+  if (typeof rawExit === "number" && Number.isFinite(rawExit) && rawExit !== 0) return true;
+  if (typeof rawExit === "string" && /^-?\d+$/.test(rawExit.trim()) && Number(rawExit) !== 0) {
+    return true;
+  }
+  if (metadata.success === false || metadata.ok === false || metadata.failed === true) {
+    return true;
+  }
+  if (metadata.isError === true || metadata.timedOut === true || metadata.timeout === true) {
+    return true;
+  }
+  if (metadata.aborted === true || metadata.cancelled === true || metadata.canceled === true) {
+    return true;
+  }
+  if (metadata.status === "error" || metadata.status === "failed") return true;
+  for (const key of ["error", "exception"]) {
+    if (typeof metadata[key] === "string" && metadata[key].trim().length > 0) return true;
+  }
+  return false;
+}
+
+export function isConfirmedSuccess(record) {
+  return (
+    record &&
+    record.status === "completed" &&
+    !(typeof record.error === "string" && record.error.trim().length > 0) &&
+    !hasFailureMetadata(record.metadata)
+  );
+}
+
+export function validPlaceholder(value, fallback) {
+  return typeof value === "string" && value.startsWith(PRUNE_MARKER) ? value : fallback;
+}
+
+/**
+ * Strip wrapper metadata from tool read outputs for normalized comparison.
+ */
+export function normalizeReadOutput(output) {
+  if (typeof output !== "string") return output;
+  return output
+    .replace(/<path>.*?<\/path>\n?/g, "")
+    .replace(/<type>file<\/type>\n?/g, "")
+    .replace(/\n*\(End of file - total \d+ lines\)\n?/g, "")
+    .trim();
+}
+

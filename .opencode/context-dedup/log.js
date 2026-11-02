@@ -43,25 +43,14 @@ function sanitizeError(value) {
   return value.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
-function sanitizeErrorPurgeStats(stats) {
-  if (!stats || typeof stats !== "object") return null;
+function sanitizeBaseStrategyStats(stats) {
   return {
     enabled: stats.enabled === true,
     preview: stats.preview === true,
     changed: stats.changed === true,
     recordsTotal: Number(stats.recordsTotal) || 0,
-    confirmedErrorCount: Number(stats.confirmedErrorCount) || 0,
-    ambiguousResultCount: Number(stats.ambiguousResultCount) || 0,
-    unverifiedShellCount: Number(stats.unverifiedShellCount) || 0,
-    shellFailureCount: Number(stats.shellFailureCount) || 0,
-    shellExitReliable: stats.shellExitReliable === true,
-    shellFailureDetection:
-      typeof stats.shellFailureDetection === "string"
-        ? stats.shellFailureDetection
-        : "unknown",
     candidateCount: Number(stats.candidateCount) || 0,
     eligibleCount: Number(stats.eligibleCount) || 0,
-    potentialSupersedeCount: Number(stats.potentialSupersedeCount) || 0,
     markedCount: Number(stats.markedCount) || 0,
     changedCount: Number(stats.changedCount) || 0,
     plannedPruneCount: Number(stats.plannedPruneCount) || 0,
@@ -69,8 +58,6 @@ function sanitizeErrorPurgeStats(stats) {
     prunedCount: Number(stats.prunedCount) || 0,
     preservedCount: Number(stats.preservedCount) || 0,
     highConfidencePruneCount: Number(stats.highConfidencePruneCount) || 0,
-    mediumConfidencePruneCount: Number(stats.mediumConfidencePruneCount) || 0,
-    inputRedactedCount: Number(stats.inputRedactedCount) || 0,
     decisionKinds: compactReasons(stats.decisionKinds),
     skippedReasons: compactReasons(stats.skippedReasons),
     durationMs: Number.isFinite(stats.durationMs) ? stats.durationMs : null,
@@ -83,40 +70,38 @@ function sanitizeErrorPurgeStats(stats) {
   };
 }
 
+function sanitizeErrorPurgeStats(stats) {
+  if (!stats || typeof stats !== "object") return null;
+  return {
+    ...sanitizeBaseStrategyStats(stats),
+    confirmedErrorCount: Number(stats.confirmedErrorCount) || 0,
+    ambiguousResultCount: Number(stats.ambiguousResultCount) || 0,
+    unverifiedShellCount: Number(stats.unverifiedShellCount) || 0,
+    shellFailureCount: Number(stats.shellFailureCount) || 0,
+    shellExitReliable: stats.shellExitReliable === true,
+    shellFailureDetection:
+      typeof stats.shellFailureDetection === "string"
+        ? stats.shellFailureDetection
+        : "unknown",
+    potentialSupersedeCount: Number(stats.potentialSupersedeCount) || 0,
+    mediumConfidencePruneCount: Number(stats.mediumConfidencePruneCount) || 0,
+    inputRedactedCount: Number(stats.inputRedactedCount) || 0,
+  };
+}
+
 function sanitizeSupersedeWritesStats(stats) {
   if (!stats || typeof stats !== "object") return null;
   return {
-    enabled: stats.enabled === true,
-    preview: stats.preview === true,
-    changed: stats.changed === true,
-    recordsTotal: Number(stats.recordsTotal) || 0,
+    ...sanitizeBaseStrategyStats(stats),
     confirmedWriteCount: Number(stats.confirmedWriteCount) || 0,
     ambiguousResultCount: Number(stats.ambiguousResultCount) || 0,
     observedReadCount: Number(stats.observedReadCount) || 0,
     confirmedReadCount: Number(stats.confirmedReadCount) || 0,
     fullReadCount: Number(stats.fullReadCount) || 0,
     ambiguousWriteCount: Number(stats.ambiguousWriteCount) || 0,
-    candidateCount: Number(stats.candidateCount) || 0,
-    eligibleCount: Number(stats.eligibleCount) || 0,
     fileMatchCount: Number(stats.fileMatchCount) || 0,
     versionVerifiedCount: Number(stats.versionVerifiedCount) || 0,
-    markedCount: Number(stats.markedCount) || 0,
-    changedCount: Number(stats.changedCount) || 0,
-    plannedPruneCount: Number(stats.plannedPruneCount) || 0,
-    wouldPruneCount: Number(stats.wouldPruneCount) || 0,
-    prunedCount: Number(stats.prunedCount) || 0,
-    preservedCount: Number(stats.preservedCount) || 0,
-    highConfidencePruneCount: Number(stats.highConfidencePruneCount) || 0,
-    decisionKinds: compactReasons(stats.decisionKinds),
-    skippedReasons: compactReasons(stats.skippedReasons),
     readRejectedReasons: compactReasons(stats.readRejectedReasons),
-    durationMs: Number.isFinite(stats.durationMs) ? stats.durationMs : null,
-    tokenSavingsEstimated: Number(stats.tokenSavingsEstimated) || 0,
-    tokenSavingsEstimatedIfApplied: Number(stats.tokenSavingsEstimatedIfApplied) || 0,
-    tokenCounting: typeof stats.tokenCounting === "string" ? stats.tokenCounting : "unknown",
-    actualTokenSavings: null,
-    outputBytesRemovedActual: Number(stats.outputBytesRemovedActual) || 0,
-    error: typeof stats.error === "string" ? sanitizeError(stats.error) : undefined,
   };
 }
 

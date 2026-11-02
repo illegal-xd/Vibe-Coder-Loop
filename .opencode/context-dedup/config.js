@@ -56,6 +56,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     preserveAcrossUserTurns: true,
     preserveRepeatedFailuresAcrossUserTurns: false,
     preserveOnStateChanges: true,
+    barrierWriteTools: true,
     pruneRepeatedFailures: true,
     protectReferences: true,
     minSuccesses: 1,
@@ -167,12 +168,19 @@ function resolveDeduplication(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new ConfigError("deduplication must be an object");
   }
-  return {
+  const result = {
     enabled:
       raw.enabled === undefined
         ? DEFAULT_CONFIG.deduplication.enabled
         : assertBoolean(raw.enabled, "deduplication.enabled"),
   };
+  if (raw.normalizeReadOutput !== undefined) {
+    result.normalizeReadOutput = assertBoolean(
+      raw.normalizeReadOutput,
+      "deduplication.normalizeReadOutput",
+    );
+  }
+  return result;
 }
 
 function resolveErrorPurge(raw, env, globalPreview) {
@@ -187,6 +195,9 @@ function resolveErrorPurge(raw, env, globalPreview) {
       preview: isTruthy(env.VIBE_CONTEXT_ERROR_PURGE_PREVIEW)
         ? true
         : globalPreview,
+      barrierWriteTools: isTruthy(env.VIBE_CONTEXT_ERROR_PURGE_NO_WRITE_BARRIERS)
+        ? false
+        : defaults.barrierWriteTools,
     };
   }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -254,6 +265,12 @@ function resolveErrorPurge(raw, env, globalPreview) {
       raw.preserveOnStateChanges === undefined
         ? DEFAULT_CONFIG.errorPurge.preserveOnStateChanges
         : assertBoolean(raw.preserveOnStateChanges, "errorPurge.preserveOnStateChanges"),
+    barrierWriteTools:
+      isTruthy(env.VIBE_CONTEXT_ERROR_PURGE_NO_WRITE_BARRIERS)
+        ? false
+        : raw.barrierWriteTools === undefined
+          ? DEFAULT_CONFIG.errorPurge.barrierWriteTools
+          : assertBoolean(raw.barrierWriteTools, "errorPurge.barrierWriteTools"),
     pruneRepeatedFailures:
       raw.pruneRepeatedFailures === undefined
         ? DEFAULT_CONFIG.errorPurge.pruneRepeatedFailures

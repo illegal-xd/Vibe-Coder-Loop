@@ -38,15 +38,20 @@
 
 import {
   DEFAULT_READ_ONLY_TOOLS,
+  DEFAULT_WRITE_TOOLS,
   PRUNE_MARKER,
   TOKEN_COUNTING,
   byteLength,
+  hasFailureMetadata,
   hasOrderInRange,
+  increment,
+  isConfirmedSuccess,
   isPlainObject,
   isPrunedOutput,
   normalizePath,
   protectedReason,
   textTokenUnits,
+  validPlaceholder,
 } from "./core.js";
 
 export const DEFAULT_SUPERSEDE_PLACEHOLDER =
@@ -55,14 +60,7 @@ export const DEFAULT_SUPERSEDE_PLACEHOLDER =
 
 export const HIGH_CONFIDENCE = "high";
 
-/** Tools whose input carries the written file content. */
-export const DEFAULT_WRITE_TOOLS = Object.freeze([
-  "write",
-  "edit",
-  "multiedit",
-  "patch",
-  "apply_patch",
-]);
+export { DEFAULT_WRITE_TOOLS };
 
 /** Tools that can return a file's full current content. grep/glob are partial. */
 export const DEFAULT_SUPERSEDE_READ_TOOLS = Object.freeze(["read"]);
@@ -103,15 +101,6 @@ const TRUNCATION_HINTS = [
   "… show more",
 ];
 
-function increment(map, key, amount = 1) {
-  if (!key || amount <= 0) return;
-  map[key] = (map[key] ?? 0) + amount;
-}
-
-function validPlaceholder(value, fallback) {
-  return typeof value === "string" && value.startsWith(PRUNE_MARKER) ? value : fallback;
-}
-
 function asStringSet(list) {
   const set = new Set();
   if (Array.isArray(list)) {
@@ -145,6 +134,7 @@ function normalizeOptions(config = {}) {
     barrierOnBroadMutations: config.barrierOnBroadMutations !== false,
     protectReferences: config.protectReferences !== false,
     requireFullRead: config.requireFullRead !== false,
+    allowOrderFallback: config.allowOrderFallback === true,
     protectedTools,
     protectedFilePatterns,
   };
@@ -186,34 +176,6 @@ export function createSupersedeWritesStats() {
     durationMs: null,
     changed: false,
   };
-}
-
-function hasFailureMetadata(metadata) {
-  if (!isPlainObject(metadata)) return false;
-  const rawExit = metadata.exitCode ?? metadata.exit_code ?? metadata.exit ?? metadata.code;
-  if (typeof rawExit === "number" && Number.isFinite(rawExit) && rawExit !== 0) return true;
-  if (typeof rawExit === "string" && /^-?\d+$/.test(rawExit.trim()) && Number(rawExit) !== 0) {
-    return true;
-  }
-  if (metadata.success === false || metadata.ok === false || metadata.failed === true) return true;
-  if (metadata.isError === true || metadata.timedOut === true || metadata.timeout === true) {
-    return true;
-  }
-  if (metadata.aborted === true || metadata.cancelled === true || metadata.canceled === true) return true;
-  if (metadata.status === "error" || metadata.status === "failed") return true;
-  for (const key of ["error", "exception"]) {
-    if (typeof metadata[key] === "string" && metadata[key].trim().length > 0) return true;
-  }
-  return false;
-}
-
-function isConfirmedSuccess(record) {
-  return (
-    record &&
-    record.status === "completed" &&
-    !(typeof record.error === "string" && record.error.trim().length > 0) &&
-    !hasFailureMetadata(record.metadata)
-  );
 }
 
 function userSegmentOf(record) {
@@ -475,14 +437,19 @@ function buildBarrierTimeline(records, options) {
  * earlier than the write ended. Missing or malformed timings preserve the
  * write rather than falling back to emission order.
  */
-function readCoversWrite(write, read) {
+function readCoversWrite(write, read, options = {}) {
   const writeStart = timeStart(write);
   const writeEnd = timeEnd(write);
   const readStart = timeStart(read);
   const readEnd = timeEnd(read);
   // Without both completion timestamps there is no proof of happens-before:
-  // emission order alone cannot rule out parallel calls. Preserve the write.
-  if (writeEnd === null || readStart === null) return false;
+  // emission order alone cannot rule out parallel calls unless fallback is enabled.
+  if (writeEnd === null || readStart === null) {
+    if (options.allowOrderFallback && Number.isFinite(write.order) && Number.isFinite(read.order)) {
+      return read.order > write.order;
+    }
+    return false;
+  }
   // Reject malformed intervals instead of trusting them.
   if (writeStart !== null && writeEnd < writeStart) return false;
   if (readEnd !== null && readEnd < readStart) return false;
@@ -704,7 +671,7 @@ export function planSupersedeWrites(records, config = {}) {
         for (const candidate of pendingWrites) {
           if (candidate.decided) continue;
           if (candidate.order >= read.order) continue; // write after read: retained (Case C)
-          if (!readCoversWrite(candidate.record, read.record)) {
+          if (!readCoversWrite(candidate.record, read.record, options)) {
             if (!candidate.blockedReason) candidate.blockedReason = "read_not_after_write";
             continue;
           }

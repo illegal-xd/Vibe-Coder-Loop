@@ -42,14 +42,19 @@
 import {
   DEFAULT_MUTATION_TOOLS,
   DEFAULT_READ_ONLY_TOOLS,
+  DEFAULT_WRITE_TOOLS,
   PRUNE_MARKER,
   TOKEN_COUNTING,
   buildOperationSignature,
   estimateTokens,
+  hasFailureMetadata,
+  increment,
+  isConfirmedSuccess,
   isPlainObject,
   isPrunedOutput,
   protectedReason,
   textTokenUnits,
+  validPlaceholder,
 } from "./core.js";
 
 export const DEFAULT_ERROR_PLACEHOLDER =
@@ -87,6 +92,16 @@ export const DEFAULT_SHELL_FAILURE_PATTERNS = Object.freeze([
   /(?:^|\r?\n)npm ERR!/,
   /(?:^|\r?\n)ERROR\s+Build failed(?: with errors)?/,
   /(?:^|\r?\n)exit(?: code)?[=:]\s*[1-9]\d*(?:\r?\n|$)/i,
+  /(?:^|\r?\n)(?:[^\n]*\s)?error TS\d+:/,
+  /(?:^|\r?\n)(?:[^\n]*\s)?SyntaxError: /,
+  /(?:^|\r?\n)(?:[^\n]*\s)?ModuleNotFoundError: /,
+  /(?:^|\r?\n)Traceback \(most recent call last\):/,
+  /(?:^|\r?\n)FAIL\s+[\w/\\.-]+\.(?:test|spec)\./,
+  /(?:^|\r?\n)✕\s+[^\n]+/,
+  /(?:^|\r?\n)AssertionError(?: \[ERR_ASSERTION\])?:/,
+  /(?:^|\r?\n)(?:[^\n]*\s)?error\[E\d+\]/,
+  /(?:^|\r?\n)FAILED: /,
+  /(?:^|\r?\n)fatal: [^\n]+/,
 ]);
 
 /**
@@ -190,15 +205,6 @@ export function createErrorPurgeStats() {
   };
 }
 
-function increment(map, key, amount = 1) {
-  if (!key || amount <= 0) return;
-  map[key] = (map[key] ?? 0) + amount;
-}
-
-function validPlaceholder(value, fallback) {
-  return typeof value === "string" && value.startsWith(PRUNE_MARKER) ? value : fallback;
-}
-
 function normalizeOptions(config = {}) {
   const enabled = config.enabled !== false;
   const rawReadOnly = Array.isArray(config.readOnlyTools)
@@ -207,6 +213,12 @@ function normalizeOptions(config = {}) {
   const rawMutation = Array.isArray(config.mutationTools)
     ? config.mutationTools
     : DEFAULT_MUTATION_TOOLS;
+  const rawWrite = Array.isArray(config.writeTools)
+    ? config.writeTools
+    : DEFAULT_WRITE_TOOLS;
+  const writeTools = new Set(
+    rawWrite.filter((tool) => typeof tool === "string" && tool.trim().length > 0),
+  );
   const mutationTools = new Set(
     rawMutation.filter((tool) => typeof tool === "string" && tool.trim().length > 0),
   );
@@ -258,6 +270,8 @@ function normalizeOptions(config = {}) {
       DEFAULT_STALE_INPUT_PLACEHOLDER,
     ),
     readOnlyTools,
+    writeTools,
+    barrierWriteTools: config.barrierWriteTools !== false,
     preserveAcrossUserTurns: config.preserveAcrossUserTurns !== false,
     // Rule 2 (repeated identical failures) keeps the newest identical failure,
     // so the error text and its arguments are still present later. Crossing a
@@ -297,41 +311,6 @@ function hasCancellationMetadata(record) {
     metadata.cancelled === true ||
     metadata.canceled === true ||
     metadata.aborted === true
-  );
-}
-
-/**
- * A completed result with an explicit failure signal in structured metadata
- * is ambiguous: the runtime says completed, metadata says failure. It must
- * not be used as a successful superseder. Text such as "error" is ignored.
- */
-function hasFailureMetadata(metadata) {
-  if (!isPlainObject(metadata)) return false;
-  const rawExit = metadata.exitCode ?? metadata.exit_code ?? metadata.exit ?? metadata.code;
-  if (typeof rawExit === "number" && Number.isFinite(rawExit) && rawExit !== 0) return true;
-  if (typeof rawExit === "string" && /^-?\d+$/.test(rawExit.trim()) && Number(rawExit) !== 0) {
-    return true;
-  }
-  if (metadata.success === false || metadata.ok === false || metadata.failed === true) {
-    return true;
-  }
-  if (metadata.isError === true || metadata.timedOut === true) return true;
-  if (metadata.aborted === true || metadata.cancelled === true || metadata.canceled === true) {
-    return true;
-  }
-  if (metadata.status === "error" || metadata.status === "failed") return true;
-  for (const key of ["error", "exception"]) {
-    if (typeof metadata[key] === "string" && metadata[key].trim().length > 0) return true;
-  }
-  return false;
-}
-
-function isConfirmedSuccess(record) {
-  return (
-    record &&
-    record.status === "completed" &&
-    !(typeof record.error === "string" && record.error.trim().length > 0) &&
-    !hasFailureMetadata(record.metadata)
   );
 }
 
@@ -408,6 +387,13 @@ function buildBarrierTimeline(records, options) {
       continue;
     }
     if (options.readOnlyTools.has(record.tool)) continue;
+    if (
+      !options.barrierWriteTools &&
+      options.writeTools.has(record.tool) &&
+      isConfirmedSuccess(record)
+    ) {
+      continue;
+    }
     stateChangeOrders.push(record.order);
   }
   stateChangeOrders.sort((left, right) => left - right);
