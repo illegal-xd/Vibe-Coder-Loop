@@ -315,11 +315,174 @@
     strategyList.appendChild(box);
   }
 
+  // Flipped faces survive the 15s silent refresh: the grid is rebuilt on every
+  // render, so the open/closed state has to live outside the DOM.
+  var flippedStrategies = {};
+
+  function applyFlipped(card, strategy, on) {
+    flippedStrategies[strategy.key] = on;
+    card.classList.toggle('is-flipped', on);
+    card.setAttribute('aria-pressed', String(on));
+    card.setAttribute(
+      'aria-label',
+      strategy.label + (on ? '：统计明细，点按查看贡献概览' : '：贡献概览，点按查看统计明细')
+    );
+    var front = card.querySelector('.scard-front');
+    var back = card.querySelector('.scard-back');
+    if (front) front.setAttribute('aria-hidden', String(on));
+    if (back) back.setAttribute('aria-hidden', String(!on));
+  }
+
+  function statRow(label, value, unit, total) {
+    var row = document.createElement('div');
+    row.className = 'scard-stat' + (total ? ' is-total' : '');
+    var term = document.createElement('span');
+    term.className = 'scard-stat-label';
+    term.textContent = label;
+    var detail = document.createElement('span');
+    detail.className = 'scard-stat-value';
+    detail.textContent = value;
+    if (unit) {
+      var small = document.createElement('small');
+      small.textContent = unit;
+      detail.appendChild(small);
+    }
+    row.appendChild(term);
+    row.appendChild(detail);
+    return row;
+  }
+
+  function createStrategyCard(strategy, index, result) {
+    var colorIndex = STRATEGY_ORDER[strategy.key];
+    var color = colorIndex === undefined ? ((index % 6) + 1) : ((colorIndex % 6) + 1);
+    var sharePercent = result.removed > 0
+      ? Math.round((strategy.tokens / result.removed) * 100)
+      : 0;
+
+    var card = document.createElement('article');
+    card.className = 'scard s' + color;
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+
+    var inner = document.createElement('div');
+    inner.className = 'scard-inner';
+
+    // Front: title, description, tracked tokens, and share of the total.
+    var front = document.createElement('div');
+    front.className = 'scard-face scard-front';
+
+    var top = document.createElement('div');
+    top.className = 'scard-top';
+    var name = document.createElement('span');
+    name.className = 'scard-name';
+    name.textContent = strategy.label;
+    var share = document.createElement('span');
+    share.className = 'scard-share';
+    share.textContent = sharePercent + '%';
+    top.appendChild(name);
+    top.appendChild(share);
+    front.appendChild(top);
+
+    var value = document.createElement('p');
+    value.className = 'scard-value';
+    var tokens = document.createElement('span');
+    tokens.className = 'scard-tokens';
+    tokens.textContent = formatCompact(strategy.tokens);
+    if (strategy.tokens > 0) {
+      tokens.title = Math.round(strategy.tokens).toLocaleString('en-US') + ' token（估算）';
+    }
+    var unit = document.createElement('span');
+    unit.className = 'scard-unit';
+    unit.textContent = 'token';
+    value.appendChild(tokens);
+    value.appendChild(unit);
+    front.appendChild(value);
+
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.setAttribute('role', 'progressbar');
+    bar.setAttribute('aria-label', strategy.label + ' 贡献');
+    bar.setAttribute('aria-valuemin', '0');
+    bar.setAttribute('aria-valuemax', '100');
+    bar.setAttribute('aria-valuenow', String(Math.min(100, sharePercent)));
+
+    var fill = document.createElement('span');
+    fill.style.width = Math.min(100, sharePercent) + '%';
+    bar.appendChild(fill);
+    front.appendChild(bar);
+
+    var noteText = STRATEGY_NOTES[strategy.key];
+    if (noteText) {
+      var note = document.createElement('p');
+      note.className = 'scard-note';
+      note.textContent = noteText;
+      front.appendChild(note);
+    }
+
+    // Back: the scan funnel. Scanned/eligible/candidate/marked are per-request
+    // averages; the verdict count is the range total, as on the footnote.
+    var back = document.createElement('div');
+    back.className = 'scard-face scard-back';
+
+    var backHead = document.createElement('p');
+    backHead.className = 'scard-back-head';
+    var backName = document.createElement('span');
+    backName.className = 'scard-name';
+    backName.textContent = strategy.label;
+    var scope = document.createElement('span');
+    scope.className = 'scard-scope';
+    scope.textContent = strategy.requests > 0
+      ? strategy.requests + '/' + result.requests + ' 次'
+      : '无记录';
+    scope.title = '该策略采集到的请求数 / 区间请求数';
+    backHead.appendChild(backName);
+    backHead.appendChild(scope);
+    back.appendChild(backHead);
+
+    var stats = document.createElement('div');
+    stats.className = 'scard-stats';
+    if (strategy.requests > 0) {
+      stats.appendChild(statRow('扫描', formatAverage(strategy.scanned, strategy.requests)));
+      stats.appendChild(statRow('合格', formatAverage(strategy.eligible, strategy.requests)));
+      stats.appendChild(statRow('候选', formatAverage(strategy.candidates, strategy.requests)));
+      stats.appendChild(statRow('标记', formatAverage(strategy.marked, strategy.requests)));
+      stats.appendChild(statRow('裁决', String(strategy.removedItems), '项', true));
+      stats.title =
+        '扫描/合格/候选/标记为每请求均值（仅统计已采集该策略的请求）；裁决为区间累计项数。' +
+        '合格=通过安全校验；候选=真正可裁剪；标记=通过全部守卫；裁决=消息内容确实被改动。' +
+        '窗口累计：扫描 ' + strategy.scanned + ' / 合格 ' + strategy.eligible +
+        ' / 候选 ' + strategy.candidates + ' / 标记 ' + strategy.marked +
+        ' / 裁决 ' + strategy.removedItems + ' 条';
+    } else {
+      var empty = document.createElement('p');
+      empty.className = 'scard-empty';
+      empty.textContent = '该策略在本区间无记录';
+      stats.appendChild(empty);
+    }
+    back.appendChild(stats);
+
+    inner.appendChild(front);
+    inner.appendChild(back);
+    card.appendChild(inner);
+    applyFlipped(card, strategy, !!flippedStrategies[strategy.key]);
+
+    card.addEventListener('click', function () {
+      applyFlipped(card, strategy, !flippedStrategies[strategy.key]);
+    });
+    card.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+      event.preventDefault();
+      applyFlipped(card, strategy, !flippedStrategies[strategy.key]);
+    });
+
+    return card;
+  }
+
   function renderStrategies(result) {
     if (!strategyList) return;
     strategyList.textContent = '';
 
-    // A day with one request would otherwise render six rows of zeros. Show
+    // A day with one request would otherwise render six cards of zeros. Show
     // only strategies that did something; the footnote says so explicitly.
     var active = sortStrategies(result.strategies).filter(function (strategy) {
       return (
@@ -335,108 +498,7 @@
     }
 
     active.forEach(function (strategy, index) {
-      var items;
-      var spoken;
-      var note;
-      var colorIndex = STRATEGY_ORDER[strategy.key];
-      var color = colorIndex === undefined ? ((index % 6) + 1) : ((colorIndex % 6) + 1);
-      var row = document.createElement('div');
-      row.className = 'strategy s' + color;
-
-      var head = document.createElement('div');
-      head.className = 'strategy-head';
-
-      var title = document.createElement('span');
-      title.className = 'strategy-title';
-
-      var name = document.createElement('span');
-      name.className = 'strategy-name';
-      name.textContent = strategy.label;
-      title.appendChild(name);
-
-      var noteText = STRATEGY_NOTES[strategy.key];
-      if (noteText) {
-        note = document.createElement('span');
-        note.className = 'strategy-note';
-        note.textContent = noteText;
-        title.appendChild(note);
-      }
-
-      var sharePercent = result.removed > 0
-        ? Math.round((strategy.tokens / result.removed) * 100)
-        : 0;
-
-      var value = document.createElement('span');
-      value.className = 'strategy-value';
-      var tokens = document.createElement('span');
-      tokens.className = 'strategy-tokens';
-      tokens.textContent = formatCompact(strategy.tokens);
-      if (strategy.tokens > 0) {
-        tokens.title = Math.round(strategy.tokens).toLocaleString('en-US') + ' token（估算）';
-      }
-      var share = document.createElement('span');
-      share.className = 'strategy-share';
-      share.textContent = sharePercent + '%';
-      value.appendChild(tokens);
-      value.appendChild(share);
-
-      var counts = document.createElement('p');
-      counts.className = 'strategy-counts';
-      if (strategy.requests > 0) {
-        // One span per stat so a narrow screen wraps between stats instead of
-        // leaving a dangling "·" at the start of the next line.
-        items = [
-          '扫描 ' + formatAverage(strategy.scanned, strategy.requests) + '/次',
-          '合格 ' + formatAverage(strategy.eligible, strategy.requests) + '/次',
-          '候选 ' + formatAverage(strategy.candidates, strategy.requests) + '/次',
-          '标记 ' + formatAverage(strategy.marked, strategy.requests) + '/次',
-          '裁剪 ' + strategy.removedItems + ' 项'
-        ];
-        if (strategy.requests < result.requests) {
-          items.push('覆盖 ' + strategy.requests + '/' + result.requests + ' 次');
-        }
-        // Screen readers get one well-punctuated sentence; the visible spans
-        // are only a wrapping aid, so they are hidden from the a11y tree.
-        spoken = document.createElement('span');
-        spoken.className = 'sr-only';
-        spoken.textContent = items.join('，');
-        counts.appendChild(spoken);
-        items.forEach(function (text) {
-          var item = document.createElement('span');
-          item.className = 'count';
-          item.setAttribute('aria-hidden', 'true');
-          item.textContent = text;
-          counts.appendChild(item);
-        });
-        counts.title =
-          '扫描/合格/候选/标记为每请求均值（仅统计已采集该策略的请求）；实际裁剪为区间累计项数。' +
-          '合格=通过安全校验；候选=真正可裁剪；标记=通过全部守卫；实际裁剪=消息内容确实被改动。' +
-          '窗口累计：扫描 ' + strategy.scanned + ' / 合格 ' + strategy.eligible +
-          ' / 候选 ' + strategy.candidates + ' / 标记 ' + strategy.marked +
-          ' / 裁剪 ' + strategy.removedItems + ' 条';
-      } else {
-        counts.classList.add('is-empty');
-        counts.textContent = '该策略在本区间无记录';
-      }
-
-      var bar = document.createElement('div');
-      bar.className = 'bar';
-      bar.setAttribute('role', 'progressbar');
-      bar.setAttribute('aria-label', strategy.label + ' 贡献');
-      bar.setAttribute('aria-valuemin', '0');
-      bar.setAttribute('aria-valuemax', '100');
-      bar.setAttribute('aria-valuenow', String(Math.min(100, sharePercent)));
-
-      var fill = document.createElement('span');
-      fill.style.width = Math.min(100, sharePercent) + '%';
-
-      head.appendChild(title);
-      head.appendChild(value);
-      bar.appendChild(fill);
-      row.appendChild(head);
-      row.appendChild(counts);
-      row.appendChild(bar);
-      strategyList.appendChild(row);
+      strategyList.appendChild(createStrategyCard(strategy, index, result));
     });
   }
 

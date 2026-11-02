@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Vibe Kernel · Token Usage</title>
-<link rel="stylesheet" href="styles.css?v=20261102-3">
+<link rel="stylesheet" href="styles.css?v=20261102-4">
 </head>
 <body>
 
@@ -20,7 +20,7 @@
   <span class="notice-text">无法读取用量数据。启动本地服务后访问：<code>node tools/token-usage-card/server.mjs</code></span>
 </div>
 
-<main class="card" aria-labelledby="cardTitle">
+<main class="page" aria-labelledby="cardTitle">
   <header class="card-head">
     <div class="head-titles">
       <p class="eyebrow">Vibe Kernel</p>
@@ -72,18 +72,18 @@
       <h2 id="strategyTitle">策略贡献</h2>
       <p class="section-total" id="strategyTotal" aria-live="polite"></p>
     </div>
-    <div id="strategyList"></div>
+    <div id="strategyList" class="strategy-grid"></div>
     <p class="strategy-hint" id="strategyHint" hidden>该区间没有实际裁剪记录，策略贡献为 0。</p>
   </section>
 
   <footer class="foot">
     <p class="footnote">
-      仅列出本区间产生候选或裁剪的策略；贡献为估算 token（字符加权），扫描 / 合格 / 候选 / 标记为每请求均值，裁剪为区间累计项数。按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。
+      仅列出本区间产生候选或裁剪的策略；贡献为估算 token（字符加权），扫描 / 合格 / 候选 / 标记为每请求均值，裁决为区间累计项数。按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。点击卡片可翻转查看明细。
     </p>
     <p class="snapshot" id="snapshot" aria-live="polite"></p>
   </footer>
 </main>
 
-<script src="app.js?v=20261102-3"></script>
+<script src="app.js?v=20261102-4"></script>
 </body>
 </html>
