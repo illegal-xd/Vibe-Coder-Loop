@@ -192,6 +192,26 @@ test("Case D: repeated identical failures keep the newest and prune older duplic
   assert.equal(reason(stats, "latest_failure_retained"), 1);
 });
 
+test("repeated identical failures may cross user turns because the kept failure repeats the content", () => {
+  const records = [
+    errorRecord({ id: "e1", order: 1, userSegment: 1 }),
+    errorRecord({ id: "e2", order: 3, userSegment: 2 }),
+  ];
+
+  const allowed = planErrorPurge(records);
+  assert.equal(allowed.decisions.length, 1);
+  assert.equal(allowed.decisions[0].id, "e1");
+  assert.equal(allowed.decisions[0].keeperId, "e2");
+  assert.equal(allowed.decisions[0].kind, "duplicate_failure");
+
+  // Opting back into the strict guard blocks the cross-turn duplicate.
+  const blocked = planErrorPurge(records, {
+    preserveRepeatedFailuresAcrossUserTurns: true,
+  });
+  assert.equal(blocked.decisions.length, 0);
+  assert.equal(reason(blocked.stats, "across_user_turn"), 1);
+});
+
 test("different error outputs are never treated as duplicates", () => {
   const { decisions } = planErrorPurge([
     errorRecord({ id: "e1", order: 1, error: `${LONG_ERROR}first` }),

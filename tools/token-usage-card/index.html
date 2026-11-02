@@ -3,8 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>Vibe Kernel · Token Usage</title>
-<link rel="stylesheet" href="styles.css?v=20261030-2">
+<link rel="stylesheet" href="styles.css?v=20261102-2">
 </head>
 <body>
 
@@ -14,55 +17,68 @@
 
 <main class="card" aria-labelledby="cardTitle">
   <header class="card-head">
-    <h1 id="cardTitle">Vibe Kernel · Token Usage</h1>
-    <div class="head-side">
+    <div class="head-titles">
+      <p class="eyebrow">Vibe Kernel</p>
+      <h1 id="cardTitle">Token 用量</h1>
+      <p class="subtitle" id="rangeCaption" aria-live="polite">—</p>
+    </div>
+    <div class="head-controls">
       <div class="segmented" role="group" aria-label="统计维度">
+        <span class="segmented-thumb" aria-hidden="true"></span>
         <button type="button" data-range="yesterday">昨天</button>
-        <button type="button" data-range="today">今天</button>
-        <button type="button" data-range="last7" aria-pressed="true">最近 7 天</button>
+        <button type="button" class="is-active" data-range="today" aria-pressed="true">今天</button>
+        <button type="button" data-range="last7">最近 7 天</button>
       </div>
-      <div class="refresh-row">
-        <p class="caption" id="rangeCaption" aria-live="polite">—</p>
-        <button type="button" class="refresh" id="refreshButton" title="立即从本地服务刷新">刷新</button>
-      </div>
+      <button type="button" class="refresh" id="refreshButton" title="刷新数据" aria-label="刷新数据">
+        <svg class="refresh-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M13.7 2.5v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="refresh-spinner" aria-hidden="true"></span>
+      </button>
     </div>
   </header>
 
   <section class="metrics" aria-label="Token 指标">
     <div class="metric">
-      <p class="metric-label">实际输入 Token</p>
+      <p class="metric-label">输入 Token</p>
       <p class="metric-value" id="mInput">—</p>
+      <p class="metric-note" id="mInputNote">含缓存前缀</p>
     </div>
     <div class="metric">
-      <p class="metric-label">实际输出 Token</p>
+      <p class="metric-label">输出 Token</p>
       <p class="metric-value" id="mOutput">—</p>
+      <p class="metric-note">可见输出与推理</p>
     </div>
     <div class="metric">
-      <p class="metric-label">缓存命中率</p>
+      <p class="metric-label">缓存命中</p>
       <p class="metric-value" id="mRate">—</p>
-      <p class="metric-note">缓存输入 ÷ 总输入</p>
+      <p class="metric-note" id="mRateNote">缓存读 ÷ 总输入</p>
     </div>
     <div class="metric">
-      <p class="metric-label">估算裁剪量</p>
+      <p class="metric-label">估算裁剪</p>
       <p class="metric-value" id="mRemoved">—</p>
-      <p class="metric-note">不等于实际节省量</p>
+      <p class="metric-note" id="mRemovedNote">估算值，不等于账单节省</p>
     </div>
   </section>
 
-  <hr class="divider">
-
   <section aria-labelledby="strategyTitle">
-    <h2 id="strategyTitle">策略贡献</h2>
+    <div class="section-head">
+      <h2 id="strategyTitle">策略贡献</h2>
+      <p class="section-total" id="strategyTotal" aria-live="polite"></p>
+    </div>
     <div id="strategyList"></div>
     <p class="strategy-hint" id="strategyHint" hidden>该区间没有实际裁剪记录，策略贡献为 0。</p>
   </section>
 
-  <p class="footnote">
-    策略按估算贡献从高到低动态排序。扫描 / 候选为每请求均值，实际裁剪为区间累计项数；贡献值为估算 token（字符加权），按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。工具描述、读取输出与行区间编辑按实际替换文本估算。
-  </p>
-  <p class="snapshot" id="snapshot" aria-live="polite"></p>
+  <footer class="foot">
+    <p class="footnote">
+      仅列出本区间产生候选或裁剪的策略；贡献为估算 token（字符加权），扫描 / 合格 / 候选 / 标记为每请求均值，裁剪为区间累计项数。按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。
+    </p>
+    <p class="snapshot" id="snapshot" aria-live="polite"></p>
+  </footer>
 </main>
 
-<script src="app.js?v=20261030-2"></script>
+<script src="app.js?v=20261102-2"></script>
 </body>
 </html>

@@ -19,6 +19,7 @@ test("defaults are safe and explicit", () => {
   assert.equal(config.errorPurge.enabled, true);
   assert.equal(config.errorPurge.preview, false);
   assert.equal(config.errorPurge.preserveAcrossUserTurns, true);
+  assert.equal(config.errorPurge.preserveRepeatedFailuresAcrossUserTurns, false);
   assert.equal(config.errorPurge.preserveOnStateChanges, true);
   assert.equal(config.errorPurge.pruneRepeatedFailures, true);
   assert.equal(config.errorPurge.protectReferences, true);
@@ -84,6 +85,10 @@ test("Error Purge invalid fields fail closed", () => {
   );
   assert.throws(
     () => resolveConfig({ errorPurge: { preserveOnStateChanges: "no" } }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ errorPurge: { preserveRepeatedFailuresAcrossUserTurns: "no" } }, {}),
     ConfigError,
   );
   assert.throws(

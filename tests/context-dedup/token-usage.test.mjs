@@ -502,6 +502,75 @@ test("skip-reason counts are partitioned by unit so record scans do not look lik
   assert.equal(pruning.error_purge.skipped.candidate.across_user_turn, 1);
 });
 
+test("skip reasons are bucketed at the funnel boundary they explain", () => {
+  const pruning = summarizePruning(
+    transformStats({
+      skippedReasons: {
+        unsupported_tool: 40,
+        unique_signature: 3,
+        intervening_side_effect: 2,
+        apply_state_mismatch: 1,
+      },
+      errorPurge: {
+        enabled: true,
+        preview: false,
+        changed: false,
+        recordsTotal: 123,
+        eligibleCount: 5,
+        candidateCount: 3,
+        markedCount: 1,
+        changedCount: 0,
+        preservedCount: 3,
+        tokenSavingsEstimated: 0,
+        skippedReasons: {
+          no_success_for_signature: 2,
+          across_user_turn: 2,
+          latest_failure_retained: 1,
+        },
+      },
+    }),
+    {
+      toolDescriptions: {
+        enabled: true,
+        preview: false,
+        recordsTotal: 11,
+        eligibleCount: 10,
+        candidateCount: 8,
+        markedCount: 6,
+        changedCount: 2,
+        tokenSavingsEstimated: 5,
+        skippedReasons: {
+          missing_description: 1,
+          already_slim: 2,
+          no_positive_savings: 2,
+          preview: 4,
+        },
+      },
+    },
+  );
+
+  // Before eligibility.
+  assert.equal(pruning.deduplication.skipped.record_scan.unsupported_tool, 40);
+  // Eligible -> candidate.
+  assert.equal(pruning.deduplication.skipped.eligible.unique_signature, 3);
+  // Candidate -> not changed.
+  assert.equal(pruning.deduplication.skipped.candidate.intervening_side_effect, 2);
+  // Marked -> apply failure.
+  assert.equal(pruning.deduplication.skipped.application.apply_state_mismatch, 1);
+
+  assert.equal(pruning.error_purge.skipped.eligible.no_success_for_signature, 2);
+  assert.equal(pruning.error_purge.skipped.candidate.across_user_turn, 2);
+  assert.equal(pruning.error_purge.skipped.candidate.latest_failure_retained, 1);
+
+  // Slim Edit marks preview decisions before the preview check, so those are
+  // application-stage; a description-less record never reached `eligible`,
+  // while already-slim descriptions never became candidates.
+  assert.equal(pruning.tool_descriptions.skipped.record_scan.missing_description, 1);
+  assert.equal(pruning.tool_descriptions.skipped.eligible.already_slim, 2);
+  assert.equal(pruning.tool_descriptions.skipped.candidate.no_positive_savings, 2);
+  assert.equal(pruning.tool_descriptions.skipped.application.preview, 4);
+});
+
 test("preview and disabled strategies report measured zero removals", () => {
   const preview = summarizePruning(
     transformStats({ preview: true, prunedCount: 0, tokenSavingsEstimated: 0 }),

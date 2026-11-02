@@ -54,6 +54,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     redactInputPayload: true,
     staleInputAfterUserTurns: null,
     preserveAcrossUserTurns: true,
+    preserveRepeatedFailuresAcrossUserTurns: false,
     preserveOnStateChanges: true,
     pruneRepeatedFailures: true,
     protectReferences: true,
@@ -242,6 +243,13 @@ function resolveErrorPurge(raw, env, globalPreview) {
       raw.preserveAcrossUserTurns === undefined
         ? DEFAULT_CONFIG.errorPurge.preserveAcrossUserTurns
         : assertBoolean(raw.preserveAcrossUserTurns, "errorPurge.preserveAcrossUserTurns"),
+    preserveRepeatedFailuresAcrossUserTurns:
+      raw.preserveRepeatedFailuresAcrossUserTurns === undefined
+        ? DEFAULT_CONFIG.errorPurge.preserveRepeatedFailuresAcrossUserTurns
+        : assertBoolean(
+            raw.preserveRepeatedFailuresAcrossUserTurns,
+            "errorPurge.preserveRepeatedFailuresAcrossUserTurns",
+          ),
     preserveOnStateChanges:
       raw.preserveOnStateChanges === undefined
         ? DEFAULT_CONFIG.errorPurge.preserveOnStateChanges

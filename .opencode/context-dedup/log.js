@@ -215,11 +215,12 @@ async function ensureDirectory(dir) {
 
 /**
  * Append one aggregate record. Never throws; logging must not break a model
- * request.
+ * request. `env` mirrors the plugin's injected environment seam so an embedder
+ * that disables logging through `input.env` is honoured here too.
  */
-export async function appendStats({ directory, config, configError }, stats) {
+export async function appendStats({ directory, config, configError, env = process.env }, stats) {
   try {
-    if (isTruthy(process.env.VIBE_CONTEXT_DEDUP_LOG_DISABLED)) return;
+    if (isTruthy(env.VIBE_CONTEXT_DEDUP_LOG_DISABLED)) return;
     if (!config?.log?.enabled) return;
     if (
       config.log.onlyWhenActive &&

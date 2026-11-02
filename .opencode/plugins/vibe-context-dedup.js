@@ -145,7 +145,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     if (at - lastUsageFailureAt < USAGE_FAILURE_MIN_INTERVAL_MS) return;
     lastUsageFailureAt = at;
     await appendStats(
-      { directory, config },
+      { directory, config, env },
       {
         enabled: true,
         preview: false,
@@ -167,7 +167,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
       if (configError && !configErrorLogged) {
         configErrorLogged = true;
         await appendStats(
-          { directory, config, configError },
+          { directory, config, env, configError },
           {
             enabled: false,
             preview: false,
@@ -185,7 +185,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
       result = transformMessages(output.messages, { ...config, measureContext: measuring });
     } catch (error) {
       await appendStats(
-        { directory, config },
+        { directory, config, env },
         {
           enabled: true,
           preview: config.preview,
@@ -241,12 +241,12 @@ export const VibeContextDedupPlugin = async (input = {}) => {
           apply_validation_failed:
             (result.stats.skippedReasons?.apply_validation_failed ?? 0) + 1,
         };
-        await appendStats({ directory, config }, result.stats);
+        await appendStats({ directory, config, env }, result.stats);
         return { stats: result.stats, contextUnits: result.contextUnits ?? null };
       }
     }
 
-    await appendStats({ directory, config }, result.stats);
+    await appendStats({ directory, config, env }, result.stats);
     return { stats: result.stats, contextUnits: result.contextUnits ?? null };
   }
 

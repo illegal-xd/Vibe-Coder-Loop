@@ -1,86 +1,187 @@
-/* Token 用量卡片 · 视觉层
-   参考稿：浅底白卡 / 大号数字 / 细分隔线 / 双列指标 / 策略贡献进度条 */
+/* Token 用量卡片 · Apple 风格视觉层
+   原则：大标题 + 分组内嵌统计 + 分段控件 + 发丝分隔线 + 克制动效
+   支持浅色 / 深色，尊重 prefers-reduced-motion。 */
 
 :root {
-  --bg: #f5f6f7;
-  --panel: #ffffff;
-  --panel-soft: #f3f4f6;
+  color-scheme: light dark;
 
-  --ink: #14161a;
-  --ink-mid: #626974;
-  --ink-lo: #9aa1aa;
+  --bg-top: #f5f5f7;
+  --bg-bottom: #ececef;
+  --glow: rgba(0, 113, 227, 0.1);
 
-  --line: #ececee;
-  --track: #eef1f4;
+  --surface: rgba(255, 255, 255, 0.76);
+  --surface-solid: #ffffff;
+  --surface-soft: rgba(118, 118, 128, 0.08);
 
-  --accent: #3b82f6;
-  --accent-2: #14a08a;
-  --accent-3: #d97706;
-  --accent-4: #7c3aed;
-  --accent-5: #db2777;
-  --accent-6: #0d9488;
+  --ink: #1d1d1f;
+  --ink-mid: #515154;
+  /* 12px secondary text needs >= 4.5:1 on both the card and the soft group. */
+  --ink-lo: #6e6e73;
 
-  --radius-card: 22px;
-  --ease: cubic-bezier(0.23, 1, 0.32, 1);
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+  --line: rgba(60, 60, 67, 0.12);
+  --line-strong: rgba(60, 60, 67, 0.18);
+  --track: rgba(120, 120, 128, 0.16);
+  --thumb: #ffffff;
+  --thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
+  --card-shadow: 0 30px 80px -48px rgba(16, 24, 40, 0.5);
+
+  --accent: #0071e3;
+  --dot-1: #0071e3;
+  --dot-2: #34c759;
+  --dot-3: #ff9500;
+  --dot-4: #af52de;
+  --dot-5: #ff2d55;
+  --dot-6: #5ac8fa;
+
+  --radius-card: 28px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-* { box-sizing: border-box; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-top: #000000;
+    --bg-bottom: #0b0b0d;
+    --glow: rgba(10, 132, 255, 0.16);
+
+    --surface: rgba(28, 28, 30, 0.72);
+    --surface-solid: #1c1c1e;
+    --surface-soft: rgba(118, 118, 128, 0.2);
+
+    --ink: #f5f5f7;
+    --ink-mid: #a8a8ad;
+    --ink-lo: #98989d;
+
+    --line: rgba(255, 255, 255, 0.12);
+    --line-strong: rgba(255, 255, 255, 0.2);
+    --track: rgba(120, 120, 128, 0.32);
+    --thumb: #636366;
+    --thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --card-shadow: 0 34px 90px -44px rgba(0, 0, 0, 0.9);
+
+    --accent: #0a84ff;
+    --dot-1: #0a84ff;
+    --dot-2: #30d158;
+    --dot-3: #ff9f0a;
+    --dot-4: #bf5af2;
+    --dot-5: #ff375f;
+    --dot-6: #64d2ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
 
 body {
   margin: 0;
-  padding: 40px 24px 56px;
+  min-height: 100vh;
+  padding: 48px 24px 64px;
   display: flex;
-  justify-content: center;
-  background: var(--bg);
+  flex-direction: column;
+  align-items: center;
+  background:
+    radial-gradient(900px 480px at 50% -8%, var(--glow), transparent 62%),
+    linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
   color: var(--ink);
   font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ---------------- card ---------------- */
 
 .card {
-  width: min(1000px, 100%);
-  padding: 40px 44px 32px;
-  border: 1px solid #e7e7e9;
+  width: min(960px, 100%);
+  padding: 40px 44px 30px;
+  border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  background: var(--panel);
-  box-shadow: 0 28px 60px -52px rgba(16, 24, 40, 0.45);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
 }
 
 .card-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 28px;
+  gap: 24px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--ink-lo);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 h1 {
-  margin: 2px 0 0;
-  font-size: 26px;
-  font-weight: 650;
-  letter-spacing: -0.012em;
+  margin: 6px 0 0;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
 }
 
-.head-side {
+.subtitle {
+  margin: 10px 0 0;
+  color: var(--ink-mid);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.head-controls {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 9px;
+  align-items: center;
+  gap: 10px;
   flex: none;
 }
 
+/* ---------------- segmented ---------------- */
+
 .segmented {
+  position: relative;
   display: inline-flex;
   padding: 3px;
   border-radius: 999px;
-  background: var(--panel-soft);
+  background: var(--track);
+}
+
+/* Sliding pill measured from the active button's geometry in app.js. Hidden
+   until `has-thumb` is set so a no-JS page keeps the static active style. */
+.segmented-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 0;
+  border-radius: 999px;
+  background: var(--thumb);
+  box-shadow: var(--thumb-shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s var(--ease), width 0.3s var(--ease),
+    opacity 0.2s var(--ease);
+}
+
+.segmented.has-thumb .segmented-thumb {
+  opacity: 1;
 }
 
 .segmented button {
+  position: relative;
+  z-index: 1;
   padding: 6px 14px;
   border: 0;
   border-radius: 999px;
@@ -88,59 +189,100 @@ h1 {
   color: var(--ink-mid);
   font: inherit;
   font-size: 13px;
+  font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 0.18s var(--ease), color 0.18s var(--ease),
-    box-shadow 0.18s var(--ease);
+  transition: color 0.2s var(--ease);
 }
 
-.segmented button:hover { color: var(--ink); }
+.segmented button:hover {
+  color: var(--ink);
+}
 
 .segmented button.is-active {
-  background: #fff;
+  background: var(--thumb);
   color: var(--ink);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.14);
+  box-shadow: var(--thumb-shadow);
 }
 
-.segmented button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+/* Once the thumb carries the background, the button must stay transparent so
+   the two layers do not stack their shadows. */
+.segmented.has-thumb button.is-active {
+  background: transparent;
+  box-shadow: none;
 }
 
-.caption {
-  margin: 0;
-  min-height: 1em;
-  color: var(--ink-lo);
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-}
-
-.refresh-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+/* ---------------- refresh ---------------- */
 
 .refresh {
-  padding: 4px 11px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel);
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface-soft);
   color: var(--ink-mid);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.2;
-  white-space: nowrap;
   cursor: pointer;
-  transition: color 0.18s var(--ease), border-color 0.18s var(--ease);
+  transition: background-color 0.2s var(--ease), color 0.2s var(--ease),
+    transform 0.2s var(--ease);
 }
 
-.refresh:hover { color: var(--ink); border-color: #d8dadd; }
-.refresh:disabled { opacity: 0.6; cursor: progress; }
+.refresh:hover {
+  background: var(--line);
+  color: var(--ink);
+}
 
-.refresh:focus-visible {
+.refresh:active {
+  transform: scale(0.94);
+}
+
+.refresh:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.refresh-icon,
+.refresh-spinner {
+  grid-area: 1 / 1;
+}
+
+.refresh-icon {
+  width: 16px;
+  height: 16px;
+  transition: opacity 0.18s var(--ease), transform 0.4s var(--ease);
+}
+
+.refresh-spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.6px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.refresh.is-loading .refresh-icon {
+  opacity: 0;
+  transform: rotate(180deg);
+}
+
+.refresh.is-loading .refresh-spinner {
+  opacity: 1;
+  animation: refresh-spin 0.8s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -149,68 +291,134 @@ h1 {
 
 .metrics {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 44px 64px;
-  margin-top: 44px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 34px 0 0;
+  padding: 18px 4px;
+  border-radius: 20px;
+  background: var(--surface-soft);
+}
+
+.metric {
+  position: relative;
+  min-width: 0;
+  padding: 2px 20px;
+}
+
+.metric + .metric::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--line);
 }
 
 .metric-label {
   margin: 0;
   color: var(--ink-mid);
-  font-size: 15px;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.4;
 }
 
 .metric-value {
-  margin: 6px 0 0;
-  font-size: 44px;
+  margin: 8px 0 0;
+  font-size: 38px;
   font-weight: 650;
-  line-height: 1.12;
-  letter-spacing: -0.022em;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
   font-variant-numeric: tabular-nums;
 }
 
-.metric-note {
-  margin: 10px 0 0;
+/* Em dash means "no measurement", not a measured zero. */
+.metric-value.is-placeholder {
   color: var(--ink-lo);
-  font-size: 13px;
-  line-height: 1.5;
+  font-weight: 600;
+}
+
+.metric-note {
+  margin: 8px 0 0;
+  color: var(--ink-lo);
+  font-size: 12px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------------- strategies ---------------- */
 
-.divider {
-  height: 1px;
-  margin: 38px 0 30px;
-  background: var(--line);
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 40px 0 4px;
 }
 
 h2 {
   margin: 0;
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 650;
-  letter-spacing: -0.008em;
+  letter-spacing: -0.012em;
 }
 
-.strategy { margin-top: 22px; }
+.section-total {
+  margin: 0;
+  color: var(--ink-lo);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.strategy {
+  padding: 15px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.strategy:last-child {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
+
+.strategy.s1 { --dot: var(--dot-1); }
+.strategy.s2 { --dot: var(--dot-2); }
+.strategy.s3 { --dot: var(--dot-3); }
+.strategy.s4 { --dot: var(--dot-4); }
+.strategy.s5 { --dot: var(--dot-5); }
+.strategy.s6 { --dot: var(--dot-6); }
 
 .strategy-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .strategy-title {
-  display: inline-flex;
+  display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 2px 8px;
   min-width: 0;
 }
 
-.strategy-name { font-size: 16px; line-height: 1.4; }
+.strategy-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.strategy-name::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot);
+}
 
 .strategy-note {
   color: var(--ink-lo);
@@ -220,21 +428,51 @@ h2 {
 }
 
 .strategy-value {
-  font-size: 16px;
-  font-weight: 650;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+.strategy-tokens {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.strategy-share {
+  min-width: 40px;
+  color: var(--ink-lo);
+  font-size: 12px;
+  text-align: right;
 }
 
 .strategy-counts {
+  display: flex;
+  flex-wrap: wrap;
   margin: 0 0 9px;
   color: var(--ink-lo);
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   font-variant-numeric: tabular-nums;
 }
 
+/* One span per stat: a narrow screen wraps between stats, and the separator
+   trails the previous stat instead of leading the wrapped line. */
+.strategy-counts .count {
+  white-space: nowrap;
+}
+
+.strategy-counts .count:not(:last-child)::after {
+  content: " ·";
+}
+
+.strategy-counts.is-empty {
+  display: block;
+}
+
 .bar {
-  height: 8px;
+  height: 6px;
   border-radius: 999px;
   background: var(--track);
   overflow: hidden;
@@ -245,55 +483,113 @@ h2 {
   width: 0;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent);
-  transition: width 0.3s var(--ease);
+  background: var(--dot);
+  transition: width 0.35s var(--ease);
 }
 
-.bar.s2 > span { background: var(--accent-2); }
-.bar.s3 > span { background: var(--accent-3); }
-.bar.s4 > span { background: var(--accent-4); }
-.bar.s5 > span { background: var(--accent-5); }
-.bar.s6 > span { background: var(--accent-6); }
-
 .strategy-hint {
-  margin: 14px 0 0;
+  margin: 12px 0 0;
   color: var(--ink-lo);
-  font-size: 13px;
+  font-size: 12.5px;
+}
+
+/* ---------------- empty state ---------------- */
+
+.strategy-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 46px 0 34px;
+  text-align: center;
+}
+
+.empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.empty-note {
+  margin: 0;
+  max-width: 34em;
+  color: var(--ink-lo);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* Hidden one-sentence version for screen readers (the count spans are
+   aria-hidden wrapping aids). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------- footer ---------------- */
+
+.foot {
+  margin-top: 30px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
 }
 
 .footnote {
-  margin: 26px 0 0;
+  margin: 0;
   color: var(--ink-lo);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.7;
 }
 
 .snapshot {
-  margin: 14px 0 0;
-  color: #b3b9c1;
+  margin: 10px 0 0;
+  color: var(--ink-lo);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+}
+
+.snapshot[data-source="api"]::before,
+.snapshot[data-source="snapshot"]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--dot-2);
+}
+
+.snapshot[data-source="snapshot"]::before {
+  background: var(--dot-3);
 }
 
 /* ---------------- notice ---------------- */
 
 .notice {
-  width: min(1000px, 100%);
-  margin: 0 auto 14px;
-  padding: 10px 14px;
+  width: min(960px, 100%);
+  margin: 0 0 14px;
+  padding: 12px 16px;
   border: 1px solid var(--line);
-  border-left: 2px solid var(--accent-3);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: 14px;
+  background: var(--surface);
   color: var(--ink-mid);
   font-size: 13px;
   line-height: 1.6;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
 }
 
 .notice code {
   padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--panel-soft);
+  border-radius: 5px;
+  background: var(--surface-soft);
   color: var(--ink);
   font-family: var(--mono);
   font-size: 12px;
@@ -301,20 +597,110 @@ h2 {
 
 /* ---------------- responsive ---------------- */
 
-@media (max-width: 760px) {
-  body { padding: 20px 14px 36px; }
+@media (max-width: 860px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 22px;
+    padding: 20px 4px;
+  }
 
-  .card { padding: 26px 22px 24px; border-radius: 16px; }
+  .metric {
+    padding: 2px 18px;
+  }
 
-  .card-head { flex-direction: column; gap: 16px; }
+  .metric + .metric::before {
+    display: none;
+  }
 
-  .head-side { align-items: flex-start; width: 100%; }
+  .metric:nth-child(even)::before {
+    content: "";
+    display: block;
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 1px;
+    background: var(--line);
+  }
 
-  .caption { text-align: left; }
+  .metric:nth-child(n + 3) {
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
 
-  .metrics { grid-template-columns: 1fr; gap: 30px; margin-top: 30px; }
+  .metric:nth-child(n + 3)::before {
+    top: 20px;
+  }
+}
 
-  .metric-value { font-size: 36px; }
+@media (max-width: 640px) {
+  body {
+    padding: 20px 14px 40px;
+  }
 
-  .divider { margin: 28px 0 24px; }
+  .card {
+    padding: 26px 20px 24px;
+    border-radius: 24px;
+  }
+
+  .card-head {
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  h1 {
+    font-size: 28px;
+  }
+
+  .head-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .segmented {
+    flex: 1;
+  }
+
+  .segmented button {
+    flex: 1;
+    padding: 7px 10px;
+  }
+
+  .metric {
+    padding: 2px 14px;
+  }
+
+  .metric-value {
+    font-size: 30px;
+  }
+
+  .section-head {
+    margin-top: 30px;
+  }
+
+  .strategy-head {
+    gap: 10px;
+  }
+
+  .strategy-note {
+    font-size: 11.5px;
+    white-space: normal;
+  }
+
+  .strategy-counts {
+    font-size: 11.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segmented-thumb,
+  .bar > span,
+  .refresh,
+  .refresh-icon {
+    transition: none;
+  }
+
+  .refresh.is-loading .refresh-spinner {
+    animation-duration: 2s;
+  }
 }

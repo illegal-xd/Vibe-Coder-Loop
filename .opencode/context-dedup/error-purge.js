@@ -21,7 +21,11 @@
  *
  * Repeated identical failures are a separate, medium-confidence rule: older
  * duplicates may be pruned while the newest equivalent failure is retained.
- * If no later evidence exists, the error is preserved.
+ * That rule crosses user turns by default (`preserveRepeatedFailuresAcrossUserTurns`
+ * opts back into the strict guard) because the kept failure still carries the
+ * same error text and arguments later in the conversation; only the turn-local
+ * Rule 1 needs the same-turn guard, since a later success does not repeat the
+ * error text. If no later evidence exists, the error is preserved.
  *
  * When a rule fires, the failed call's bulky input strings are redacted too
  * (parity with the reference implementation's "prune errored tool inputs").
@@ -255,6 +259,12 @@ function normalizeOptions(config = {}) {
     ),
     readOnlyTools,
     preserveAcrossUserTurns: config.preserveAcrossUserTurns !== false,
+    // Rule 2 (repeated identical failures) keeps the newest identical failure,
+    // so the error text and its arguments are still present later. Crossing a
+    // user turn therefore loses nothing; only Rule 1 needs the turn guard
+    // because a later success does not repeat the error text.
+    preserveRepeatedFailuresAcrossUserTurns:
+      config.preserveRepeatedFailuresAcrossUserTurns === true,
     preserveOnStateChanges: config.preserveOnStateChanges !== false,
     pruneRepeatedFailures: config.pruneRepeatedFailures !== false,
     minSuccesses,
@@ -788,6 +798,7 @@ export function planErrorPurge(records, config = {}) {
           if (candidate.decided) continue;
           if (
             options.preserveAcrossUserTurns &&
+            options.preserveRepeatedFailuresAcrossUserTurns &&
             candidate.userSegment !== keeper.userSegment
           ) {
             if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";

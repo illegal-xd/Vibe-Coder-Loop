@@ -129,12 +129,21 @@
     return result;
   }
 
+  function compactNumber(value, digits) {
+    return value.toFixed(digits).replace(/\.0+$|(\.\d*[1-9])0+$/, '$1');
+  }
+
   function formatCompact(value) {
+    var thousands;
     if (!isFinite(value)) return '—';
     if (value <= 0) return '0';
-    if (value >= 1e9) return (value / 1e9).toFixed(2) + 'B';
-    if (value >= 1e6) return (value / 1e6).toFixed(2) + 'M';
-    if (value >= 1e3) return Math.round(value / 1e3) + 'K';
+    if (value >= 1e9) return compactNumber(value / 1e9, 2) + 'B';
+    if (value >= 1e6) return compactNumber(value / 1e6, 2) + 'M';
+    if (value >= 1e3) {
+      thousands = value / 1e3;
+      // Keep one decimal below 10K so 1.2K and 12K both read naturally.
+      return (thousands >= 10 ? String(Math.round(thousands)) : compactNumber(thousands, 1)) + 'K';
+    }
     return String(Math.round(value));
   }
 
@@ -218,12 +227,18 @@
   var caption = document.getElementById('rangeCaption');
   var strategyList = document.getElementById('strategyList');
   var strategyHint = document.getElementById('strategyHint');
+  var strategyTotal = document.getElementById('strategyTotal');
+  var inputNote = document.getElementById('mInputNote');
+  var rateNote = document.getElementById('mRateNote');
+  var removedNote = document.getElementById('mRemovedNote');
   var snapshot = document.getElementById('snapshot');
   var refreshButton = document.getElementById('refreshButton');
   var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-range]'));
+  var segmented = document.querySelector('.segmented');
+  var thumb = segmented ? segmented.querySelector('.segmented-thumb') : null;
 
   var state = {
-    mode: 'last7',
+    mode: 'today',
     now: new Date(),
     data: null,
     loadedAt: null,
@@ -232,21 +247,101 @@
     source: 'none'
   };
 
-  function setText(id, text) {
+  function setMetric(id, text) {
     var node = document.getElementById(id);
+    if (!node) return;
+    node.textContent = text;
+    node.classList.toggle('is-placeholder', text === '—');
+  }
+
+  function setNote(node, text) {
     if (node) node.textContent = text;
+  }
+
+  /** Exact value on hover; the visible number stays compact. */
+  function setExactTitle(id, value, enabled, suffix) {
+    var node = document.getElementById(id);
+    if (!node) return;
+    if (!enabled || !isFinite(value) || value <= 0) {
+      node.removeAttribute('title');
+      return;
+    }
+    node.title =
+      Math.round(value).toLocaleString('en-US') + ' token' + (suffix ? '（' + suffix + '）' : '');
   }
 
   function setNotice(visible) {
     if (notice) notice.hidden = !visible;
   }
 
+  // Slide the selected pill behind the segmented buttons (Apple-style control).
+  // The static `.is-active` background stays as the no-JS fallback; `has-thumb`
+  // hands the visual over to the sliding thumb once its geometry is measured.
+  function syncSegmentThumb(quiet) {
+    if (!segmented || !thumb) return;
+    var active = null;
+    buttons.forEach(function (button) {
+      if (button.dataset.range === state.mode) active = button;
+    });
+    if (!active || !active.offsetWidth) {
+      segmented.classList.remove('has-thumb');
+      return;
+    }
+    // `quiet` applies the first geometry (and resize/refont geometry) without
+    // animating: the pill must not grow out of the left edge on page load.
+    if (quiet) thumb.style.transition = 'none';
+    thumb.style.width = active.offsetWidth + 'px';
+    thumb.style.transform = 'translateX(' + active.offsetLeft + 'px)';
+    segmented.classList.add('has-thumb');
+    if (quiet) {
+      void thumb.offsetWidth; // commit this frame, then re-enable motion
+      thumb.style.transition = '';
+    }
+  }
+
+  function renderEmptyState(titleText, noteText) {
+    if (!strategyList) return;
+    strategyList.textContent = '';
+    var box = document.createElement('div');
+    box.className = 'strategy-empty';
+    var title = document.createElement('p');
+    title.className = 'empty-title';
+    title.textContent = titleText;
+    var note = document.createElement('p');
+    note.className = 'empty-note';
+    note.textContent = noteText;
+    box.appendChild(title);
+    box.appendChild(note);
+    strategyList.appendChild(box);
+  }
+
   function renderStrategies(result) {
     if (!strategyList) return;
     strategyList.textContent = '';
-    sortStrategies(result.strategies).forEach(function (strategy, index) {
+
+    // A day with one request would otherwise render six rows of zeros. Show
+    // only strategies that did something; the footnote says so explicitly.
+    var active = sortStrategies(result.strategies).filter(function (strategy) {
+      return (
+        strategy.tokens > 0 ||
+        strategy.removedItems > 0 ||
+        strategy.candidates > 0 ||
+        strategy.eligible > 0
+      );
+    });
+    if (active.length === 0) {
+      renderEmptyState('该区间没有活动策略', '策略没有扫描到可处理记录。');
+      return;
+    }
+
+    active.forEach(function (strategy, index) {
+      var items;
+      var spoken;
+      var note;
+      var colorIndex = STRATEGY_ORDER[strategy.key];
+      var color = colorIndex === undefined ? ((index % 6) + 1) : ((colorIndex % 6) + 1);
       var row = document.createElement('div');
-      row.className = 'strategy';
+      row.className = 'strategy s' + color;
 
       var head = document.createElement('div');
       head.className = 'strategy-head';
@@ -260,7 +355,6 @@
       title.appendChild(name);
 
       var noteText = STRATEGY_NOTES[strategy.key];
-      var note = null;
       if (noteText) {
         note = document.createElement('span');
         note.className = 'strategy-note';
@@ -268,53 +362,73 @@
         title.appendChild(note);
       }
 
+      var sharePercent = result.removed > 0
+        ? Math.round((strategy.tokens / result.removed) * 100)
+        : 0;
+
       var value = document.createElement('span');
       value.className = 'strategy-value';
-      value.textContent = formatCompact(strategy.tokens);
+      var tokens = document.createElement('span');
+      tokens.className = 'strategy-tokens';
+      tokens.textContent = formatCompact(strategy.tokens);
+      if (strategy.tokens > 0) {
+        tokens.title = Math.round(strategy.tokens).toLocaleString('en-US') + ' token（估算）';
+      }
+      var share = document.createElement('span');
+      share.className = 'strategy-share';
+      share.textContent = sharePercent + '%';
+      value.appendChild(tokens);
+      value.appendChild(share);
 
       var counts = document.createElement('p');
       counts.className = 'strategy-counts';
-      var coverage =
-        strategy.requests > 0 && strategy.requests < result.requests
-          ? ' · 覆盖 ' + strategy.requests + '/' + result.requests + ' 次'
-          : '';
-      var countsText =
-        strategy.requests > 0
-          ? '扫描 ' + formatAverage(strategy.scanned, strategy.requests) + '/次 · ' +
-            '合格 ' + formatAverage(strategy.eligible, strategy.requests) + '/次 · ' +
-            '候选 ' + formatAverage(strategy.candidates, strategy.requests) + '/次 · ' +
-            '标记 ' + formatAverage(strategy.marked, strategy.requests) + '/次 · ' +
-            '实际裁剪 ' + strategy.removedItems + ' 项' + coverage
-          : '该策略在本区间无记录';
       if (strategy.requests > 0) {
+        // One span per stat so a narrow screen wraps between stats instead of
+        // leaving a dangling "·" at the start of the next line.
+        items = [
+          '扫描 ' + formatAverage(strategy.scanned, strategy.requests) + '/次',
+          '合格 ' + formatAverage(strategy.eligible, strategy.requests) + '/次',
+          '候选 ' + formatAverage(strategy.candidates, strategy.requests) + '/次',
+          '标记 ' + formatAverage(strategy.marked, strategy.requests) + '/次',
+          '裁剪 ' + strategy.removedItems + ' 项'
+        ];
+        if (strategy.requests < result.requests) {
+          items.push('覆盖 ' + strategy.requests + '/' + result.requests + ' 次');
+        }
+        // Screen readers get one well-punctuated sentence; the visible spans
+        // are only a wrapping aid, so they are hidden from the a11y tree.
+        spoken = document.createElement('span');
+        spoken.className = 'sr-only';
+        spoken.textContent = items.join('，');
+        counts.appendChild(spoken);
+        items.forEach(function (text) {
+          var item = document.createElement('span');
+          item.className = 'count';
+          item.setAttribute('aria-hidden', 'true');
+          item.textContent = text;
+          counts.appendChild(item);
+        });
         counts.title =
           '扫描/合格/候选/标记为每请求均值（仅统计已采集该策略的请求）；实际裁剪为区间累计项数。' +
           '合格=通过安全校验；候选=真正可裁剪；标记=通过全部守卫；实际裁剪=消息内容确实被改动。' +
           '窗口累计：扫描 ' + strategy.scanned + ' / 合格 ' + strategy.eligible +
           ' / 候选 ' + strategy.candidates + ' / 标记 ' + strategy.marked +
           ' / 裁剪 ' + strategy.removedItems + ' 条';
+      } else {
+        counts.classList.add('is-empty');
+        counts.textContent = '该策略在本区间无记录';
       }
-      counts.textContent = countsText;
 
       var bar = document.createElement('div');
-      var colorIndex = STRATEGY_ORDER[strategy.key];
-      bar.className = 'bar s' + (
-        colorIndex === undefined ? ((index % 6) + 1) : ((colorIndex % 6) + 1)
-      );
+      bar.className = 'bar';
       bar.setAttribute('role', 'progressbar');
       bar.setAttribute('aria-label', strategy.label + ' 贡献');
       bar.setAttribute('aria-valuemin', '0');
       bar.setAttribute('aria-valuemax', '100');
-      bar.setAttribute(
-        'aria-valuenow',
-        result.removed > 0 ? String(Math.round((strategy.tokens / result.removed) * 1000) / 10) : '0'
-      );
+      bar.setAttribute('aria-valuenow', String(Math.min(100, sharePercent)));
 
       var fill = document.createElement('span');
-      fill.style.width =
-        result.removed > 0
-          ? Math.min(100, (strategy.tokens / result.removed) * 100).toFixed(2) + '%'
-          : '0%';
+      fill.style.width = Math.min(100, sharePercent) + '%';
 
       head.appendChild(title);
       head.appendChild(value);
@@ -325,6 +439,7 @@
       strategyList.appendChild(row);
     });
   }
+
 
   function updateSnapshot() {
     if (!snapshot) return;
@@ -340,18 +455,62 @@
       ? state.data.diagnostics.invalidLines || 0
       : 0;
     if (invalid > 0) parts.push('损坏行 ' + invalid);
+    if (snapshot) {
+      if (state.source === 'api' || state.source === 'snapshot') {
+        snapshot.dataset.source = state.source;
+      } else {
+        delete snapshot.dataset.source;
+      }
+    }
     snapshot.textContent = parts.join(' · ');
   }
 
   function render() {
+    // The control must respond to a range click even while the archive is
+    // unreadable, so the pressed state is committed before any data check.
+    buttons.forEach(function (button) {
+      var active = button.dataset.range === state.mode;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    syncSegmentThumb();
     if (!state.data) return;
+
     var result = aggregate(state.data, state.mode, state.now);
     var hasData = result.requests > 0;
+    var cachedLabel = '含缓存前缀';
+    var rateLabel = '缓存读 ÷ 总输入';
+    var removedItems = result.strategies.reduce(function (total, strategy) {
+      return total + strategy.removedItems;
+    }, 0);
 
-    setText('mInput', hasData ? formatCompact(result.input) : '—');
-    setText('mOutput', hasData ? formatCompact(result.output) : '—');
-    setText('mRate', hasData && result.input > 0 ? formatPercent(result.cached / result.input) : '—');
-    setText('mRemoved', hasData ? formatCompact(result.removed) : '—');
+    setMetric('mInput', hasData ? formatCompact(result.input) : '—');
+    setMetric('mOutput', hasData ? formatCompact(result.output) : '—');
+    setMetric('mRate', hasData && result.input > 0 ? formatPercent(result.cached / result.input) : '—');
+    setMetric('mRemoved', hasData ? formatCompact(result.removed) : '—');
+    setExactTitle('mInput', result.input, hasData);
+    setExactTitle('mOutput', result.output, hasData);
+    setExactTitle('mRemoved', result.removed, hasData, '估算');
+
+    if (hasData) {
+      cachedLabel = result.cached > 0 ? '含缓存 ' + formatCompact(result.cached) : '无缓存命中';
+    }
+    if (hasData && result.input > 0) {
+      rateLabel = result.cached > 0
+        ? '缓存 ' + formatCompact(result.cached) + ' / 输入 ' + formatCompact(result.input)
+        : '无缓存命中';
+    }
+    setNote(inputNote, cachedLabel);
+    setNote(rateNote, rateLabel);
+    if (!hasData) {
+      setNote(removedNote, '估算值，不等于账单节省');
+    } else if (result.removed > 0 && result.input > 0) {
+      setNote(removedNote, '占输入 ' + formatPercent(result.removed / result.input) + ' · 估算');
+    } else if (result.removed > 0) {
+      setNote(removedNote, '估算值，不等于账单节省');
+    } else {
+      setNote(removedNote, '本区间无估算裁剪');
+    }
 
     if (caption) {
       caption.textContent = hasData
@@ -359,32 +518,36 @@
         : '该区间没有记录';
     }
 
-    renderStrategies(result);
+    if (strategyTotal) {
+      strategyTotal.textContent = hasData
+        ? '估算 ' + formatCompact(result.removed) + ' token · 裁剪 ' + removedItems + ' 项'
+        : '';
+    }
 
-    var removedItems = result.strategies.reduce(function (total, strategy) {
-      return total + strategy.removedItems;
-    }, 0);
+    if (hasData) {
+      renderStrategies(result);
+    } else {
+      renderEmptyState('该区间没有记录', '切换统计维度，或发一次请求后再回来。');
+    }
+
     if (strategyHint) strategyHint.hidden = !(hasData && result.removed === 0 && removedItems === 0);
-
-    buttons.forEach(function (button) {
-      var active = button.dataset.range === state.mode;
-      button.classList.toggle('is-active', active);
-      button.setAttribute('aria-pressed', String(active));
-    });
   }
 
   function setRefreshing(refreshing) {
     if (!refreshButton) return;
     refreshButton.disabled = refreshing;
     refreshButton.setAttribute('aria-busy', String(refreshing));
-    refreshButton.textContent = refreshing ? '刷新中…' : '刷新';
+    refreshButton.setAttribute('aria-label', refreshing ? '正在刷新数据' : '刷新数据');
+    refreshButton.title = refreshing ? '正在刷新…' : '刷新数据';
+    refreshButton.classList.toggle('is-loading', refreshing);
   }
 
   async function refresh(options) {
     if (state.loading) return;
     const initial = options && options.initial === true;
+    const silent = options && options.silent === true;
     state.loading = true;
-    if (!initial) setRefreshing(true);
+    if (!initial && !silent) setRefreshing(true);
     try {
       const result = await loadData();
       if (result.ok) {
@@ -402,16 +565,27 @@
         state.source = 'none';
         setNotice(true);
         if (caption) caption.textContent = '无法读取数据';
-        setText('mInput', '—');
-        setText('mOutput', '—');
-        setText('mRate', '—');
-        setText('mRemoved', '—');
-        if (strategyList) strategyList.textContent = '';
-        if (snapshot) snapshot.textContent = '';
+        setMetric('mInput', '—');
+        setMetric('mOutput', '—');
+        setMetric('mRate', '—');
+        setMetric('mRemoved', '—');
+        setExactTitle('mInput', 0, false);
+        setExactTitle('mOutput', 0, false);
+        setExactTitle('mRemoved', 0, false);
+        setNote(inputNote, '含缓存前缀');
+        setNote(rateNote, '缓存读 ÷ 总输入');
+        setNote(removedNote, '估算值，不等于账单节省');
+        if (strategyTotal) strategyTotal.textContent = '';
+        if (strategyHint) strategyHint.hidden = true;
+        renderEmptyState('暂无可展示的策略数据', '启动本地服务后点击刷新。');
+        if (snapshot) {
+          snapshot.textContent = '';
+          delete snapshot.dataset.source;
+        }
       }
     } finally {
       state.loading = false;
-      if (!initial) setRefreshing(false);
+      if (!initial && !silent) setRefreshing(false);
     }
   }
 
@@ -431,11 +605,33 @@
     });
   }
 
+  // The pill has to be measured after layout, and re-measured when the control
+  // reflows (viewport change) or when the system font finishes loading.
+  syncSegmentThumb(true);
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready
+      .then(function () {
+        syncSegmentThumb(true);
+      })
+      .catch(function () {});
+  }
+  var resizeFrame = 0;
+  global.addEventListener('resize', function () {
+    if (resizeFrame) return;
+    var schedule = global.requestAnimationFrame || function (task) {
+      return global.setTimeout(task, 16);
+    };
+    resizeFrame = schedule(function () {
+      resizeFrame = 0;
+      syncSegmentThumb(true);
+    });
+  });
+
   refresh({ initial: true });
   state.timer = global.setInterval(function () {
-    if (!document.hidden) refresh();
+    if (!document.hidden) refresh({ silent: true });
   }, REFRESH_MS);
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) refresh();
+    if (!document.hidden) refresh({ silent: true });
   });
 })(typeof window !== 'undefined' ? window : globalThis);

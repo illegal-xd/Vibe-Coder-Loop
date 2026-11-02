@@ -121,7 +121,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 一个确认错误被裁剪，必须同时满足：
 
 1. 存在**更晚**的同一签名记录，且 `status === "completed"`、无结构化失败 metadata、不是 `unverified_shell`（见 4.8）；
-2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留；
+2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留（重复相同失败规则见 4.4，不受此限制）；
 3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障；
 4. 错误 callID 在后续上下文中**未被引用**；
 5. error 文本或失败调用的输入载荷至少有一项带来正收益（error 文本小于占位符时保留原文，只裁剪输入）；
@@ -142,7 +142,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 - 保留最新一条错误正文；
 - 更早的重复项替换为“较早重复失败已省略，最新等价失败保留”的占位文本；
 - `confidence: "medium"`；
-- 不在跨 user turn 或存在状态变更屏障时执行；
+- 默认**允许跨 user turn**：保留的最新失败仍携带完全相同的错误正文与参数，删除更早的重复项不会丢失内容；需要沿用严格同轮次守卫时设 `preserveRepeatedFailuresAcrossUserTurns: true`；
+- 仍要求失败与保留项之间没有状态变更屏障；
 - 可通过 `pruneRepeatedFailures: false` 关闭。
 
 ### 4.5 置信度与保留
@@ -336,6 +337,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "redactInputPayload": true,
     "staleInputAfterUserTurns": null,
     "preserveAcrossUserTurns": true,
+    "preserveRepeatedFailuresAcrossUserTurns": false,
     "preserveOnStateChanges": true,
     "pruneRepeatedFailures": true,
     "protectReferences": true,
@@ -394,7 +396,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.staleInputPlaceholder` | 年龄规则命中时失败调用输入的占位文本（错误原文保留） | 见上 |
 | `errorPurge.redactInputPayload` | 命中规则时是否同时裁剪失败调用的大体积输入字符串 | `true` |
 | `errorPurge.staleInputAfterUserTurns` | 可选：确认错误超过 N 个 user turn 后只裁剪其输入（error 原文保留）；`null` 关闭 | `null` |
-| `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误 | `true` |
+| `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误（仅作用于“后续成功取代失败”规则） | `true` |
+| `errorPurge.preserveRepeatedFailuresAcrossUserTurns` | 重复相同失败的裁剪是否也受 user turn 限制；默认 `false`，因为保留的最新失败仍带相同正文与参数 | `false` |
 | `errorPurge.preserveOnStateChanges` | 失败与成功之间存在状态变更工具时保留 | `true` |
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
 | `errorPurge.protectReferences` | 旧错误 callID 被后续引用时保留 | `true` |
@@ -456,6 +459,17 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | 变更 | `prunedCount` / `changedCount` | 实际改动了请求副本的决策数（观察模式为 0） |
 
 > **不要把 `eligibleCount`（合格）当作可裁剪数量**：多数会话里合格记录远多于可裁剪候选（例如 Dedup 的合格读取几乎都不构成完全重复组，Supersede 的合格写入也未必有后续同文件完整读取）。`removed_items` 仅在 `changed` 时累加。`candidate_items` 一律指**可裁剪候选**，而非合格记录，避免“候选 18 / 裁剪 0”被误读为故障。
+
+**跳过原因按漏斗边界分区**（Token 用量记录中每个策略的 `skipped`）：每个原因只会落入它真正解释的那一段，避免出现“候选 0 / 跳过 15”的错位解读。
+
+| 分区 | 含义 | 典型原因 |
+|---|---|---|
+| `record_scan` | 进入合格集之前的记录 | `unsupported_tool`、`not_completed`、`already_pruned`、`protected_tool` / `protected_path`、`missing_environment`、`missing_description` / `missing_args`、`directory`、`unparsed_output` |
+| `eligible` | 合格但未成为可裁剪候选 | Dedup：`unique_signature`、`same_signature_different_output`、`same_target_args_changed`；Error Purge：`no_success_for_signature`、`later_success_args_changed`、`success_only_before_error`；Supersede：`no_superseding_read`、`read_not_full`；Slim Edit：`already_slim`、`no_change`、`not_line_range`、`literal_match`、`range_out_of_bounds` |
+| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_side_effect`、`intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
+| `application` | 已标记但未能写回 | `apply_*`、`preview`、`output_read_only`、`args_read_only` |
+
+因此 `eligible - candidate` 由 `eligible` 原因解释，`candidate - changed` 由 `candidate` 原因 + 每组刻意保留的 keeper 解释；`preserved_items` 只统计后者（候选保留数），不包含候选之前的合格记录。
 
 Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的 `pruning` 下（不写入 `events.jsonl` 的 transform 事件）：
 
@@ -681,7 +695,7 @@ Runtime 归一化为：
 
 - 启动：`bash scripts/token-usage/serve_card.sh`（等价 `node tools/token-usage-card/server.mjs`），默认监听 `http://127.0.0.1:8787/`。
 - 参数：`--port <n>`（默认 8787，0 为随机端口）、`--host <addr>`（默认 `127.0.0.1`）、`--data-dir <dir>`（默认 `VIBE_TOKEN_USAGE_HOME` 或 `~/.config/opencode/token-usage`）。
-- 数据链路：`GET /api/usage` **每次请求都重新读取**归档 JSONL，响应 `Cache-Control: no-store`；页面每 15 秒静默刷新，页面隐藏时暂停，重新可见时立即刷新，也可点“刷新”按钮。不再依赖预生成的 `token-usage-data.js`。
+- 数据链路：`GET /api/usage` **每次请求都重新读取**归档 JSONL，响应 `Cache-Control: no-store`；页面每 15 秒静默刷新，页面隐藏时暂停，重新可见时立即刷新，也可点“刷新”按钮。页面默认统计**今天**，可切换昨天或最近 7 天；浅色 / 深色跟随系统。不再依赖预生成的 `token-usage-data.js`。
 - 静态资源仅允许 `/`、`/index.html`、`/app.js`、`/styles.css`；其余路径 404，不做目录遍历。仅监听本机回环地址，不暴露到网络。
 - 诊断：`GET /api/health` 返回归档目录；`GET /api/usage?from=YYYY-MM-DD&to=YYYY-MM-DD` 支持 UTC 日期范围（仅用于按需裁剪返回量，页面默认返回全部再由前端按本地自然日过滤）。
 - 离线快照（可选）：`python3 scripts/token-usage/export_card_data.py` 仍可生成 `token-usage-data.js`（同一行契约），但页面默认不加载；仅在无 Node 服务时用于手工注入。
@@ -737,45 +751,56 @@ msg.tokens.cache.read + msg.tokens.cache.write
     "deduplication": {
       "enabled": true, "preview": false,
       "scanned_records": 47,
-      "eligible_items": 2, "candidate_items": 2, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 1,
+      "eligible_items": 7, "candidate_items": 2, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 1,
       "removed_tokens": { "value": 300, "source": "estimated_tokens_from_chars" },
       "skipped": {
-        "record_scan": { "unsupported_tool": 40, "not_completed": 5 },
-        "candidate": { "referenced_later": 1 },
+        "record_scan": { "unsupported_tool": 40 },
+        "eligible": { "unique_signature": 5 },
+        "candidate": {},
         "application": {}
       }
     },
     "error_purge": {
       "enabled": true, "preview": false,
-      "scanned_records": 47, "eligible_items": 0, "candidate_items": 0, "marked_items": 0, "changed_items": 0, "removed_items": 0, "preserved_items": 0,
+      "scanned_records": 47, "eligible_items": 5, "candidate_items": 0, "marked_items": 0, "changed_items": 0, "removed_items": 0, "preserved_items": 0,
       "removed_tokens": { "value": 0, "source": "estimated_tokens_from_chars" },
-      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+      "skipped": {
+        "record_scan": { "unsupported_tool": 42 },
+        "eligible": { "no_success_for_signature": 5 },
+        "candidate": {},
+        "application": {}
+      }
     },
     "supersede_writes": {
       "enabled": true, "preview": false,
-      "scanned_records": 47, "eligible_items": 1, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
-      "writes": { "confirmed": 1, "ambiguous": 0, "eligible": 1, "file_matches": 1, "version_verified": 1, "marked": 1, "changed": 1 },
+      "scanned_records": 47, "eligible_items": 3, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
+      "writes": { "confirmed": 3, "ambiguous": 0, "eligible": 3, "file_matches": 1, "version_verified": 1, "marked": 1, "changed": 1 },
       "reads": { "observed": 1, "full": 1, "rejected_reasons": {} },
       "removed_tokens": { "value": 180, "source": "estimated_tokens_from_chars" },
-      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+      "skipped": {
+        "record_scan": { "unsupported_tool": 44 },
+        "eligible": { "no_superseding_read": 2 },
+        "candidate": {},
+        "application": {}
+      }
     },
     "tool_descriptions": {
       "enabled": true, "preview": false,
       "scanned_records": 9, "eligible_items": 9, "candidate_items": 9, "marked_items": 9, "changed_items": 9, "removed_items": 9, "preserved_items": 0,
       "removed_tokens": { "value": 120, "source": "estimated_tokens_from_chars" },
-      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+      "skipped": { "record_scan": {}, "eligible": {}, "candidate": {}, "application": {} }
     },
     "compact_read": {
       "enabled": true, "preview": false,
       "scanned_records": 2, "eligible_items": 2, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
       "removed_tokens": { "value": 25, "source": "estimated_tokens_from_chars" },
-      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+      "skipped": { "record_scan": {}, "eligible": {}, "candidate": {}, "application": {} }
     },
     "line_range_edit": {
       "enabled": true, "preview": false,
       "scanned_records": 1, "eligible_items": 1, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
       "removed_tokens": { "value": 15, "source": "estimated_tokens_from_chars" },
-      "skipped": { "record_scan": {}, "candidate": {}, "application": {} }
+      "skipped": { "record_scan": {}, "eligible": {}, "candidate": {}, "application": {} }
     },
     "total_removed_tokens": { "value": 640, "source": "estimated_tokens_from_chars" },
     "measurement_source": "estimated_tokens_from_chars",
@@ -803,9 +828,10 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | `preserved_items` | 保留候选数 | `candidate_items − changed_items` |
 | `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
 | `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `full` / `rejected_reasons`（`read_truncated` 等） |
-| `skipped.record_scan` | 扫描记录数 | 被排除的扫描记录（`unsupported_tool` 计 bash/edit 等非白名单调用，**可合法大于 `candidate_items`**） |
-| `skipped.candidate` | 候选/分组数 | 合格候选被守卫拦截（`unique_signature` / `same_target_args_changed` / `same_signature_different_output` / `no_success_for_signature` / `later_success_args_changed` / `read_not_full` / `read_before_write` / `intervening_side_effect` / `no_token_benefit` / `across_user_turn` 等） |
-| `skipped.application` | 应用阶段决策数 | apply 时因 location/state/校验失败被丢弃 |
+| `skipped.record_scan` | 扫描记录数 | 未进入合格集的记录（`unsupported_tool` 计 bash/edit 等非白名单调用，`not_completed` / `already_pruned` / `protected_tool` / `protected_path` / `missing_environment` / `missing_description` / `missing_args` / `directory` 等结构缺失，**可合法大于 `candidate_items`**） |
+| `skipped.eligible` | 合格记录数 | 合格但未成为可裁剪候选（Dedup `unique_signature` / `same_signature_different_output` / `same_target_args_changed`；Error Purge `no_success_for_signature` / `later_success_args_changed` / `success_only_before_error`；Supersede `no_superseding_read` / `read_not_full`；Slim Edit `already_slim` / `no_change` / `not_line_range` / `literal_match` / `range_out_of_bounds` 等） |
+| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_side_effect` / `intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
+| `skipped.application` | 应用阶段决策数 | 已标记但未能写回（`apply_*`、`preview`、`output_read_only`、`args_read_only`） |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
 | `token_unit` | — | v4 固定为 `estimated_tokens_char_weight_v1`；说明 `removed_tokens` 是估算 Token 数，不是字符数，也不是计费值 |
 
@@ -816,6 +842,8 @@ msg.tokens.cache.read + msg.tokens.cache.write
 > **v2 → v3 变更**：`input_tokens` 从「未缓存输入」改为「输入总量」；`output_tokens` 从「Runtime 原始 output（当前版本为可见输出）」改为「输出总量（含 reasoning）」；`total_tokens` 优先采用 Runtime `tokens.total`（无 total 时才派生）；`cache_write_tokens` 显式保留 0；新增可选 `attempt`（重试 attempt > 1 时）与异常时的 `validation`。字段名和记录结构不变，v1/v2 旧记录仍按原样可读；`readUsageLog` 不按版本过滤，新旧记录可共存于同一每日文件。分析旧记录时：v2 的总输入 = `input_tokens + cached_input_tokens + cache_write_tokens`，总输出 = `output_tokens + reasoning_tokens`；v3 已直接给出总量。
 >
 > **v3 → v4 变更**：`pruning.*` 删除恒为 `unavailable` 的 `candidate_tokens` / `preserved_tokens`，记录尾部 150 字符的 `token_unit_note` 收敛为固定短字段 `token_unit`；计数与 `removed_tokens`/`total_removed_tokens` 的语义不变。v1–v3 旧记录仍可读，卡片按缺失字段回退。
+>
+> **v4 内追加（`schema_version` 不变）**：`skipped` 新增 `eligible` 分区，把“合格但未成为候选”的原因（`unique_signature`、`no_success_for_signature`、`read_not_full`、`already_slim` 等）从 `candidate` 移出；缺失该键的旧记录按空对象读取，旧记录中的 `candidate` 计数保留原值。
 
 ### 当前环境不可得 / 待验证的字段
 
@@ -838,7 +866,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - `completed` + 结构化失败 metadata 视为歧义并保留，不以它作为 superseder；不尝试解析未知 metadata 语义。
 - 操作等价只做精确签名（工具 + 规范化参数 + cwd/root），不做语义命令归一化。
 - 默认保留“失败 → 修改代码/状态变更 → 成功”的旧错误；需要更激进时设 `preserveOnStateChanges: false`。
-- 默认保留跨 user turn 的旧错误；需要时设 `preserveAcrossUserTurns: false`。
+- 默认保留跨 user turn 的旧错误（仅“后续成功取代失败”规则）；需要时设 `preserveAcrossUserTurns: false`。重复相同失败的裁剪默认跨轮次，需要严格同轮次守卫时设 `preserveRepeatedFailuresAcrossUserTurns: true`。
 - 单个后续成功默认足以 supersede；无法可靠识别 intermittent/flaky failure。需要更严格时设 `minSuccesses: 2`。
 - 无法可靠识别自然语言引用；使用 callID 引用扫描、user-turn 屏障、状态变更屏障作为保守代理。
 - 执行环境只建模 `cwd` / `root` / 参数内显式 `cwd`；不建模环境变量、`.gitignore`、网络状态。

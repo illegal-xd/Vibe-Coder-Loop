@@ -126,3 +126,27 @@ test("rotation uses numbered archives and keeps logging when .1 already exists",
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("the injected environment seam disables logging", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-context-dedup-env-"));
+  try {
+    const logPath = path.join(directory, "events.jsonl");
+    const config = resolveConfig(
+      { log: { path: logPath, onlyWhenActive: false } },
+      {},
+    );
+
+    await appendStats(
+      {
+        directory,
+        config,
+        env: { VIBE_CONTEXT_DEDUP_LOG_DISABLED: "1" },
+      },
+      { enabled: true, changed: true, candidateCount: 1 },
+    );
+
+    await assert.rejects(readFile(logPath, "utf8"));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

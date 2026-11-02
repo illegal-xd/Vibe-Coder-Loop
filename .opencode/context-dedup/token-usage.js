@@ -408,13 +408,23 @@ function intOrNull(value) {
 }
 
 /**
- * Skip-reason buckets, each with a single consistent unit:
- * - `record_scan`: tool records inspected but not promoted to candidates
- *   (e.g. `unsupported_tool` counts every scanned bash/edit/read-only-failure
- *   call). These naturally exceed `candidate_items`.
- * - `candidate`: eligible candidates (or duplicate groups) that were not
- *   pruned by a guard (`referenced_later`, `no_token_benefit`, ...).
- * - `application`: decisions dropped while applying to the message array.
+ * Skip-reason buckets, each aligned with exactly one funnel boundary so a
+ * reason can never describe a record the funnel has not reached yet:
+ *
+ * - `record_scan`: tool records inspected but not promoted to eligible
+ *   (`unsupported_tool`, failed/empty state, already pruned, protected,
+ *   missing environment). These legitimately exceed `eligible_items`.
+ * - `eligible`: eligible records that never became candidates — dedup found a
+ *   unique signature, error purge found no later equivalent success, a write
+ *   was never read completely, a line range was not a range, ...
+ * - `candidate`: candidates that were not changed — a guard (intervening
+ *   side effect, cross-turn, reference) or a deliberately retained keeper
+ *   (one per duplicate group; keepers carry no skip reason).
+ * - `application`: marked decisions the adapter could not write back.
+ *
+ * The counts then read as a funnel: `eligible - candidate` is explained by
+ * `eligible` reasons, `candidate - changed` by `candidate` reasons plus
+ * keepers.
  */
 const RECORD_SCAN_REASONS = new Set([
   "unsupported_tool",
@@ -432,6 +442,44 @@ const RECORD_SCAN_REASONS = new Set([
   "invalid_input",
   "invalid_messages",
   "disabled",
+  "protected_tool",
+  "protected_path",
+  "write_unresolved_path",
+  "read_unresolved_path",
+  // Slim Edit: the tool record lacks the fields the strategy needs, so it
+  // never reaches the eligible set.
+  "missing_description",
+  "missing_output",
+  "directory",
+  "unparsed_output",
+  "missing_args",
+  "missing_old_string",
+  "missing_file_path",
+]);
+
+/** Eligible, but structurally not prunable (before the candidate boundary). */
+const ELIGIBILITY_REASONS = new Set([
+  // Deduplication: nothing to compare against, or a different output.
+  "unique_signature",
+  "same_signature_different_output",
+  "same_target_args_changed",
+  // Error Purge: no later equivalent success to supersede the failure.
+  "no_success_for_signature",
+  "later_success_args_changed",
+  "success_only_before_error",
+  // Supersede Writes: no read, or no complete read, of the written file.
+  "no_superseding_read",
+  "read_not_full",
+  // Slim Edit: the payload never reached the point where it could change.
+  "already_slim",
+  "no_change",
+  "path_normalize_failed",
+  "empty_relative_path",
+  "not_line_range",
+  "literal_match",
+  "file_unreadable",
+  "range_out_of_bounds",
+  "empty_range",
 ]);
 
 const APPLICATION_REASONS = new Set([
@@ -442,23 +490,30 @@ const APPLICATION_REASONS = new Set([
   "apply_no_change",
   "apply_validation_failed",
   "apply_array_mutation_failed",
+  // Slim Edit marks the decision before the preview/read-only checks, so these
+  // mean "marked but not written", not "not a candidate".
+  "preview",
+  "output_read_only",
+  "args_read_only",
 ]);
 
 function partitionSkippedReasons(reasons) {
   const recordScan = {};
+  const eligible = {};
   const candidate = {};
   const application = {};
   if (!reasons || typeof reasons !== "object") {
-    return { record_scan: recordScan, candidate, application };
+    return { record_scan: recordScan, eligible, candidate, application };
   }
   for (const [key, value] of Object.entries(reasons)) {
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) continue;
     const rounded = Math.round(value);
     if (RECORD_SCAN_REASONS.has(key)) recordScan[key] = rounded;
+    else if (ELIGIBILITY_REASONS.has(key)) eligible[key] = rounded;
     else if (APPLICATION_REASONS.has(key)) application[key] = rounded;
     else candidate[key] = rounded;
   }
-  return { record_scan: recordScan, candidate, application };
+  return { record_scan: recordScan, eligible, candidate, application };
 }
 
 /**
@@ -478,6 +533,10 @@ function partitionSkippedReasons(reasons) {
  *   marked_items   -> decisions produced after every guard
  *   changed_items  -> decisions that really modified the request copy
  * `removed_items` stays as an alias of `changed_items` for existing readers.
+ *
+ * `preserved_items` counts candidates deliberately left unchanged (including
+ * one keeper per duplicate group). Records dropped before candidacy are
+ * explained by `skipped.eligible`, not by `preserved_items`.
  */
 function strategySummary(stats, fallbackEnabled) {
   if (!stats || typeof stats !== "object") return null;
