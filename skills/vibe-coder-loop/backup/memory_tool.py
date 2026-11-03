@@ -1769,6 +1769,28 @@ def cmd_preflight(args, db):
                 "SELECT key FROM memory WHERE key LIKE ? ORDER BY key", ("rule:%",)
             ).fetchall()
         ]
+        # 验证画像（project:verify:<repo>）：S2/S9 出口要求引用或建立，但不进本输出就
+        # 不会被消费——rule:* 修复的同构复发（lesson:rule-recall-triple-breakpoint）。
+        # repo 取 cwd 仓库根 basename；非 git 目录/命令不可用 → 跳过该段（静默）。
+        verify_repo = ""
+        try:
+            _top = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if _top.returncode == 0 and _top.stdout.strip():
+                verify_repo = os.path.basename(_top.stdout.strip())
+        except Exception:
+            pass
+        verify_keys = []
+        if verify_repo:
+            verify_keys = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT key FROM memory WHERE key LIKE ? ORDER BY key",
+                    ("project:verify:" + verify_repo + "%",),
+                ).fetchall()
+            ]
         counts = {}
         for prefix in ("lesson", "reflection", "pattern", "principle", "experience", "project"):
             counts[prefix] = conn.execute(
@@ -1800,6 +1822,18 @@ def cmd_preflight(args, db):
     else:
         print("  （无 rule:* 条目）")
     print()
+
+    if verify_repo:
+        print("【验证画像 · S9 验证命令来源（缺失则本轮 S2 建立，见 engine/transition.md S2 出口）】")
+        if verify_keys:
+            for k in verify_keys[:3]:
+                print(f"  - {k}  ← memory_get 取命令/门槛/副作用陷阱")
+        else:
+            print(
+                f"  （无 project:verify:{verify_repo} —— 编码类任务须先建画像："
+                "读 package.json/Makefile/pyproject 等的验证命令 + 副作用（--fix/写盘），落库后再进 S9）"
+            )
+        print()
 
     print("【经验候选 · 按 retrieval.md 路由表命中才 memory_search，勿全量拉取】")
     print("  " + "  ".join(f"{p}:* {c} 条" for p, c in counts.items()))

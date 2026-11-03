@@ -31,7 +31,7 @@ status: active
 |---------|---------|-------------|---------|
 | 技能/文档维护 | 修改 vibe-coder-loop skill 文件、Vibe Coder Kernel、本仓库文档 | `rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue` | `memory_get` 精确 key（已知） |
 | 记忆/回写/指标 | 任务涉及 access_count、仪表盘、Metrics、记忆协议 | `pattern:memory-writeback-integrity` + `reference:memory-access-tracking` + `lesson:memory-metadata-overwrite` | `memory_get` 精确 key |
-| 编码/调试 | 功能开发、bug 修复（vue/antd/通用） | **`memory_list(prefix="rule:")` 项目/任务级规则（样式变量 / 注释 / i18n / 弹窗等约定，命中域才 get）** + `memory_search "lesson:{技术栈}"` + `memory_search "reflection:{领域}"` + 项目网络入口 | `memory_list` + `memory_search`（≤2 次，取前 5） |
+| 编码/调试 | 功能开发、bug 修复（vue/antd/通用） | **`memory_get` `project:verify:<repo>`（首项；key = 仓库根目录 basename，见 `engine/transition.md` S2；缺失 → `memory_list(prefix="project:verify:")` 兜底，仍无 → 输出 `[无验证命令]` 并在 S9 建画像）** + `memory_list(prefix="rule:")` 项目/任务级规则（样式变量 / 注释 / i18n / 弹窗等约定，命中域才 get） + `memory_search "lesson:{技术栈}"` + `memory_search "reflection:{领域}"` + 项目网络入口 | `memory_get` + `memory_list` + `memory_search`（≤2 次，取前 5） |
 | 架构/重构 | 模块拆分、接口变更 | `codegraph_impact` + 项目网络 p_high + `memory_list(prefix="pattern:")` | codegraph + memory 组合 |
 | 跨项目任务 | 涉及 ≥2 项目共享文件 | `memory_list(tag="stale")` + `memory_list(prefix="principle:")` + 跨项目关联 | 先 stale 验证再加载 |
 | 调研/审查 | E 类只读任务 | 项目网络 + 相关 lesson/reflection | `memory_search` 关键词 |
