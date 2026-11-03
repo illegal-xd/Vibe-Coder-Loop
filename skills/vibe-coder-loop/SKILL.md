@@ -64,6 +64,7 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 | **任何阶段开始前** | `kernel.md` | R0 核心原则，每次循环必读 |
 | **元数据契约** | `manifest.yaml` | 版本/依赖/复杂度/优先级/成本元数据（机器可读，不按阶段加载；与 engine/ 流程文件冲突时以 engine/ 为准） |
 | **运行时 Tool**（确定性执行） | `backup/memory_tool.py` | 加载计划 `preflight` / 结果外置 `artifact` / 消费回写 `touch` / 指标聚合 `metrics` / 快照 `backup`·`verify`·`list`。**Agent 不手写数值聚合**（覆盖边界见 `learning/skill-metrics.md`）；不可用时按各协议「降级」条款手工执行（Skill 只声明何时调用 + 失败怎么办） |
+| **Adapter（MVP-3，OpenCode 宿主）** | `.opencode/plugins/vibe-bridge.js` | 桥接 runtime.core/exec 到宿主：暴露 `vc_transition`（阶段出口机械落盘，**每次 `>>> 进入 X` 必须先调**；需 `stage` + 非空 `referenced_outputs` + 非空 `checked_items`，**S4 出口必传 `level`**）+ `vc_state`（只读快照）工具；Hook 自动 `feed-exec`（仅默认 `bash`/`task`，退出码优先取宿主 metadata、只读命令不判失败）/ `snapshot-task-zone`（压缩注入）/ `load-checkpoint`（会话恢复）。CLI 不可用 → `BRIDGE_CLI_UNAVAILABLE` 降级 Phase 0（不阻断）。详见 `engine/transition.md`「与 Adapter 的桥接」 |
 | **S1 Intent** | `engine/state-machine.md` S1 + `engine/transition.md` S1→S2 + `rules/intent.md` | 目标三元组+任务分类+冲突预检 |
 | **S2 Preflight**（**入口第一步**） | `backup/memory_tool.py preflight --level <L> --task <T>`（**一次调用替代 N 次导航读取**，输出加载清单 + **按阶段裁剪的命中节 + 实测行号** + 成本对比 + 记忆候选；行号与节归属均运行时扫描 → 零漂移） | 取得**清单 + 命中节**后，按下「读取粒度」决定读哪些区间；阶段集可用 `--stage` 收窄 |
 | **S2 Preflight** | `engine/state-machine.md` S2 + `engine/transition.md` S2 出口检查（**第 1 项：Task→Memory Router 强制清单**） + `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」（Level 0 轻量 S2 最小召回；协议全量导航见 `learning/memory.md`） | 环境检查+**Task→Memory Router 最小充分召回**+消费清单记录+Feedback 注入+主动关联召回（按需，不取并集，Level 2+） |

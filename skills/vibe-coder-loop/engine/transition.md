@@ -43,6 +43,19 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 **与状态转移图的关系**：`engine/state-machine.md`「状态转移图」中的「任何状态 → 检测到异常条件 → S14 Safe Mode」即上表 `ALL -> S14` 的**升级入口**（须用户可感知的风险报告，且从 S14 只能经「停止」或「继续」离开，不能自由跳转）。`S10 -> S6(+1)` 的递增**只发生一次**：随后 `S6→S7→S8` 继承同一 `N+1`，不二次递增。
 
+**与 Adapter（MVP-3）的桥接**：当 OpenCode 宿主加载了 `vibe-bridge` 插件时，`vc_transition` / `vc_state` 工具可用。**每次执行 `>>> 进入 X` 转移前必须先调 `vc_transition(to=X, stage=<当前阶段>, referenced_outputs=[…], checked_items=[…])`**——这是阶段出口的机械落盘动作。Core 侧 `validate_exit_checklist` 会拒绝：空 `checked_items`、空 `referenced_outputs`（至少一项须可机械验证）、`stage` 与当前阶段不符、非法转移（`STATE_ILLEGAL_TRANSITION`）；**插件侧先做同一校验**，缺项直接返回 `CHECKLIST_INVALID` 不浪费 spawn。**S4 出口必须传 `level`（0-4）**记录复杂度分级，否则状态里 `level` 沿用旧值，复杂度门禁与 `loop_max` 失真。`to` 接受 `S0`–`S14` / `PAUSE` / `RESUME`（合法后继见本文件转移表）。插件未加载或 CLI 不可用时返回 `BRIDGE_CLI_UNAVAILABLE`，按 Phase 0（LLM 手动驱动）继续——**不阻断**，但本轮无机械状态记录（`feed-exec` / `repeat-check` / Safe Mode 同样不生效）。
+
+Hook 链路（审查 v3）：
+- `session.created → load-checkpoint`：返回 `resume`/`resume_degraded` 则置一次性待注入标记。
+- `session.compacted`：仅置待注入标记（**不在此处 spawn**）。
+- `tool.execute.after → feed-exec`：**仅默认执行类工具** `bash`/`task` 喂执行结果（`grep`/`webfetch`/`read`/`edit`/`write` 跳过——其输出是数据而非裁决；可用 `VIBE_BRIDGE_EXEC_TOOLS` 扩展）。退出码优先取宿主 metadata（`exitCode`/`exit`/`code`/`status`），缺失时才用 output 内**严格失败标记**；只读命令（`cat`/`grep`/`git log`…）的输出不判失败。指纹 = `sha256(tool, args, error lines)`，**不含 output 正文**——同一失败命令重跑保持同指纹，repeat-check 才会计数（连续 2 次同指纹 → 升级 S14）。
+- `experimental.session.compacting → snapshot-task-zone`：在压缩 prompt 上下文里注入完整 TASK 区。
+- `experimental.compaction.autocontinue`：确保压缩后自动续跑一轮（让注入被使用）；`VIBE_BRIDGE_DISABLED` 时跳过。
+- `experimental.chat.system.transform`：有待注入标记 → 一次 full spawn 注入完整 TASK 区；否则注入已预热的 pointer（0 阻塞 spawn），pointer 冷启动时由后台 detached spawn 预热（单飞行、60s TTL、失败退避）。
+
+插件位置 `.opencode/plugins/vibe-bridge.js`；环境变量 `VIBE_KERNEL_HOME` / `VIBE_KERNEL_PYTHON` / `VIBE_BRIDGE_DISABLED` / `VIBE_BRIDGE_DEBUG` / `VIBE_BRIDGE_DENY_TOOLS` / `VIBE_BRIDGE_EXEC_TOOLS`。
+
+
 ## S1 Intent → S2 Preflight
 
 > **Checkpoint（循环开始，强制）**：先读 delx-memory 条目 `vc:checkpoint:<项目绝对地址>`（不建项目内状态文件）——不存在 → 按 `<skill>/.state.template.md` 骨架初始化；存在 → 做 freshness + **13 字段**校验（含 `updated_at` 字段存在性，机械判定见 `scripts/smoke-check.sh` 6b；freshness 值由 `runtime.core load-checkpoint` 判定）。通过则按 `phase`/`current_step` 续跑（`completed` 项不重做）。协议唯一事实源 = `engine/state-machine.md`「Workflow Checkpoint（delx-memory）」。**阶段出口仅在有字段变化时写入该条目；轮次收尾（S13）必写一次 `status` + `resume`。**
@@ -66,7 +79,8 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 - [ ] **Task→Memory Router 已执行（强制）**：S1 判定任务类型后，按 `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」执行对应**强制召回清单**（已知 key 用 `memory_get` 精确取值，不经 search；经验域用 `memory_search`，本环境无该工具时用 `python3 backup/memory_tool.py search "<关键词>" --limit 5`，均须最小充分——防 snippet 截断 + 保证必中）。**路由表唯一事实源 = `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节**（`skill:learning/memory:query-router` 条目为其可执行副本），本文件不重复清单内容。**此项为状态机强制动作，不依赖 Agent 自发检索**
 - [ ] **规则召回证据已输出（可校验）**：列出本轮实际 `memory_get` 的 `rule:*` / `lesson:*` key；无命中写 `[Rule 命中: 无]` + 一句判定依据（须引用本轮任务类型；不得空写）。未输出或空写 → `[RULE_RECALL_MISSING]` 回退 S2（Level 0 同样适用）
 - [ ] 上下文感知路由已执行（按用户输入特征选择 memory/codegraph 路径，清单外条目按需加载）
-- [ ] CodeGraph 新鲜度检查已标注
+- [ ] **验证画像已建立**：存在 `project:verify:<repo>` 条目或本轮新建（`<repo>` = 仓库根目录名，取 `git rev-parse --show-toplevel` 的 basename；与项目入口记忆同一命名，避免建出同义重复条目）；输出 `[Verify: test=… lint=… typecheck=…]`，并标注命令**副作用**（是否写盘 / 是否默认 `--fix`）。无可执行验证命令时必须显式标注 `[无验证命令]` 并降级（不得跳过本项）；未建而可用 → 回退 S2 补齐（回退语义同 `RULE_RECALL_MISSING`，不新增码）
+- [ ] **影响面已输出**：`codegraph explore` 给出 `[Impact: N 文件 / M 调用方]` + 清单 + 「无测试覆盖」标注；索引新鲜度检查并入本项。CodeGraph 不可用 → 标注降级并改用 `grep` 直查调用方（不得跳过）
 - [ ] 版本号一致性检查已标注
 - [ ] Feedback Loop 注入已标注（`[Feedback 命中]` 或 `[无反馈注入]`）
 - [ ] **主动关联召回（按需，不取并集）**：仅当任务涉及跨项目复用时，按最相关的一类取 `memory_list(prefix="pattern:")` **或** `memory_list(prefix="principle:")`（Level 0/1 一律跳过）；命中已知模式再按需 `memory_get`；无此需求则跳过

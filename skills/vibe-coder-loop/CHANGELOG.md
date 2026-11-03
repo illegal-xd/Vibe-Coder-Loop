@@ -4,6 +4,36 @@
 > 规则：技能文件正文禁止日期/版本备注；变更记录一律追加到本文件（格式 `## vX.Y — 标题`）。
 > 版本策略（用户指令）：**未提交 git 期间版本号保持不变**——同版本内可含多个批次，改动多少次都不迭代；提交后才递增下一版本。
 
+## v1.23 — MVP-3 Adapter 首次接线（runtime.core 从 rev:0 到真实调用）
+
+> 触发：三份实证（verify 画像 access=0 / 路由表层修复空转 / S2 出口漏 4 项无法机械捕获）全部指向「协议层靠 LLM 自证合规失效」。本批实现 `docs/design/mvp-3-opencode-adapter.md` 的最小可用子集，状态机从「文档协议」升级为「可被宿主调用的确定性门禁」。
+
+| # | 项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | 桥接插件 | `.opencode/plugins/vibe-bridge.js`（Bun/ESM，零 npm 依赖运行时）：spawn argv 数组调 `python3 -m runtime.core`；best-effort 降级（唯一例外 `tool.execute.before` 的 deny 抛错） | 新文件 |
+| 2 | 事件→协议 | `session.created → load-checkpoint`（resume 标记 pending）→ `chat.system.transform` 注入 TASK 区全文；`session.compacted → snapshot` 置位；非恢复请求注入单行指针 | 同上 |
+| 3 | Hook→协议 | `tool.execute.after → feed-exec`（轻量 result JSON）；`experimental.session.compacting → snapshot-task-zone(full) → output.context.push`；`autocontinue → enabled=true` | 同上 |
+| 4 | 自定义工具 | `vc_transition`（唯一 mutation 入口；空 checked_items 插件侧拒绝 CHECKLIST_INVALID，不浪费 spawn）+ `vc_state`（只读快照）；`vc_exec`/`vc_diff` 按分层降级原则**未接**（后续批次） | 同上 |
+| 5 | 协议拒绝透传 | `runCli` 非零 exit 仍解析 stdout JSON——协议拒绝（`STATE_ILLEGAL_TRANSITION`，exit=4）与 CLI 真不可用（BRIDGE_CLI_UNAVAILABLE）是两回事，初版曾混为一谈 | 同上 |
+| 6 | 运行环境 | spawn cwd = `runtime/` 包的父目录（`-m runtime.core` 包解析约束，曾误设 runtime/ 自身导致 ModuleNotFoundError）；`VIBE_KERNEL_HOME` / `VIBE_KERNEL_PYTHON` / `VIBE_BRIDGE_DISABLED` / `VIBE_BRIDGE_DENY_TOOLS` 环境变量 | 同上 |
+| 7 | snapshot 输出 | `snapshot-task-zone` 是纯文本 CLI（设计文档 L544 唯一例外），`runCliRaw` 独立通道；初版按 JSON 解析拿到 null | 同上 |
+
+**验证（E4，本机 Bun）**：插件加载 6 hooks + 2 tools 全注册；`vc_state` 真实 CLI 返回 fresh_start/rev；`feed-exec` 后 rev 0→1（状态机首次真实落盘）；compacting/system.transform 注入真实 TASK 区文本（full/pointer 双模式）；**S0→S2 跳步被机械拒绝**（`STATE_ILLEGAL_TRANSITION` + `[next]`，validate_exit_checklist 生效实证）；空 checklist 插件侧拦截；`VIBE_BRIDGE_DISABLED=1` 全链路直通；context-dedup 回归 284/284。
+
+> **同版本追加（审查 v2：真实度 / 性能 / 准确度三维度修复）**：首版验证「rev 0→1」属假证据——`feed-exec` 传的字段（tool/title/output_chars）被 `ExecResult.from_dict` 全部忽略，`ok` 默认 True、`fingerprint` 空 → **repeat-check 永不触发**（正是 MVP-3 要解决的失败聚合失效）。修复：`buildExecResult` 构造真实字段（`exit_code` 从 output 正则提、`fingerprint` = sha256(tool+args+output[:512])、`errors` 扫描 error 行、`files_modified` 从 edit/write args 提）；`tool.execute.after` 仅对执行类工具（bash/grep/task/webfetch）触发，read/edit/write 跳过（spawn 次数降 ~3x）。性能：`chat.system.transform` 热路径改为「pending 才 spawn full / 常态走 pointer 缓存 / 冷启动不 spawn」，实测 5 连续请求 = 0 spawn / 1ms（首版每请求 ~300ms）。准确度：`engine/transition.md` 顶部加「与 Adapter 的桥接」段（声明每次 `>>> 进入 X` 必须先调 `vc_transition`）+ `SKILL.md` 加载时机索引补 Adapter 行——避免「工具存在但 LLM 不知道调」的同构失守。降级诊断：启动期 `console.warn` 一次性输出 runtime 路径 / degraded 原因。注入文本加 `<!-- VC checkpoint -->` 标记。
+**验证（E4，审查后）**：同一失败指纹连续 3 次 feed-exec → `repeat-check` 真实返回 `consecutive_count:3, no_progress:true, code:NO_PROGRESS`（**Safe Mode 信号机械触发，首版不可能**）；read 类工具不触发 spawn（rev 不变）；热路径 5x transform = 0 spawn；smoke-check rc=0 / 4052 行 / check-protocol 83/0。
+**未接清单（后续批次）**：`vc_exec`/`vc_diff`（Exec CLI）、`tool.execute.before` 的 Exec policy 细判（当前仅环境变量粗拦）、`session.idle` 转换缺失检测（PHASE_TRANSITION_MISSING 提醒）。
+
+> **同版本追加（审查 v3：可用性 / 真实度 / 性能 / 描述准确度）**：审查 v2 的 `buildExecResult` 有两处假失败源头，会直接误触发 Safe Mode（连续 2 次同指纹 → 强制 S14）：
+> - **退出码全靠 output 正则**——`grep error src/`、`cat error.log` 这类只读命令的输出含 "error" 即记 `ok=false`；连续两次就升级 S14。修复：退出码**优先取宿主 metadata**（探 `exitCode`/`exit`/`code`/`status`，类型 `any` 故多 key 探测），缺失时才用 output 内**严格失败标记**（`Traceback`/`npm ERR!`/`command not found`/`fatal:` 等，不再匹配裸 `error|failed`）；只读命令（`cat`/`grep`/`rg`/`git log`…，含 `cd x &&` 前缀剥离）的输出**不判失败**。
+> - **指纹含 output[:512]**——输出含路径/时间戳，同一失败命令重跑指纹不同 → repeat-check 永不计数（与首版同症）。修复：指纹 = `sha256(tool, args, error lines)`，**不含 output 正文**，重跑稳定。
+>
+> 性能：`runCli`/`runCliRaw` 合并为 `spawnCli`（去 ~40 行重复）；`VIBE_BRIDGE_DENY_TOOLS` 上移到模块加载期（不再每次 `tool.execute.before` 解析）；执行类默认收窄为 `bash`/`task`（`grep`/`webfetch` 产出数据无裁决语义，喂它们纯耗 spawn 且制造假指纹），`VIBE_BRIDGE_EXEC_TOOLS` 可扩展；pointer 缓存此前**永不预热**（`taskZoneText("pointer")` 无人调用 → 常态 pointer 注入是死代码）→ 改为后台 detached 预热（单飞行 + 60s TTL + 失败退避），使「常态注入 pointer」从声明变事实且零阻塞。
+> 真实度/准确度：`vc_transition` 补 `level`（S4 出口必须写入，否则 `loop_max`/复杂度门禁失真）；`normalizeChecklist` 要求 `referenced_outputs` 非空（对齐 Core `validate_exit_checklist`，缺项插件侧直接 `CHECKLIST_INVALID`）；`autocontinue` 尊重 `VIBE_BRIDGE_DISABLED`；`vc_transition`/`vc_state` 统一用插件解析的 `cwd`（避免 `ctx.directory` 分歧分裂 Checkpoint key）；新增 `VIBE_BRIDGE_DEBUG`（失败时输出 core exit + stderr 尾）。
+> 文档：`engine/transition.md`「与 Adapter 的桥接」段重写（Hook 链路逐条对齐代码、列出全部环境变量）；`SKILL.md` Adapter 行补 `level`/执行类默认；`docs/tooling.md` 补 vibe-bridge 行。
+> 验证：`node --check` 通过；`tests/plugins/vibe-bridge.test.mjs` 覆盖「`grep error` 不判失败 / 同失败命令指纹稳定 / checklist 缺引用即拒 / 冷 pointer 后台预热不阻塞 / deny 抛错」；真实 `runtime.core transition` argparse 校验 `--level`/`--checklist` JSON 接受（临时 `--memory-db`，不污染用户状态）。
+> **真机验证（宿主已加载插件，读 Checkpoint 取证）**：① 只读 `grep`（输出含 `child.on("error")` 等 error 行）被记为 `result: ok` 且 `consecutive_count` 由 3 → **0**（旧版此处必为失败）；② 空输出、exit=1 的 `python3 -c "raise SystemExit(1)"` 被记为 `failed`、count 0→1 —— 空输出无 marker 可匹配，**证明宿主 metadata 确实携带退出码且被读取**；③ 同一命令连跑两次指纹却不同（count 停在 1）→ 定位出宿主把 `description`/`timeout` 等**逐次元数据**放进 `args`，指纹仍不稳定。修复：新增 `fingerprintArgs`——bash 取 `command`，其他工具剥 `description/title/timeout/workdir/callID/id/sessionID` 后排序 JSON；新增「同命令不同 description → 同指纹」「不同命令 → 不同指纹」两条回归。**该修复需重载插件生效**。
+
 ## v1.22.2 — 版本递增（1.22.1 收口）
 
 > 版本策略：**提交后才递增下一版本**。1.22.1 的第八–十一批已随三个 commit 落地，本版做版本号递增与归属声明；本版内后续改动按「同版本第 N 批」继续追加。
@@ -13,6 +43,23 @@
 | 1 | 版本 | 1.22.1 → **1.22.2**（patch：references 权威化 + 行数预算重推演 + 共享检查器两处修复；**无**阶段/接口/安全流程变更） | `manifest.yaml` |
 | 2 | 批次归属 | 第八批（预算 4200）、第九批（references 权威同步）→ commit `749a9ed`；第十批（转义竖线）、第十一批（EOF 漏检）→ commit `ff07ad2`；记忆分层工具链与报告 → commit `8f63b11` | `CHANGELOG.md` |
 | 3 | 快照同步 | `backup/snapshots/*` 与 `backup/rules/*` 内的 `skill_version` 由 `memory_tool.py backup` 重建时刷新（不入库，无需手改） | `backup/` |
+
+### 同版本第二十二批 — 验证画像与影响面入口（S2 / S9 出口）
+
+> 触发：真实项目画像显示「验证命令每轮自由试探」与「改一处炸三处」是主要返工源。jtkl 实测：`package.json` 无 test 脚本、无 vitest/jest/vue-tsc；`vue-cli-service lint` 默认 `--fix`（会静默改源文件）；`i18n:check` 写 `reports/i18n/`。
+
+| # | 项 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | S2 出口 | 「CodeGraph 新鲜度检查已标注」升级为**影响面输出**（`[Impact: N 文件 / M 调用方]` + 清单 + 无测试覆盖标注；CodeGraph 不可用须降级 grep 直查，不得跳过） | `engine/transition.md` |
+| 2 | S2 出口 | 新增**验证画像**项：存在 `project:verify:<repo>` 或本轮新建，输出 `[Verify: …]` 并标注命令副作用；无可执行验证命令须显式 `[无验证命令]` 降级（复用 `RULE_RECALL_MISSING` 回退语义，**不新增码**，避免协议漂移） | `engine/transition.md` |
+| 3 | S9 出口 | 验证命令必须来自画像并附退出码（禁止自由试探）；无 test 脚本项目须标 `[无单测覆盖：<依据>]`，禁止输出"测试通过" | `rules/test.md` |
+| 4 | 预算 | 规则 4048 / 预算 4200 行（余量 152），无需上调 | `scripts/smoke-check.sh`（未改） |
+
+**验证（E4，本机）**：`smoke-check.sh --table` rc=0，HARD 0，死指针候选 0，4b 映射 30 key 全存在；规则文件合计 4048 行。
+**画像实例**：`project:verify:jtkl-frontend-management`（命令 + 2 个陷阱 + 门槛表 + 无单测标注），并挂到项目入口 `project:jtkl-mgmt-module-index` 头部避免「存而不用」。
+
+> **同版本追加（断点修复，实跑验证失败后定位）**：首版只改了 S2/S9 出口条件（协议层），真实任务「跑不出来」。定位 = `lesson:rule-recall-triple-breakpoint` 的同构复发：① 路由表「编码/调试」行无 `project:verify:` 域 → 严格照表执行的 LLM 永远召不到画像；② preflight 候选段只列 `rule:*`，`project:verify:*` 不在候选；③ S9 的「无画像 → 先建」执行时点太晚。修复：路由表首项改 `memory_get project:verify:<repo>`（`retrieval.md` + 可执行副本 `skill:learning/memory:query-router` 同步，metadata note 记录变更）；`rules/test.md` 改「S2 未召回 → 回退 S2 补建」。E2E：key 推导（仓库 basename）正确、FTS 兜底可命中画像、smoke-check rc=0、check-protocol 83/0。
+> **同版本追加 2（工具层修复，第二次实跑仍失败后定位）**：路由表修复后实跑 S2→S3 仍未触发 `[Verify:…]`，机械证据：画像 `access_count` 仍为 0 → 断点在召回执行之前。根因：**S2 的实际行为锚点是 preflight 工具输出，文件层协议（路由表/出口条件）若不进该输出，执行率取决于 LLM 是否自发重读命中节**——与 rule:* 当年修复必须落 `scoped_rule_keys` 输出段同构。修复：`memory_tool.py preflight` 新增「验证画像」段（cwd 仓库 basename → 精确查 `project:verify:<repo>%`；命中 → 列 key + memory_get 提示；未命中 → 建画像指引；非 git 目录静默跳过）。验证：jtkl（有条目）与 jtkl-console（无条目）双场景输出正确；`test_memory_tool.py` 63/63 OK；smoke-check rc=0；check-protocol 83/0。**教训沉淀方向：新增协议项的验收标准 = 其触发信息出现在 preflight 输出或机械执行点，否则视为未落地。**
 
 ### 同版本第二十一批 — 规则召回链修复（死指针 / manifest / review 维度 / S2 证据）
 
