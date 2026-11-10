@@ -23,6 +23,7 @@ import {
   expandLineRangeEdit,
   hasSlimActivity,
   mergeSlimStats,
+  slimDescriptionEstimates,
   slimToolDefinition,
 } from "../context-dedup/slim-edit.js";
 import {
@@ -313,12 +314,18 @@ export const VibeContextDedupPlugin = async (input = {}) => {
     const errors = [...usage.errors];
     if (!pruning) errors.push("pruning_unavailable");
 
+    // The definition hook rewrote tool descriptions for this request; record
+    // their own before/after so the schema-side saving is not read as a
+    // message-array reduction (which cannot contain it).
+    const schemaEstimates = slimActive ? slimDescriptionEstimates(slim) : null;
+
     const record = buildUsageRecord({
       session_id: sessionID,
       request_id: info.id,
       attempt,
       usage,
       context_estimates: pending ? pending.context_estimates : null,
+      schema_estimates: schemaEstimates,
       pruning,
       errors,
     });

@@ -51,20 +51,37 @@ test("slimEdit defaults are on and independently switchable", () => {
   );
 });
 
-test("tool descriptions are replaced and their repeated saving is measured", () => {
+test("tool descriptions are replaced and charged once per request round", () => {
   const state = createSlimEditState(slimConfig());
   const output = { description: "Read the contents of a file from disk. ".repeat(20), parameters: {} };
 
   slimToolDefinition({ toolID: "read" }, output, state, slimConfig());
   assert.equal(output.description, "Read file content.");
   assert.equal(state.toolDescriptions.changedCount, 1);
-  assert.ok(state.toolDescriptions.tokenSavingsEstimated > 0);
+  const firstSaving = state.toolDescriptions.tokenSavingsEstimated;
+  assert.ok(firstSaving > 0);
+  assert.deepEqual(state.toolDescriptions.descriptionTokensBefore > 0, true);
+  assert.equal(
+    state.toolDescriptions.descriptionTokensBefore - state.toolDescriptions.descriptionTokensAfter,
+    firstSaving,
+  );
 
-  // A second request receives the original verbose definition again, so the
-  // saving repeats per request rather than being counted once per session.
+  // The runtime may rebuild the schema more than once before the request is
+  // sent: the copy is still slimmed, but the same saving must not be charged
+  // twice for one request.
+  const repeated = { description: "Read the contents of a file from disk. ".repeat(20) };
+  slimToolDefinition({ toolID: "read" }, repeated, state, slimConfig());
+  assert.equal(repeated.description, "Read file content.");
+  assert.equal(state.toolDescriptions.changedCount, 1);
+  assert.equal(state.toolDescriptions.tokenSavingsEstimated, firstSaving);
+  assert.equal(state.toolDescriptions.skippedReasons.duplicate_definition, 1);
+
+  // The next request is a new round, so the same description is charged again.
+  const nextRound = createSlimEditState(slimConfig());
   const next = { description: "Read the contents of a file from disk. ".repeat(20) };
-  slimToolDefinition({ toolID: "read" }, next, state, slimConfig());
-  assert.equal(state.toolDescriptions.changedCount, 2);
+  slimToolDefinition({ toolID: "read" }, next, nextRound, slimConfig());
+  assert.equal(nextRound.toolDescriptions.changedCount, 1);
+  assert.ok(nextRound.toolDescriptions.tokenSavingsEstimated > 0);
 });
 
 test("compact read shortens the path and drops type/footer boilerplate", () => {
@@ -245,6 +262,65 @@ test("plugin hooks apply all three strategies and log them in the usage record",
     assert.equal(record.pruning.line_range_edit.changed_items, 1);
     assert.ok(record.pruning.total_removed_tokens.value > 0);
     assert.equal(record.errors.includes("pruning_unavailable"), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a re-emitted definition is charged once per request, not once per hook call", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-slim-round-"));
+  try {
+    await mkdir(path.join(directory, ".opencode"), { recursive: true });
+    const plugin = await VibeContextDedupPlugin({
+      directory,
+      env: { VIBE_TOKEN_USAGE_HOME: path.join(directory, "central") },
+    });
+
+    const verbose = () => ({ description: "Read the contents of a file from disk. ".repeat(20) });
+    // Two schema builds before the request is sent, as observed in real logs.
+    const first = verbose();
+    const second = verbose();
+    await plugin["tool.definition"]({ toolID: "read" }, first);
+    await plugin["tool.definition"]({ toolID: "read" }, second);
+    // Both copies must still be slimmed: the runtime may send either one.
+    assert.equal(first.description, "Read file content.");
+    assert.equal(second.description, "Read file content.");
+
+    await plugin["experimental.chat.messages.transform"]({}, {
+      messages: [userMessage({ text: "continue" })],
+    });
+
+    const info = assistantMessage({ id: "msg_round" }).info;
+    info.time = { created: 1, completed: 2 };
+    info.tokens = { input: 1000, output: 100, reasoning: 0, cache: { read: 0, write: 0 }, total: 1100 };
+    await plugin.event({ event: { type: "message.updated", properties: { info } } });
+
+    const files = (await readdir(path.join(directory, "central"))).filter((name) =>
+      DAILY_FILE_PATTERN.test(name),
+    );
+    const record = JSON.parse(
+      (await readFile(path.join(directory, "central", files[0]), "utf8")).trim(),
+    );
+
+    assert.equal(record.pruning.tool_descriptions.changed_items, 1);
+    assert.equal(
+      record.pruning.tool_descriptions.skipped.record_scan.duplicate_definition,
+      1,
+    );
+    // The schema-side saving is reported next to the message context it cannot
+    // appear in.
+    assert.equal(record.context_estimates.scope, "messages");
+    assert.ok(record.context_estimates.schema.before.value > 0);
+    assert.equal(
+      record.context_estimates.schema.before.value -
+        record.context_estimates.schema.after.value,
+      record.pruning.tool_descriptions.removed_tokens.value,
+    );
+    assert.equal(
+      record.pruning.totals_by_scope.tool_schema.value,
+      record.pruning.tool_descriptions.removed_tokens.value,
+    );
+    assert.ok(record.pruning.total_removed_tokens.value > 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -2,7 +2,7 @@
 
 > 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**、**写操作上下文覆盖（Supersede Writes）**与 **Slim Edit**（工具描述压缩 / read 输出压缩 / 行区间编辑展开，改编自 [openslimedit](https://github.com/ASidorenkoCode/openslimedit)，MIT）。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现；**293 项 Node 测试全部通过**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现；**300 项 Node 测试全部通过**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
@@ -470,7 +470,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 | 分区 | 含义 | 典型原因 |
 |---|---|---|
-| `record_scan` | 进入合格集之前的记录 | `unsupported_tool`、`not_completed`、`already_pruned`、`protected_tool` / `protected_path`、`missing_environment`、`missing_description` / `missing_args`、`directory`、`unparsed_output` |
+| `record_scan` | 进入合格集之前的记录 | `unsupported_tool`、`not_completed`、`already_pruned`、`protected_tool` / `protected_path`、`missing_environment`、`missing_description` / `missing_args`、`duplicate_definition`、`directory`、`unparsed_output` |
 | `eligible` | 合格但未成为可裁剪候选 | Dedup：`unique_signature`、`same_signature_different_output`、`same_target_args_changed`；Error Purge：`no_success_for_signature`、`later_success_args_changed`、`success_only_before_error`；Supersede：`no_superseding_read`、`read_not_full`；Slim Edit：`already_slim`、`no_change`、`not_line_range`、`literal_match`、`range_out_of_bounds` |
 | `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
 | `application` | 已标记但未能写回 | `apply_*`、`preview`、`output_read_only`、`args_read_only` |
@@ -481,7 +481,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 
 | 策略键 | 扫描对象 | 可裁剪候选 | 实际变更 |
 |---|---|---|---|
-| `tool_descriptions` | 每次 `tool.definition` | 描述与精简版不同且收益为正 | 描述已被替换（每次请求重复计） |
+| `tool_descriptions` | 每次 `tool.definition` 调用 | 描述与精简版不同且收益为正 | 描述已被替换；同一请求内重复下发的定义按 `duplicate_definition` 只计一次（跨请求仍按请求重复计） |
 | `compact_read` | 每次 `read` 结果 | 路径/type/footer 至少一项可缩短 | 输出字符串确实变短 |
 | `line_range_edit` | 每次 `edit` 调用 | `oldString` 是合法行区间且文件可读 | `oldString` 已展开为真实行 |
 
@@ -599,6 +599,8 @@ node --test tests/context-dedup/*.test.mjs
 - `event`（`message.updated`）：assistant 消息终态（`time.completed` 存在，或带 `error`）时写一条记录；同一 attempt 的重复回调按 `message id + attempt` 去重。流式中间更新（未终态）不写记录。
 - `event`（`session.retry.scheduled`）：记录下一次 attempt。失败 attempt 与重试成功 attempt 各写一条记录；成功记录带 `attempt` > 1，不会被失败记录抑制。没有重试时 `attempt` 省略（等价于 1）。
 - 同一 transform 测量最多关联到一条 usage 记录（`pendingPrune.take` 消费式取出）。
+- `tool.definition`：`tool.definition` 不带 sessionID，因此以「下一次 transform 之前」作为一个定义轮次累积，再在 transform 处并入该会话；轮内同一 `toolID` 只计一次节省（重复下发记 `duplicate_definition`，但**仍会改写**每一份副本，避免精简文本丢失）。轮次结束（transform）后计数器与去重集合一起重置，下一个请求重新计数。
+- 工具描述的前后 token 估算随同一轮次累积，写入 `context_estimates.schema`；它与 `before_pruning`/`after_pruning` 是**并列口径**，不从消息上下文里扣减。
 
 ### 真实用量来源
 
@@ -677,12 +679,32 @@ Runtime 归一化为：
 
 `context_estimates` 只覆盖 `messages` 数组可见的 text / subtask.prompt / tool 的 output·error·input(JSON)；**不包含**系统提示、工具 schema、provider 序列化、多模态 payload、运行时生成的隐藏上下文。因此估算与 provider 计费不保证吻合。
 
+用量记录里 `context_estimates` 带两处口径声明：
+
+- `scope: "messages"`：`before_pruning` / `after_pruning` 只描述消息数组。
+- `schema: { before, after }`：本轮 `tool.definition` 实际改写的**工具描述文本**的 token 估算（`tool_descriptions` 策略的输入侧）；未发生压缩时为 `null`。
+
+因此「消息上下文没变、但仍记录了节省」是可解释的，而不是矛盾：schema 侧节省不在 `messages` 里。`pruning.tool_descriptions.description_tokens` 给出同一口径的前后绝对值（`before − after = removed_tokens`）。
+
 ### 归因（无双重计数）
 
 - Dedup 只替换 `state.output`（completed），Error Purge 只替换 `state.error`（error），Supersede Writes 只替换写工具的 `state.input` 内容字段与 `state.output`；三条策略**作用于不同记录/不同字段**，按执行顺序 `["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"]` 求和不会重复计数；后三者作用于工具定义/工具结果，与前两者不相交。
 - `removed_tokens` 是**净节省**（被替换内容 − 占位符），来自既有 `tokenSavingsEstimated`，不等于“真实输入 token 节省”（实际还受 system prompt、工具定义、provider 序列化、缓存等影响）。
 - v4 删除了恒为 `unavailable` 的 `candidate_tokens` / `preserved_tokens`：管道未保留每条候选的 token 量，重复的空 holder 只增加记录体积；漏斗计数已足以表达候选/保留数量。
 - 当某策略有 `removed_items > 0` 但 `removed_tokens` 不可得时，`total_removed_tokens` 记为 `unavailable`（不编造 0）。
+
+**按作用域分账（`scope` / `totals_by_scope`）**：六条策略的节省落在不同提示词区域，不能直接相加比较：
+
+| `scope` | 策略 | 含义 |
+|---|---|---|
+| `messages` | `deduplication` / `error_purge` / `supersede_writes` | transform 内改写的消息数组内容，`context_estimates` 的 before/after 覆盖它 |
+| `tool_schema` | `tool_descriptions` | 与消息数组并列下发的工具定义，`before/after_pruning` 永远看不到它 |
+| `tool_result` | `compact_read` | 工具结果，在 before 快照之前已压缩 |
+| `model_output` | `line_range_edit` | 模型本需生成、现已省略的输出量 |
+
+每个策略摘要带 `scope`，`pruning.totals_by_scope[scope]` 给出同域小计；**要判断削减率必须用同域数字对比同域预算**（例如 `totals_by_scope.messages` vs `before_pruning`），不要把 `total_removed_tokens` 与任一单侧上下文相减。
+
+**越界降级**：节省量不可能超过该作用域原本存在的 token 数。对已知预算的两个域做校验——`messages` 的预算是 `before_pruning`，`tool_schema` 的预算是 `context_estimates.schema.before`；一旦某域声称的节省超过其预算，该域的 `totals_by_scope`、域内各策略的 `removed_tokens` 以及 `total_removed_tokens` 全部降级为 `unavailable`，并在 `errors` 记 `removal_exceeds_<scope>_budget`。`tool_result` / `model_output` 没有可信预算，保留估算值但同样不与消息上下文相减。
 
 ### 存储（按 UTC 自然日分文件）
 
@@ -705,6 +727,8 @@ Runtime 归一化为：
 - 静态资源仅允许 `/`、`/index.html`、`/app.js`、`/styles.css`；其余路径 404，不做目录遍历。仅监听本机回环地址，不暴露到网络。
 - 诊断：`GET /api/health` 返回归档目录；`GET /api/usage?from=YYYY-MM-DD&to=YYYY-MM-DD` 支持 UTC 日期范围（仅用于按需裁剪返回量，页面默认返回全部再由前端按本地自然日过滤）。
 - 离线快照（可选）：`python3 scripts/token-usage/export_card_data.py` 仍可生成 `token-usage-data.js`（同一行契约），但页面默认不加载；仅在无 Node 服务时用于手工注入。
+- 分域展示（B）：payload 的 `strategies[]` 每项除 `key`/`label` 外还带 `scope`（取自记录里的 `pruning.<key>.scope`，旧记录回退到规范映射）。卡片按 `scope` 分两组——**每请求**（`tool_schema`：正面显示每次请求的均值，占比按“该策略节省 ÷ 区间输入”计算）与**区间累计**（`messages` / `tool_result` / `model_output`：占比只在同组内计算）。两组**不共享分母**，恒定前缀折扣不再以 99% 占比压过事件型裁剪；「估算裁剪」顶部指标同时给出 `前缀 / 消息 / 其他` 拆分。
+- 账单口径（D）：「估算裁剪」的副文案给出**缓存加权**近似值 `removed × ((1 − cached/input) + (cached/input) × 0.1)`，即按缓存读 0.1× 折价；token 口径本身不加权。该系数是对 provider 折扣的假设，不是实测账单，换算前提是“被裁掉的 token 与整请求同比例落在缓存段”。
 
 ### AspireCode 会话上下文面板对照
 
@@ -749,13 +773,18 @@ msg.tokens.cache.read + msg.tokens.cache.write
   "cache_write_tokens": { "value": 0, "source": "provider_usage" },
   "reasoning_tokens": { "value": 120, "source": "provider_usage" },
   "context_estimates": {
+    "scope": "messages",
     "before_pruning": { "value": 10000, "source": "estimated_tokens_from_chars" },
-    "after_pruning": { "value": 9500, "source": "estimated_tokens_from_chars" }
+    "after_pruning": { "value": 9500, "source": "estimated_tokens_from_chars" },
+    "schema": {
+      "before": { "value": 2100, "source": "estimated_tokens_from_chars" },
+      "after": { "value": 1980, "source": "estimated_tokens_from_chars" }
+    }
   },
   "pruning": {
     "order": ["deduplication", "error_purge", "supersede_writes", "tool_descriptions", "compact_read", "line_range_edit"],
     "deduplication": {
-      "enabled": true, "preview": false,
+      "enabled": true, "preview": false, "scope": "messages",
       "scanned_records": 47,
       "eligible_items": 7, "candidate_items": 2, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 1,
       "removed_tokens": { "value": 300, "source": "estimated_tokens_from_chars" },
@@ -767,7 +796,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
       }
     },
     "error_purge": {
-      "enabled": true, "preview": false,
+      "enabled": true, "preview": false, "scope": "messages",
       "scanned_records": 47, "eligible_items": 5, "candidate_items": 0, "marked_items": 0, "changed_items": 0, "removed_items": 0, "preserved_items": 0,
       "removed_tokens": { "value": 0, "source": "estimated_tokens_from_chars" },
       "skipped": {
@@ -778,7 +807,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
       }
     },
     "supersede_writes": {
-      "enabled": true, "preview": false,
+      "enabled": true, "preview": false, "scope": "messages",
       "scanned_records": 47, "eligible_items": 3, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
       "writes": { "confirmed": 3, "ambiguous": 0, "eligible": 3, "file_matches": 1, "version_verified": 1, "marked": 1, "changed": 1 },
       "reads": { "observed": 1, "full": 1, "rejected_reasons": {} },
@@ -791,24 +820,34 @@ msg.tokens.cache.read + msg.tokens.cache.write
       }
     },
     "tool_descriptions": {
-      "enabled": true, "preview": false,
-      "scanned_records": 9, "eligible_items": 9, "candidate_items": 9, "marked_items": 9, "changed_items": 9, "removed_items": 9, "preserved_items": 0,
+      "enabled": true, "preview": false, "scope": "tool_schema",
+      "scanned_records": 9, "eligible_items": 7, "candidate_items": 7, "marked_items": 7, "changed_items": 7, "removed_items": 7, "preserved_items": 0,
       "removed_tokens": { "value": 120, "source": "estimated_tokens_from_chars" },
-      "skipped": { "record_scan": {}, "eligible": {}, "candidate": {}, "application": {} }
+      "description_tokens": {
+        "before": { "value": 2100, "source": "estimated_tokens_from_chars" },
+        "after": { "value": 1980, "source": "estimated_tokens_from_chars" }
+      },
+      "skipped": { "record_scan": { "duplicate_definition": 2 }, "eligible": {}, "candidate": {}, "application": {} }
     },
     "compact_read": {
-      "enabled": true, "preview": false,
+      "enabled": true, "preview": false, "scope": "tool_result",
       "scanned_records": 2, "eligible_items": 2, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
       "removed_tokens": { "value": 25, "source": "estimated_tokens_from_chars" },
       "skipped": { "record_scan": {}, "eligible": {}, "candidate": {}, "application": {} }
     },
     "line_range_edit": {
-      "enabled": true, "preview": false,
+      "enabled": true, "preview": false, "scope": "model_output",
       "scanned_records": 1, "eligible_items": 1, "candidate_items": 1, "marked_items": 1, "changed_items": 1, "removed_items": 1, "preserved_items": 0,
       "removed_tokens": { "value": 15, "source": "estimated_tokens_from_chars" },
       "skipped": { "record_scan": {}, "eligible": {}, "candidate": {}, "application": {} }
     },
     "total_removed_tokens": { "value": 640, "source": "estimated_tokens_from_chars" },
+    "totals_by_scope": {
+      "messages": { "value": 480, "source": "estimated_tokens_from_chars" },
+      "tool_schema": { "value": 120, "source": "estimated_tokens_from_chars" },
+      "tool_result": { "value": 25, "source": "estimated_tokens_from_chars" },
+      "model_output": { "value": 15, "source": "estimated_tokens_from_chars" }
+    },
     "measurement_source": "estimated_tokens_from_chars",
     "attribution": "incremental_sequential",
     "token_unit": "estimated_tokens_char_weight_v1"
@@ -834,14 +873,17 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | `preserved_items` | 保留候选数 | `candidate_items − changed_items` |
 | `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
 | `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `candidate`（通过结构校验的读取）/ `full` / `rejected_reasons`（`read_truncated` 等） |
-| `skipped.record_scan` | 扫描记录数 | 未进入合格集的记录（`unsupported_tool` 计 bash/edit 等非白名单调用，`not_completed` / `already_pruned` / `protected_tool` / `protected_path` / `missing_environment` / `missing_description` / `missing_args` / `directory` 等结构缺失，**可合法大于 `candidate_items`**） |
+| `skipped.record_scan` | 扫描记录数 | 未进入合格集的记录（`unsupported_tool` 计 bash/edit 等非白名单调用，`not_completed` / `already_pruned` / `protected_tool` / `protected_path` / `missing_environment` / `missing_description` / `missing_args` / `duplicate_definition` / `directory` 等结构缺失，**可合法大于 `candidate_items`**） |
 | `skipped.eligible` | 合格记录数 | 合格但未成为可裁剪候选（Dedup `unique_signature` / `same_signature_different_output` / `same_target_args_changed`；Error Purge `no_success_for_signature` / `later_success_args_changed` / `success_only_before_error`；Supersede `no_superseding_read` / `read_not_full`；Slim Edit `already_slim` / `no_change` / `not_line_range` / `literal_match` / `range_out_of_bounds` 等） |
 | `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
 | `skipped.application` | 应用阶段决策数 | 已标记但未能写回（`apply_*`、`preview`、`output_read_only`、`args_read_only`） |
+| `scope` | — | 该策略节省所在的提示词区域：`messages` / `tool_schema` / `tool_result` / `model_output`；不同域的数字不可互相比较 |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
+| `description_tokens`（仅 Tool Descriptions） | 估算 Token 数 | 本轮被改写描述文本的 `before` / `after`；`before − after = removed_tokens`，供与消息上下文分开对账 |
+| `totals_by_scope`（顶层） | 估算 Token 数 | 按 `scope` 分组的小计；越界（超过该域预算）时降级为 `unavailable` |
 | `token_unit` | — | v4 固定为 `estimated_tokens_char_weight_v1`；说明 `removed_tokens` 是估算 Token 数，不是字符数，也不是计费值 |
 
-> **卡片行契约**：`server.mjs` 的 `buildCardPayload()` 与可选的 `export_card_data.py` 每策略写 `[removed_tokens, scanned_records, candidate_items, removed_items, eligible_items, marked_items]`；旧四列记录由 `app.js` 回退为 `candidate_items`/`removed_items`，不编造数字。
+> **卡片行契约**：`server.mjs` 的 `buildCardPayload()` 与可选的 `export_card_data.py` 每策略写 `[removed_tokens, scanned_records, candidate_items, removed_items, eligible_items, marked_items]`，并在 `strategies[]` 上给出 `scope`（行数组本身不变，旧快照按 `app.js` 的规范映射回退分组）；旧四列记录由 `app.js` 回退为 `candidate_items`/`removed_items`，不编造数字。
 
 > **v1 → v2 变更**：`schema_version` 1→2；估算来源 `estimated_char_count`→`estimated_tokens_from_chars`（值是 Token 估算而非字符数）；`usage_status` 的 `unavailable`→`missing`，新增 `unverified`；`pruning.*.skipped_reasons`（扁平、单位混淆）→ `skipped.{record_scan,candidate,application}`（按单位分桶），新增 `scanned_records`。
 >
@@ -850,6 +892,8 @@ msg.tokens.cache.read + msg.tokens.cache.write
 > **v3 → v4 变更**：`pruning.*` 删除恒为 `unavailable` 的 `candidate_tokens` / `preserved_tokens`，记录尾部 150 字符的 `token_unit_note` 收敛为固定短字段 `token_unit`；计数与 `removed_tokens`/`total_removed_tokens` 的语义不变。v1–v3 旧记录仍可读，卡片按缺失字段回退。
 >
 > **v4 内追加（`schema_version` 不变）**：`skipped` 新增 `eligible` 分区，把“合格但未成为候选”的原因（`unique_signature`、`no_success_for_signature`、`read_not_full`、`already_slim` 等）从 `candidate` 移出；缺失该键的旧记录按空对象读取，旧记录中的 `candidate` 计数保留原值。
+>
+> **v4 内追加（口径自洽）**：`context_estimates` 新增 `scope: "messages"` 与 `schema: {before, after}`（工具描述文本的 token 估算）；每个策略摘要新增 `scope`；`pruning` 新增 `totals_by_scope`；`tool_descriptions` 新增 `description_tokens`；新增跳过原因 `duplicate_definition`（同一请求内重复下发的工具定义只计一次节省）。越界节省使对应域与 `total_removed_tokens` 降级为 `unavailable`，并在 `errors` 记 `removal_exceeds_<scope>_budget`。缺失这些键的旧记录按 `null`/空对象读取，历史数字保持不变。
 
 ### 当前环境不可得 / 待验证的字段
 
@@ -887,6 +931,8 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - Slim Edit 的工具描述压缩只覆盖 `slim-edit.js` 中列出的工具 ID；未知工具或改版描述保持原样。`compactRead` 依赖 `read` 输出中的 `<path>` / `<type>` / footer 结构，格式变化时安全 no-op。`lineRangeEdit` 在文件不可读、字面 `oldString` 已存在、行号越界或写入只读时保留原参数。
 - Slim Edit 的行区间节省是对模型原本需要生成的 `oldString` 文本做字符加权估算，不是 provider 计费差额；`total_removed_tokens` 因而不等同于提示词实际缩减量。
 - 没有真实 tokenizer；所有 token 节省都是估算。Token 用量记录的 `context_estimates` / `pruning` 估算同样使用 `char_weight_v1` 启发式，未用真实 DeepSeek 用量校准。
+- 卡片的两栏分组与缓存加权都是**展示层近似**：分组依赖 `scope`（旧记录回退到规范映射），缓存加权假设“被裁掉的 token 与整请求同比例落在缓存段”，并按固定 `0.1×` 折算缓存读价格；provider 折扣不同或裁剪对象明显偏离该比例时，账单口径会偏离实际。
+- `tool_descriptions` 的每请求去重键是 `(轮次, toolID)`，轮次以 transform 为边界（hook 不带请求 ID）。若同一进程内两个会话的定义轮次交错，后一个会话可能被判为重复而少计；该情形只影响计数，不影响实际下发的精简描述。
 - Token 用量记录的 provider usage 来自 Runtime 归一化结果（`tokens.total` / `input` / `output` / `cache.read` / `reasoning`）。真实样本确认 OpenAI 兼容代理会透传 `prompt_tokens_details.cached_tokens` 与 `completion_tokens_details.reasoning_tokens`；Runtime 再归一化为未缓存 input 与可见 output。
 - 历史 v2 记录（schema v2，修复前写入）的 `input_tokens` 实际是未缓存输入、`output_tokens` 实际是 Runtime 原始 output（当前 Runtime 为可见输出），`total_tokens` 为本地加法总和。这些记录保留原值不迁移；分析时需按 v2 语义换算（总输入 = `input_tokens + cached_input_tokens + cache_write_tokens`，总输出 = `output_tokens + reasoning_tokens`）。v3 新记录已直接给出总量。
 - 旧 Runtime（2026-07-28 之前）的消息数据中 `output` 已含 reasoning，`total` 不含独立 reasoning；v3 适配器用 `total - input_total` 归一化，未按版本硬编码。若上游代理改变 `total` 的定义，必须用真实响应样本重新验证。
@@ -905,7 +951,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 本机安装的 `@opencode-ai/plugin` 类型定义中存在该 hook，消息结构为 `{ info: Message, parts: Part[] }`。
 - 本机安装的 SDK 类型中 `ToolPart` 含 `callID`、`tool`、`state`；错误态含 `status: "error"` 与 `error: string`，完成态含 `status: "completed"` 与 `output: string`。
 - 参考项目 `opencode-dynamic-context-pruning` 使用同一 hook 并就地修改 `output.messages`。
-- Node/Bun 可加载插件入口并注册 hook；293 项 Node 测试全部通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
+- Node/Bun 可加载插件入口并注册 hook；300 项 Node 测试全部通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
 
 ## 十三、卸载 / 回滚
 

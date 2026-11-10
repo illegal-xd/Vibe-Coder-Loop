@@ -456,6 +456,9 @@ const RECORD_SCAN_REASONS = new Set([
   "missing_args",
   "missing_old_string",
   "missing_file_path",
+  // Slim Edit: the same tool definition was re-emitted before the request was
+  // sent; the rewrite happened but the saving was already charged.
+  "duplicate_definition",
 ]);
 
 /** Eligible, but structurally not prunable (before the candidate boundary). */
@@ -518,6 +521,23 @@ function partitionSkippedReasons(reasons) {
 }
 
 /**
+ * Which prompt region a strategy's removals live in. The scopes are not
+ * interchangeable: `messages` content is what `context_estimates` measures,
+ * `tool_schema` is the tool definitions sent beside it, `tool_result` is tool
+ * output compacted before that snapshot, and `model_output` is generation the
+ * model no longer has to produce. Only scopes with a known size can be
+ * sanity-checked against it.
+ */
+export const STRATEGY_SCOPE = Object.freeze({
+  deduplication: "messages",
+  error_purge: "messages",
+  supersede_writes: "messages",
+  tool_descriptions: "tool_schema",
+  compact_read: "tool_result",
+  line_range_edit: "model_output",
+});
+
+/**
  * One pruning strategy. Rules and preview only replace text with a
  * placeholder, so `removed_tokens` is the net saving (content minus
  * placeholder) already computed by the existing pipeline; it is an estimated
@@ -539,7 +559,7 @@ function partitionSkippedReasons(reasons) {
  * one keeper per duplicate group). Records dropped before candidacy are
  * explained by `skipped.eligible`, not by `preserved_items`.
  */
-function strategySummary(stats, fallbackEnabled) {
+function strategySummary(stats, fallbackEnabled, scope = null) {
   if (!stats || typeof stats !== "object") return null;
   const changedItems = intOrNull(stats.changedCount) ?? intOrNull(stats.prunedCount) ?? 0;
   const eligibleItems = intOrNull(stats.eligibleCount) ?? intOrNull(stats.candidateCount) ?? 0;
@@ -552,6 +572,7 @@ function strategySummary(stats, fallbackEnabled) {
   const summary = {
     enabled: stats.enabled !== false && fallbackEnabled !== false,
     preview: stats.preview === true,
+    scope,
     scanned_records: intOrNull(stats.recordsTotal) ?? 0,
     eligible_items: eligibleItems,
     candidate_items: candidateItems,
@@ -632,23 +653,58 @@ export function summarizePruning(stats, slim = null) {
       skippedReasons: stats.skippedReasons,
     },
     stats.deduplicationEnabled,
+    STRATEGY_SCOPE.deduplication,
   );
-  const errorPurge = strategySummary(stats.errorPurge);
-  const supersedeWrites = strategySummary(stats.supersedeWrites);
+  const errorPurge = strategySummary(stats.errorPurge, undefined, STRATEGY_SCOPE.error_purge);
+  const supersedeWrites = strategySummary(
+    stats.supersedeWrites,
+    undefined,
+    STRATEGY_SCOPE.supersede_writes,
+  );
   // OpenSlimedit-derived strategies run on tool hooks rather than on the
   // message array; their counters arrive through the optional `slim` state.
-  const toolDescriptions = strategySummary(slim?.toolDescriptions);
-  const compactRead = strategySummary(slim?.compactRead);
-  const lineRangeEdit = strategySummary(slim?.lineRangeEdit);
+  const toolDescriptions = strategySummary(
+    slim?.toolDescriptions,
+    undefined,
+    STRATEGY_SCOPE.tool_descriptions,
+  );
+  const compactRead = strategySummary(slim?.compactRead, undefined, STRATEGY_SCOPE.compact_read);
+  const lineRangeEdit = strategySummary(
+    slim?.lineRangeEdit,
+    undefined,
+    STRATEGY_SCOPE.line_range_edit,
+  );
 
-  const parts = [
+  // The description text the definition strategy actually rewrote. `before`
+  // and `after` are the only schema-side measurement available to the hook, so
+  // they are what a consumer can reconcile against `removed_tokens`.
+  if (toolDescriptions && (slim?.toolDescriptions?.descriptionTokensBefore ?? 0) > 0) {
+    toolDescriptions.description_tokens = {
+      before: measure(slim.toolDescriptions.descriptionTokensBefore, SOURCE.ESTIMATED_TOKENS_FROM_CHARS),
+      after: measure(
+        slim.toolDescriptions.descriptionTokensAfter ?? 0,
+        SOURCE.ESTIMATED_TOKENS_FROM_CHARS,
+      ),
+    };
+  }
+
+  const byKey = {
     deduplication,
-    errorPurge,
-    supersedeWrites,
-    toolDescriptions,
-    compactRead,
-    lineRangeEdit,
-  ].filter(Boolean);
+    error_purge: errorPurge,
+    supersede_writes: supersedeWrites,
+    tool_descriptions: toolDescriptions,
+    compact_read: compactRead,
+    line_range_edit: lineRangeEdit,
+  };
+  const order = [
+    "deduplication",
+    "error_purge",
+    "supersede_writes",
+    "tool_descriptions",
+    "compact_read",
+    "line_range_edit",
+  ];
+  const parts = order.map((key) => byKey[key]).filter(Boolean);
   if (parts.length === 0) return null;
   let total = 0;
   let measured = true;
@@ -660,15 +716,28 @@ export function summarizePruning(stats, slim = null) {
     total += part.removed_tokens.value ?? 0;
   }
 
+  // Same removals, grouped by prompt region. A consumer must use these to
+  // compare against a region's own size; the flat total adds a schema-side
+  // saving to a message-side one.
+  const scopeTotals = {};
+  for (const key of order) {
+    const part = byKey[key];
+    if (!part) continue;
+    const scope = STRATEGY_SCOPE[key];
+    const bucket = scopeTotals[scope] ?? { total: 0, measured: true };
+    if (part.removed_items > 0 && part.removed_tokens.value === null) bucket.measured = false;
+    bucket.total += part.removed_tokens.value ?? 0;
+    scopeTotals[scope] = bucket;
+  }
+  const totalsByScope = {};
+  for (const [scope, bucket] of Object.entries(scopeTotals)) {
+    totalsByScope[scope] = bucket.measured
+      ? measure(bucket.total, SOURCE.ESTIMATED_TOKENS_FROM_CHARS)
+      : unavailableMeasure();
+  }
+
   return {
-    order: [
-      "deduplication",
-      "error_purge",
-      "supersede_writes",
-      "tool_descriptions",
-      "compact_read",
-      "line_range_edit",
-    ],
+    order,
     deduplication: deduplication ?? null,
     error_purge: errorPurge ?? null,
     supersede_writes: supersedeWrites ?? null,
@@ -676,6 +745,7 @@ export function summarizePruning(stats, slim = null) {
     compact_read: compactRead ?? null,
     line_range_edit: lineRangeEdit ?? null,
     total_removed_tokens: measured ? measure(total, SOURCE.ESTIMATED_TOKENS_FROM_CHARS) : unavailableMeasure(),
+    totals_by_scope: totalsByScope,
     measurement_source: SOURCE.ESTIMATED_TOKENS_FROM_CHARS,
     attribution: "incremental_sequential",
     token_unit: "estimated_tokens_char_weight_v1",
@@ -739,6 +809,52 @@ function normalizedValidation(value) {
   };
 }
 
+/** Normalize `{ before, after }` token estimates for the tool-description text. */
+function schemaEstimates(value) {
+  if (!value || typeof value !== "object") return null;
+  const before = measure(value.before, SOURCE.ESTIMATED_TOKENS_FROM_CHARS);
+  const after = measure(value.after, SOURCE.ESTIMATED_TOKENS_FROM_CHARS);
+  if (before.value === null && after.value === null) return null;
+  return { before, after };
+}
+
+/**
+ * A removal can never exceed the tokens that were available in the region it
+ * was taken from. Only `messages` (measured before the transform) and
+ * `tool_schema` (measured description text) have a known size; the other scopes
+ * keep their estimate unchecked rather than inventing a budget.
+ *
+ * A scope that overclaims is downgraded to `unavailable` — with it every
+ * strategy in that scope and the flat total — so a contradictory record is
+ * never aggregated as trustworthy.
+ */
+function applyRemovalBudget(pruning, budgets) {
+  const totals = pruning && typeof pruning === "object" ? pruning.totals_by_scope : null;
+  if (!totals || typeof totals !== "object") return { pruning, errors: [] };
+
+  const degraded = [];
+  for (const [scope, holder] of Object.entries(totals)) {
+    const budget = budgets[scope];
+    if (!Number.isFinite(budget) || !holder || typeof holder.value !== "number") continue;
+    if (holder.value > budget) degraded.push(scope);
+  }
+  if (degraded.length === 0) return { pruning, errors: [] };
+
+  const next = { ...pruning, totals_by_scope: { ...totals } };
+  for (const scope of degraded) next.totals_by_scope[scope] = unavailableMeasure();
+  next.total_removed_tokens = unavailableMeasure();
+  for (const key of pruning.order ?? []) {
+    const summary = pruning[key];
+    if (!summary || !degraded.includes(summary.scope)) continue;
+    if (!(summary.removed_items > 0)) continue;
+    next[key] = { ...summary, removed_tokens: unavailableMeasure() };
+  }
+  return {
+    pruning: next,
+    errors: degraded.map((scope) => `removal_exceeds_${String(scope).slice(0, 32)}_budget`),
+  };
+}
+
 /**
  * Build the versioned record. Unknown input keys are dropped by construction:
  * only the fields listed here can ever reach the log.
@@ -746,10 +862,22 @@ function normalizedValidation(value) {
 export function buildUsageRecord(input = {}) {
   const usage = input.usage ?? {};
   const estimates = input.context_estimates ?? null;
-  const pruning = input.pruning ?? null;
+  const pruningInput = input.pruning ?? null;
 
   const before = estimates ? contextEstimate(estimates.before_pruning) : null;
   const after = estimates ? contextEstimate(estimates.after_pruning) : null;
+  // Tool descriptions live outside the message array, so their delta can never
+  // appear in `before_pruning` / `after_pruning`. Keeping it as a sibling makes
+  // the "no message delta, real schema saving" case explicit instead of
+  // contradictory.
+  const schema = schemaEstimates(input.schema_estimates);
+  const budgeted = applyRemovalBudget(pruningInput, {
+    messages: before && Number.isFinite(before.value) ? before.value : null,
+    tool_schema: schema && schema.before && Number.isFinite(schema.before.value)
+      ? schema.before.value
+      : null,
+  });
+  const pruning = budgeted.pruning;
 
   const record = {
     schema_version: TOKEN_USAGE_SCHEMA_VERSION,
@@ -773,11 +901,15 @@ export function buildUsageRecord(input = {}) {
     uncached_input_tokens: measureOrUnavailable(usage.uncached_input_tokens),
     reasoning_tokens: measureOrUnavailable(usage.reasoning_tokens),
     context_estimates:
-      before || after
-        ? { before_pruning: before, after_pruning: after }
-        : { before_pruning: null, after_pruning: null },
+      before || after || schema
+        ? { scope: "messages", before_pruning: before, after_pruning: after, schema }
+        : { scope: "messages", before_pruning: null, after_pruning: null, schema: null },
     pruning,
-    errors: knownErrors([...(Array.isArray(usage.errors) ? usage.errors : []), ...(input.errors ?? [])]),
+    errors: knownErrors([
+      ...(Array.isArray(usage.errors) ? usage.errors : []),
+      ...(input.errors ?? []),
+      ...budgeted.errors,
+    ]),
   };
 
   // `cache_write_tokens` is optional, but an explicit 0 is preserved so a
@@ -792,7 +924,7 @@ export function buildUsageRecord(input = {}) {
     const validation = normalizedValidation(usage.validation);
     if (validation) record.validation = validation;
   }
-  if (before || after || (pruning && pruning.measurement_source)) {
+  if (before || after || schema || (pruning && pruning.measurement_source)) {
     record.estimator = TOKEN_ESTIMATOR_ID;
   }
 

@@ -6,7 +6,8 @@
  * Three independent, opt-out strategies:
  *   1. `toolDescriptions` — replace verbose built-in tool descriptions with
  *      minimal ones. Tool schemas are sent with every API call, so the saving
- *      repeats per request.
+ *      repeats per request; within one request round it is charged once even
+ *      if the runtime rebuilds the schema several times.
  *   2. `compactRead` — shorten absolute read paths and drop the type tag and
  *      footer boilerplate from read output.
  *   3. `lineRangeEdit` — expand `oldString: "55-64"` to the actual file lines
@@ -71,6 +72,12 @@ export function createSlimStats({ enabled = true, preview = false } = {}) {
     tokenSavingsEstimated: 0,
     tokenSavingsEstimatedIfApplied: 0,
     outputBytesRemovedActual: 0,
+    // Tool-description text actually rewritten in this round, in estimated
+    // tokens. `before - after` equals `tokenSavingsEstimated`, but reporting
+    // both sides lets the usage record show a schema-side delta instead of an
+    // unsourced saving (the message-array context delta cannot see them).
+    descriptionTokensBefore: 0,
+    descriptionTokensAfter: 0,
     skippedReasons: {},
   };
 }
@@ -83,6 +90,13 @@ export function createSlimEditState(config = DEFAULT_SLIM_EDIT) {
   const enabled = config?.enabled !== false;
   const preview = config?.preview === true;
   return {
+    /**
+     * Tool ids whose description was already charged to the current round.
+     * `tool.definition` carries no request id, so the round itself — every
+     * definition emitted before the next transform — is the only boundary the
+     * plugin can observe. Reset with the definitions bucket.
+     */
+    seenToolIDs: new Set(),
     toolDescriptions: createSlimStats({
       enabled: enabled && config?.toolDescriptions !== false,
       preview,
@@ -113,6 +127,8 @@ export function mergeSlimStats(target, source) {
     to.tokenSavingsEstimated += from.tokenSavingsEstimated;
     to.tokenSavingsEstimatedIfApplied += from.tokenSavingsEstimatedIfApplied;
     to.outputBytesRemovedActual += from.outputBytesRemovedActual;
+    to.descriptionTokensBefore = (to.descriptionTokensBefore ?? 0) + (from.descriptionTokensBefore ?? 0);
+    to.descriptionTokensAfter = (to.descriptionTokensAfter ?? 0) + (from.descriptionTokensAfter ?? 0);
     for (const [reason, count] of Object.entries(from.skippedReasons ?? {})) {
       to.skippedReasons[reason] = (to.skippedReasons[reason] ?? 0) + count;
     }
@@ -174,6 +190,12 @@ export function createSlimEditStore(config = DEFAULT_SLIM_EDIT, options = {}) {
 /**
  * Replace a verbose tool description. The model-facing schema is rebuilt for
  * every request, so this saving repeats per request rather than per session.
+ *
+ * A request may emit the same definition more than once before it is sent (the
+ * runtime rebuilds the schema). The rewrite is still applied to every copy —
+ * otherwise the verbose text could reach the model — but the saving is charged
+ * once per `(round, toolID)`; later copies are recorded as
+ * `duplicate_definition` so the funnel still balances.
  */
 export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_EDIT) {
   const stats = state.toolDescriptions;
@@ -192,18 +214,36 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
     skip(stats, "unsupported_tool");
     return;
   }
+
+  const toolID = input?.toolID;
+  const seen = state.seenToolIDs;
+  if (seen instanceof Set && seen.has(toolID)) {
+    if (!config.preview) {
+      try {
+        output.description = slim;
+      } catch {
+        // Best-effort: accounting never turns a failed rewrite into an error.
+      }
+    }
+    skip(stats, "duplicate_definition");
+    return;
+  }
+
   stats.eligibleCount += 1;
   if (output.description === slim) {
     skip(stats, "already_slim");
     return;
   }
 
+  const beforeTokens = estimateTokens(output.description);
+  const afterTokens = estimateTokens(slim);
   stats.candidateCount += 1;
-  const saved = estimateTokens(output.description) - estimateTokens(slim);
+  const saved = beforeTokens - afterTokens;
   if (saved <= 0) {
     skip(stats, "no_positive_savings");
     return;
   }
+  if (seen instanceof Set) seen.add(toolID);
   stats.markedCount += 1;
   stats.tokenSavingsEstimatedIfApplied += saved;
 
@@ -219,6 +259,19 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
   }
   stats.changedCount += 1;
   stats.tokenSavingsEstimated += saved;
+  stats.descriptionTokensBefore += beforeTokens;
+  stats.descriptionTokensAfter += afterTokens;
+}
+
+/**
+ * Estimated tokens of the tool-description text touched by the definition
+ * round, or null when nothing was rewritten. Only `description` is visible to
+ * the hook; `parameters` and the rest of the schema are not measured.
+ */
+export function slimDescriptionEstimates(state) {
+  const stats = state?.toolDescriptions;
+  if (!stats || !(stats.descriptionTokensBefore > 0)) return null;
+  return { before: stats.descriptionTokensBefore, after: stats.descriptionTokensAfter };
 }
 
 /**

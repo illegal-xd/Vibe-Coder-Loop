@@ -763,3 +763,115 @@ test("terminal messages are logged at most once", () => {
   assert.equal(seen.size(), 2);
   assert.equal(seen.add(""), false);
 });
+
+// --- removal scopes ------------------------------------------------------
+
+function slimStats(overrides = {}) {
+  return {
+    enabled: true,
+    preview: false,
+    recordsTotal: 11,
+    eligibleCount: 10,
+    candidateCount: 8,
+    markedCount: 6,
+    changedCount: 2,
+    tokenSavingsEstimated: 2000,
+    descriptionTokensBefore: 2100,
+    descriptionTokensAfter: 100,
+    skippedReasons: { duplicate_definition: 3 },
+    ...overrides,
+  };
+}
+
+test("every strategy states which prompt region its removal came from", () => {
+  const pruning = summarizePruning(transformStats(), { toolDescriptions: slimStats() });
+  assert.equal(pruning.deduplication.scope, "messages");
+  assert.equal(pruning.error_purge.scope, "messages");
+  assert.equal(pruning.tool_descriptions.scope, "tool_schema");
+  // A schema-side saving and a message-side saving are not interchangeable, so
+  // the scoped totals must not be reported as one number alone.
+  assert.equal(pruning.totals_by_scope.messages.value, 500);
+  assert.equal(pruning.totals_by_scope.tool_schema.value, 2000);
+  assert.equal(pruning.total_removed_tokens.value, 2500);
+  assert.deepEqual(pruning.tool_descriptions.description_tokens, {
+    before: { value: 2100, source: "estimated_tokens_from_chars" },
+    after: { value: 100, source: "estimated_tokens_from_chars" },
+  });
+  // Re-emitted definitions are a scan-stage skip, so the funnel still balances.
+  assert.equal(pruning.tool_descriptions.skipped.record_scan.duplicate_definition, 3);
+  assert.equal(pruning.tool_descriptions.skipped.candidate.duplicate_definition, undefined);
+});
+
+test("a removal that exceeds its own scope budget is downgraded, not aggregated", () => {
+  // 5000 estimated tokens removed from a 100-token description block cannot be
+  // true; the schema scope must become unavailable instead of being summed.
+  const pruning = summarizePruning(null, {
+    toolDescriptions: slimStats({ tokenSavingsEstimated: 5000, descriptionTokensBefore: 100 }),
+  });
+  const record = buildUsageRecord({
+    session_id: SESSION_ID,
+    usage: extractProviderUsage(assistantInfo()),
+    context_estimates: {
+      before_pruning: { value: 10000, source: "estimated_tokens_from_chars" },
+      after_pruning: { value: 10000, source: "estimated_tokens_from_chars" },
+    },
+    schema_estimates: { before: 100, after: 10 },
+    pruning,
+  });
+
+  assert.deepEqual(record.pruning.totals_by_scope.tool_schema, {
+    value: null,
+    source: "unavailable",
+  });
+  assert.deepEqual(record.pruning.tool_descriptions.removed_tokens, {
+    value: null,
+    source: "unavailable",
+  });
+  assert.deepEqual(record.pruning.total_removed_tokens, { value: null, source: "unavailable" });
+  assert.ok(record.errors.includes("removal_exceeds_tool_schema_budget"));
+  // The caller's summary is not mutated; only the record's copy is degraded.
+  assert.equal(pruning.tool_descriptions.removed_tokens.value, 5000);
+});
+
+test("a message-side overclaim is caught against the measured context", () => {
+  const record = buildUsageRecord({
+    session_id: SESSION_ID,
+    usage: extractProviderUsage(assistantInfo()),
+    // 500 estimated tokens are claimed but only 400 exist before pruning.
+    context_estimates: {
+      before_pruning: { value: 400, source: "estimated_tokens_from_chars" },
+      after_pruning: { value: 300, source: "estimated_tokens_from_chars" },
+    },
+    pruning: summarizePruning(transformStats()),
+  });
+
+  assert.deepEqual(record.pruning.totals_by_scope.messages, { value: null, source: "unavailable" });
+  assert.deepEqual(record.pruning.deduplication.removed_tokens, {
+    value: null,
+    source: "unavailable",
+  });
+  assert.ok(record.errors.includes("removal_exceeds_messages_budget"));
+});
+
+test("schema-side savings are recorded beside the message context, not inside it", () => {
+  const record = buildUsageRecord({
+    session_id: SESSION_ID,
+    usage: extractProviderUsage(assistantInfo()),
+    context_estimates: {
+      before_pruning: { value: 10000, source: "estimated_tokens_from_chars" },
+      after_pruning: { value: 10000, source: "estimated_tokens_from_chars" },
+    },
+    schema_estimates: { before: 2100, after: 100 },
+    pruning: summarizePruning(null, { toolDescriptions: slimStats() }),
+  });
+
+  // The message delta is zero and says so; the schema delta explains the
+  // non-zero `total_removed_tokens` without contradicting it.
+  assert.equal(record.context_estimates.scope, "messages");
+  assert.deepEqual(record.context_estimates.schema, {
+    before: { value: 2100, source: "estimated_tokens_from_chars" },
+    after: { value: 100, source: "estimated_tokens_from_chars" },
+  });
+  assert.equal(record.pruning.totals_by_scope.tool_schema.value, 2000);
+  assert.deepEqual(record.errors, []);
+});
