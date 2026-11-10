@@ -101,6 +101,26 @@ test("buildCardPayload normalizes v3 records and keeps the strategy order", () =
   assert.deepEqual(payload.sourceFiles, ["token-usage-2026-10-28.jsonl"]);
 });
 
+test("buildCardPayload states each strategy's prompt region", () => {
+  const summary = pruning();
+  // A strategy that declares its own scope (newer records) and canonical ones
+  // without a row (fallback) must both resolve, never as one flat bucket.
+  summary.future_strategy = {
+    scope: "messages",
+    scanned_records: 2,
+    changed_items: 1,
+    removed_items: 1,
+    removed_tokens: { value: 5, source: "estimated_tokens_from_chars" },
+  };
+  const payload = buildCardPayload([record({ timestamp: `${DAY_28}T10:00:00.000Z`, summary })], {});
+  const scopes = new Map(payload.strategies.map((item) => [item.key, item.scope]));
+  assert.equal(scopes.get("deduplication"), "messages");
+  assert.equal(scopes.get("tool_descriptions"), "tool_schema");
+  assert.equal(scopes.get("compact_read"), "tool_result");
+  assert.equal(scopes.get("line_range_edit"), "model_output");
+  assert.equal(scopes.get("future_strategy"), "messages");
+});
+
 test("buildCardPayload normalizes v2 totals and four-column old rows", () => {
   const legacy = {
     schema_version: 2,

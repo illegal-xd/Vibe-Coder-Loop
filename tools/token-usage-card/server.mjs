@@ -51,6 +51,21 @@ const LABELS = Object.freeze({
   line_range_edit: "Line Range Edit",
 });
 
+/**
+ * Prompt region each strategy's removals live in. The card groups by this so a
+ * constant per-request prefix discount is never charted as a share against
+ * event-driven pruning. Records carry `scope` themselves; this is the fallback
+ * for records written before that field existed.
+ */
+const STRATEGY_SCOPE = Object.freeze({
+  deduplication: "messages",
+  error_purge: "messages",
+  supersede_writes: "messages",
+  tool_descriptions: "tool_schema",
+  compact_read: "tool_result",
+  line_range_edit: "model_output",
+});
+
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const STATIC_FILES = new Map([
@@ -141,9 +156,18 @@ export function buildCardPayload(records, options = {}) {
 
   const list = Array.isArray(records) ? records : [];
   const strategyKeys = [...CANONICAL_STRATEGIES];
+  const strategyScopes = new Map();
   for (const record of list) {
+    const pruning =
+      record && record.pruning && typeof record.pruning === "object" ? record.pruning : {};
     for (const key of strategyKeysOf(record)) {
       if (!strategyKeys.includes(key)) strategyKeys.push(key);
+      // A record may declare its own scope; the first one wins so a strategy
+      // never flips groups mid-range.
+      const declared = pruning[key] ? pruning[key].scope : null;
+      if (!strategyScopes.has(key) && typeof declared === "string" && declared.length > 0) {
+        strategyScopes.set(key, declared);
+      }
     }
   }
 
@@ -173,7 +197,11 @@ export function buildCardPayload(records, options = {}) {
     generatedAt: now.toISOString(),
     archive,
     sourceFiles: files.map((file) => path.basename(file)),
-    strategies: strategyKeys.map((key) => ({ key, label: LABELS[key] ?? key })),
+    strategies: strategyKeys.map((key) => ({
+      key,
+      label: LABELS[key] ?? key,
+      scope: strategyScopes.get(key) ?? STRATEGY_SCOPE[key] ?? "messages",
+    })),
     records: compact,
     diagnostics: {
       records: compact.length,

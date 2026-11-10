@@ -21,6 +21,42 @@
     { key: 'line_range_edit', label: 'Line Range Edit' }
   ];
 
+  /* Prompt region each strategy's removals live in. Mirrors server.mjs so a
+     stale snapshot without `scope` still groups correctly. */
+  var SCOPE_OF = {
+    deduplication: 'messages',
+    error_purge: 'messages',
+    supersede_writes: 'messages',
+    tool_descriptions: 'tool_schema',
+    compact_read: 'tool_result',
+    line_range_edit: 'model_output'
+  };
+
+  /* Scopes are grouped, never summed into one share: `tool_schema` is a
+     constant discount re-applied to every request, the rest are events. */
+  var SCOPE_GROUPS = {
+    tool_schema: 'prefix'
+  };
+
+  /* Relative price of a cache-read input token (未缓存输入 = 1). Used only for
+     the optional bill-weighted estimate; the token counts stay unweighted. */
+  var CACHE_READ_RATIO = 0.1;
+
+  function groupOf(strategy) {
+    var scope = (strategy && strategy.scope) || SCOPE_OF[strategy && strategy.key] || 'messages';
+    return SCOPE_GROUPS[scope] === 'prefix' ? 'prefix' : 'event';
+  }
+
+  /* Discount `removed` by the measured cache-read share: a saving taken out of
+     the cached prefix is billed at the cache-read price, not the full price.
+     This is an approximation — it assumes the removed tokens sit in the same
+     cached/uncached proportion as the whole request. */
+  function billWeighted(result) {
+    if (!result || !(result.input > 0) || !(result.removed > 0)) return 0;
+    var ratio = Math.min(1, Math.max(0, (result.cached || 0) / result.input));
+    return result.removed * ((1 - ratio) + ratio * CACHE_READ_RATIO);
+  }
+
   // 策略标题后的简短中文说明；只用于展示，不参与聚合。
   var STRATEGY_NOTES = {
     deduplication: '重复只读结果去重',
@@ -58,6 +94,11 @@
       });
       if (!exists) list.push({ key: item.key, label: item.label });
     });
+    list.forEach(function (item) {
+      if (item && (typeof item.scope !== 'string' || item.scope.length === 0)) {
+        item.scope = SCOPE_OF[item.key] || 'messages';
+      }
+    });
     return list;
   }
 
@@ -87,10 +128,14 @@
       output: 0,
       cached: 0,
       removed: 0,
+      // Per-scope subtotals: a schema-side saving is not comparable to a
+      // message-side one, so the card never charts them as one share.
+      scopes: { messages: 0, tool_schema: 0, tool_result: 0, model_output: 0 },
       strategies: strategies.map(function (strategy) {
         return {
           key: strategy.key,
           label: strategy.label,
+          scope: strategy.scope || SCOPE_OF[strategy.key] || 'messages',
           tokens: 0,
           removedItems: 0,
           scanned: 0,
@@ -123,6 +168,7 @@
         // the candidate/removed values so the card never invents numbers.
         strategy.eligible += row.length >= 6 ? row[4] || 0 : row[2] || 0;
         strategy.marked += row.length >= 6 ? row[5] || 0 : row[3] || 0;
+        result.scopes[strategy.scope] = (result.scopes[strategy.scope] || 0) + (row[0] || 0);
       });
     });
 
@@ -210,6 +256,9 @@
     boundsFor: boundsFor,
     aggregate: aggregate,
     sortStrategies: sortStrategies,
+    groupOf: groupOf,
+    billWeighted: billWeighted,
+    CACHE_READ_RATIO: CACHE_READ_RATIO,
     formatCompact: formatCompact,
     formatPercent: formatPercent,
     formatAverage: formatAverage,
@@ -352,12 +401,20 @@
     return row;
   }
 
-  function createStrategyCard(strategy, index, result) {
+  function createStrategyCard(strategy, index, result, shareBase) {
+    var group = groupOf(strategy);
     var colorIndex = STRATEGY_ORDER[strategy.key];
     var color = colorIndex === undefined ? ((index % 6) + 1) : ((colorIndex % 6) + 1);
-    var sharePercent = result.removed > 0
-      ? Math.round((strategy.tokens / result.removed) * 100)
-      : 0;
+    // Prefix strategies are a per-request discount, so their ratio is measured
+    // against the input they were cut from; event strategies share a base with
+    // each other only. Never one denominator for both.
+    var prefixRatio = result.input > 0 ? strategy.tokens / result.input : 0;
+    var eventRatio = shareBase > 0 ? strategy.tokens / shareBase : 0;
+    var sharePercent = group === 'prefix' ? prefixRatio * 100 : eventRatio * 100;
+    var shareText = group === 'prefix'
+      ? formatPercent(prefixRatio)
+      : Math.round(eventRatio * 100) + '%';
+    var perRequest = strategy.requests > 0 ? strategy.tokens / strategy.requests : 0;
 
     var card = document.createElement('article');
     card.className = 'scard s' + color;
@@ -378,22 +435,38 @@
     name.textContent = strategy.label;
     var share = document.createElement('span');
     share.className = 'scard-share';
-    share.textContent = sharePercent + '%';
+    share.textContent = shareText;
+    share.title = group === 'prefix'
+      ? '占输入：该策略的估算节省 ÷ 区间总输入；前缀折扣不参与事件型策略的占比'
+      : '该策略在事件型策略合计中的占比';
     top.appendChild(name);
     top.appendChild(share);
     front.appendChild(top);
+
+    // The group tag gets its own line: next to the label it competed with the
+    // share value for width, and it is a property of the card, not of the name.
+    var chip = document.createElement('p');
+    chip.className = 'scard-chip';
+    chip.textContent = group === 'prefix' ? '每请求' : '区间累计';
+    chip.title = group === 'prefix'
+      ? '每次请求都会重复生效的固定前缀折扣，不与其他策略共享占比'
+      : '按实际发生的裁剪累计，占比在同组内计算';
+    front.appendChild(chip);
 
     var value = document.createElement('p');
     value.className = 'scard-value';
     var tokens = document.createElement('span');
     tokens.className = 'scard-tokens';
-    tokens.textContent = formatCompact(strategy.tokens);
+    // The prefix strategy shows the per-request value: that is the number a
+    // reader can compare, while the window total only grows with request count.
+    tokens.textContent = formatCompact(group === 'prefix' ? perRequest : strategy.tokens);
     if (strategy.tokens > 0) {
-      tokens.title = Math.round(strategy.tokens).toLocaleString('en-US') + ' token（估算）';
+      tokens.title = Math.round(strategy.tokens).toLocaleString('en-US') +
+        ' token（区间累计，估算）';
     }
     var unit = document.createElement('span');
     unit.className = 'scard-unit';
-    unit.textContent = 'token';
+    unit.textContent = group === 'prefix' ? '/ 请求' : 'token';
     value.appendChild(tokens);
     value.appendChild(unit);
     front.appendChild(value);
@@ -446,13 +519,21 @@
       stats.appendChild(statRow('合格', formatAverage(strategy.eligible, strategy.requests)));
       stats.appendChild(statRow('候选', formatAverage(strategy.candidates, strategy.requests)));
       stats.appendChild(statRow('标记', formatAverage(strategy.marked, strategy.requests)));
-      stats.appendChild(statRow('裁决', String(strategy.removedItems), '项', true));
+      stats.appendChild(
+        statRow(group === 'prefix' ? '每请求' : '裁决',
+          group === 'prefix' ? formatCompact(perRequest) : String(strategy.removedItems),
+          group === 'prefix' ? 'token' : '项',
+          true)
+      );
       stats.title =
-        '扫描/合格/候选/标记为每请求均值（仅统计已采集该策略的请求）；裁决为区间累计项数。' +
-        '合格=通过安全校验；候选=真正可裁剪；标记=通过全部守卫；裁决=消息内容确实被改动。' +
-        '窗口累计：扫描 ' + strategy.scanned + ' / 合格 ' + strategy.eligible +
-        ' / 候选 ' + strategy.candidates + ' / 标记 ' + strategy.marked +
-        ' / 裁决 ' + strategy.removedItems + ' 条';
+        '扫描/合格/候选/标记为每请求均值（仅统计已采集该策略的请求）。' +
+        (group === 'prefix'
+          ? '合格=描述可精简；候选=收益为正；标记=通过检查；每请求=平均每次请求省下的 token。' +
+            '窗口累计：' + strategy.removedItems + ' 次改写'
+          : '裁决为区间累计项数；合格=通过安全校验；候选=真正可裁剪；标记=通过全部守卫；裁决=内容确实被改动。' +
+            '窗口累计：扫描 ' + strategy.scanned + ' / 合格 ' + strategy.eligible +
+            ' / 候选 ' + strategy.candidates + ' / 标记 ' + strategy.marked +
+            ' / 裁决 ' + strategy.removedItems + ' 条');
     } else {
       var empty = document.createElement('p');
       empty.className = 'scard-empty';
@@ -497,8 +578,24 @@
       return;
     }
 
-    active.forEach(function (strategy, index) {
-      strategyList.appendChild(createStrategyCard(strategy, index, result));
+    // Event strategies first (their contribution depends on what happened in
+    // the window); the constant per-request prefix discount closes the grid so
+    // it cannot dominate the first screen.
+    var eventShare = active.reduce(function (total, strategy) {
+      return groupOf(strategy) === 'event' ? total + (strategy.tokens || 0) : total;
+    }, 0);
+    var ordered = active
+      .filter(function (strategy) {
+        return groupOf(strategy) === 'event';
+      })
+      .concat(
+        active.filter(function (strategy) {
+          return groupOf(strategy) === 'prefix';
+        })
+      );
+
+    ordered.forEach(function (strategy, index) {
+      strategyList.appendChild(createStrategyCard(strategy, index, result, eventShare));
     });
   }
 
@@ -564,14 +661,22 @@
     }
     setNote(inputNote, cachedLabel);
     setNote(rateNote, rateLabel);
+    var bill = billWeighted(result);
     if (!hasData) {
       setNote(removedNote, '估算值，不等于账单节省');
-    } else if (result.removed > 0 && result.input > 0) {
-      setNote(removedNote, '占输入 ' + formatPercent(result.removed / result.input) + ' · 估算');
     } else if (result.removed > 0) {
-      setNote(removedNote, '估算值，不等于账单节省');
+      // Token 口径与账单口径分开：前缀节省大多落在缓存读，按 0.1× 折价后才接近账单。
+      setNote(removedNote, '缓存加权 ≈ ' + formatCompact(bill));
+      if (removedNote) {
+        removedNote.title =
+          'token 口径为未加权估算；缓存加权按缓存读 ' + CACHE_READ_RATIO +
+          '× 折算（本区间缓存读 ÷ 输入 = ' +
+          formatPercent(result.input > 0 ? result.cached / result.input : 0) + '）。' +
+          '占输入 ' + formatPercent(result.input > 0 ? result.removed / result.input : 0) + '，仍是估算。';
+      }
     } else {
       setNote(removedNote, '本区间无估算裁剪');
+      if (removedNote) removedNote.removeAttribute('title');
     }
 
     if (caption) {
@@ -581,8 +686,19 @@
     }
 
     if (strategyTotal) {
+      // Split by prompt region instead of one misleading sum: the prefix value
+      // is a constant per-request discount, the rest are event-driven cuts.
+      var prefixTokens = result.scopes.tool_schema || 0;
+      var messageTokens = result.scopes.messages || 0;
+      var otherTokens =
+        (result.scopes.tool_result || 0) + (result.scopes.model_output || 0);
       strategyTotal.textContent = hasData
-        ? '估算 ' + formatCompact(result.removed) + ' token · 裁剪 ' + removedItems + ' 项'
+        ? '前缀 ' + formatCompact(prefixTokens) + ' · 消息 ' + formatCompact(messageTokens) +
+          ' · 其他 ' + formatCompact(otherTokens) + ' · 裁剪 ' + removedItems + ' 项'
+        : '';
+      strategyTotal.title = hasData
+        ? '按提示词区域拆分估算节省（前缀=tool schema，每请求重复；消息=消息数组裁剪；其他=工具结果与输出侧）。' +
+          '各域不可直接比较。'
         : '';
     }
 

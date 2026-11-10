@@ -588,11 +588,29 @@ h2 {
   box-shadow: 0 0 10px var(--dot-glow);
 }
 
+/* Group marker: "每请求" (constant prefix discount) vs "区间累计" (events).
+   Sits on its own line under the title so it never competes with the share. */
+.scard-chip {
+  align-self: flex-start;
+  margin: -4px 0 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--ink-lo);
+  font-size: 10px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
 .scard-share {
+  flex: none;
   color: var(--ink-lo);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+  white-space: nowrap;
 }
 
 .scard-note {

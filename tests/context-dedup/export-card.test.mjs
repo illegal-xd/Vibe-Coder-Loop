@@ -159,6 +159,13 @@ test("exported card data and the card aggregate match the internal stats", async
     assert.equal(run.status, 0, run.stderr);
 
     const snapshot = loadSnapshot(await readFile(outFile, "utf8"));
+    // Every exported strategy carries its prompt region, so the snapshot groups
+    // exactly like the live payload does.
+    assert.ok(snapshot.strategies.every((item) => typeof item.scope === "string"));
+    assert.equal(
+      snapshot.strategies.find((item) => item.key === "tool_descriptions").scope,
+      "tool_schema",
+    );
     const card = loadCard(await readFile(CARD, "utf8"));
     const result = card.aggregate(snapshot, "today", new Date(Date.parse(timestamp) + 60_000));
     assert.equal(result.requests, 1);
@@ -215,4 +222,43 @@ test("strategy rows sort by contribution without mutating the payload", async ()
     input.map((strategy) => strategy.key),
     ["compact_read", "tool_descriptions", "line_range_edit", "deduplication", "error_purge"],
   );
+});
+
+test("prefix and event strategies are grouped and never share one share base", async () => {
+  const card = loadCard(await readFile(CARD, "utf8"));
+
+  assert.equal(card.groupOf({ key: "tool_descriptions", scope: "tool_schema" }), "prefix");
+  assert.equal(card.groupOf({ key: "deduplication", scope: "messages" }), "event");
+  assert.equal(card.groupOf({ key: "compact_read", scope: "tool_result" }), "event");
+  // A snapshot without `scope` falls back to the canonical mapping.
+  assert.equal(card.groupOf({ key: "tool_descriptions" }), "prefix");
+  assert.equal(card.groupOf({ key: "line_range_edit" }), "event");
+
+  const now = Date.now();
+  const snapshot = {
+    strategies: [
+      { key: "deduplication", label: "Deduplication", scope: "messages" },
+      { key: "tool_descriptions", label: "Tool Descriptions", scope: "tool_schema" },
+    ],
+    // 7 tool definitions re-slimmed on every request: the constant prefix case.
+    records: [[now, 10000, 100, 8000, 2605, [[0, 50, 0, 0, 0, 0], [2605, 21, 7, 7, 7, 7]]]],
+  };
+  const result = card.aggregate(snapshot, "today", new Date(now + 1000));
+
+  // The two regions are reported side by side, not added into one share.
+  assert.equal(result.scopes.messages, 0);
+  assert.equal(result.scopes.tool_schema, 2605);
+  assert.equal(result.removed, 2605);
+
+  const prefix = result.strategies.find((strategy) => strategy.key === "tool_descriptions");
+  assert.equal(prefix.scope, "tool_schema");
+  assert.equal(prefix.requests, 1);
+  assert.equal(prefix.tokens / prefix.requests, 2605);
+
+  // Bill-weighted estimate discounts the cached share at the cache-read price:
+  // 2605 × (0.2 uncached + 0.8 cached × 0.1) = 729.4
+  assert.equal(card.CACHE_READ_RATIO, 0.1);
+  assert.ok(Math.abs(card.billWeighted(result) - 729.4) < 0.01);
+  assert.equal(card.billWeighted({ input: 0, cached: 0, removed: 0 }), 0);
+  assert.equal(card.billWeighted({ input: 100, cached: 0, removed: 0 }), 0);
 });

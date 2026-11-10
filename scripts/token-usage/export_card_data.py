@@ -49,6 +49,17 @@ LABELS = {
     "compact_read": "Compact Read",
     "line_range_edit": "Line Range Edit",
 }
+# 与 .opencode/context-dedup/token-usage.js 的 STRATEGY_SCOPE 对齐：卡片按提示词
+# 区域分组，"每次请求恒定"的前缀节省不会与事件型裁剪共享占比。记录自带 `scope`
+# 时以记录为准，这里是旧记录的兜底。
+SCOPES = {
+    "deduplication": "messages",
+    "error_purge": "messages",
+    "supersede_writes": "messages",
+    "tool_descriptions": "tool_schema",
+    "compact_read": "tool_result",
+    "line_range_edit": "model_output",
+}
 
 
 def value_of(holder) -> int:
@@ -105,6 +116,7 @@ def main() -> int:
     seen_lines: set[str] = set()
     invalid_lines = 0
     strategy_keys: list[str] = list(CANONICAL_STRATEGIES)
+    strategy_scopes: dict[str, str] = {}
 
     for path in files:
         with open(path, encoding="utf-8") as handle:
@@ -125,9 +137,14 @@ def main() -> int:
                     continue
                 record["_ts_ms"] = int(timestamp.timestamp() * 1000)
                 records.append(record)
+                pruning = record.get("pruning") or {}
                 for key in strategy_keys_of(record):
                     if key not in strategy_keys:
                         strategy_keys.append(key)
+                    summary = pruning.get(key)
+                    declared = summary.get("scope") if isinstance(summary, dict) else None
+                    if key not in strategy_scopes and isinstance(declared, str) and declared:
+                        strategy_scopes[key] = declared
 
     records.sort(key=lambda record: record["_ts_ms"])
 
@@ -169,7 +186,14 @@ def main() -> int:
     payload = {
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "sourceFiles": [os.path.basename(path) for path in files],
-        "strategies": [{"key": key, "label": LABELS.get(key, key)} for key in strategy_keys],
+        "strategies": [
+            {
+                "key": key,
+                "label": LABELS.get(key, key),
+                "scope": strategy_scopes.get(key, SCOPES.get(key, "messages")),
+            }
+            for key in strategy_keys
+        ],
         "records": compact,
     }
 

@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Vibe Kernel · Token Usage</title>
-<link rel="stylesheet" href="styles.css?v=20261102-4">
+<link rel="stylesheet" href="styles.css?v=20261110-2">
 </head>
 <body>
 
@@ -78,12 +78,12 @@
 
   <footer class="foot">
     <p class="footnote">
-      仅列出本区间产生候选或裁剪的策略；贡献为估算 token（字符加权），扫描 / 合格 / 候选 / 标记为每请求均值，裁决为区间累计项数。按实际裁剪顺序计算增量，不重复计数，也不等于账单实际节省量。点击卡片可翻转查看明细。
+      仅列出本区间产生候选或裁剪的策略，并按提示词区域分组：标「每请求」的是每次请求都会重复生效的前缀折扣（正面为每请求均值，占比按占输入计算），标「区间累计」的是事件型裁剪（占比在同组内计算），两组不共享分母。扫描 / 合格 / 候选 / 标记为每请求均值。贡献均为估算 token（字符加权），顶部另给出按缓存读 0.1× 折算的账单口径近似值；两者都不等于实际账单。点击卡片可翻转查看明细。
     </p>
     <p class="snapshot" id="snapshot" aria-live="polite"></p>
   </footer>
 </main>
 
-<script src="app.js?v=20261102-4"></script>
+<script src="app.js?v=20261110-2"></script>
 </body>
 </html>
