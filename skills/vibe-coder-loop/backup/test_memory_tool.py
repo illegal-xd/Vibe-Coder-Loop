@@ -23,6 +23,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -157,6 +158,49 @@ class ToolCase(unittest.TestCase):
         rc, out = self.run_tool("verify", latest)
         self.assertEqual(rc, 0, out)
         self.assertIn("一致（语义）", out)
+
+    def _seed_ttl_lesson(self, *, age_days: int = 80, span_days: int = 90):
+        now_ms = int(time.time() * 1000)
+        created = now_ms - age_days * 86400 * 1000
+        expires = created + span_days * 86400 * 1000
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "INSERT OR REPLACE INTO memory VALUES (?,?,?,?,?,?,?)",
+            (
+                "lesson:ttl-demo",
+                "les",
+                created,
+                created,
+                expires,
+                "[]",
+                json.dumps({"title": "ttl", "access_count": 0}),
+            ),
+        )
+        con.commit()
+        con.close()
+        return expires
+
+    def _ttl_of(self, key: str):
+        con = sqlite3.connect(self.db)
+        row = con.execute("SELECT ttl_expires_at FROM memory WHERE key=?", (key,)).fetchone()
+        con.close()
+        return row[0] if row else None
+
+    def test_touch_keeps_ttl_by_default(self):
+        expires = self._seed_ttl_lesson()
+        rc, out = self.run_tool("touch", "lesson:ttl-demo")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._ttl_of("lesson:ttl-demo"), expires)
+
+    def test_touch_renew_ttl_reanchors_original_span(self):
+        """--renew-ttl：按原始 90 天时长从当前时间重锚，抵消「未过期前被淘汰」。"""
+        self._seed_ttl_lesson(age_days=80, span_days=90)
+        now_ms = int(time.time() * 1000)
+        rc, out = self.run_tool("touch", "lesson:ttl-demo", "--renew-ttl")
+        self.assertEqual(rc, 0, out)
+        renewed = self._ttl_of("lesson:ttl-demo")
+        self.assertGreater(renewed - now_ms, 85 * 86400 * 1000)
+        self.assertLess(renewed - now_ms, 95 * 86400 * 1000)
 
     def test_verify_hard_fails_on_value_change(self):
         latest = self.backup()

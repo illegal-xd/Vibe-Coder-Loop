@@ -34,7 +34,10 @@ import evolution_store as S  # noqa: E402
 SIGNAL_TYPES = ("user_correction", "repeated_failure", "high_cost_rework", "verification_failure")
 SOURCES = ("user", "test", "review", "tool", "build")
 RELATED_PREFIXES = ("lesson:", "reflection:", "pattern:", "principle:", "experience:")
-HARD_CONFLICT_MARKERS = ("已废弃", "不再适用", "被取代", "superseded", "冲突未解决")
+# 冲突只认结构化元数据（status / marker / superseded_by）：正文出现「已废弃 / 不再适用」
+# 往往正是有效经验在描述反例，按子串判定会把经验误判为失效。
+CONFLICT_STATUSES = ("superseded", "conflict", "contradict")
+CONFLICT_MARKER_FIELDS = ("conflict_marker", "marker", "conflict", "conflict_with", "superseded_by")
 TTL_SECONDS = 90 * 24 * 60 * 60
 TAGS = ("reflection-signal", "runtime-state", "scope:task", "p1-evolution")
 
@@ -80,7 +83,11 @@ def record_signal(
     loop: int = 0,
     cost: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    token = dedupe_token or fingerprint
+    # 缺省 dedupe_token 按「指纹 + Loop」分轮：同一任务里 loop 1 与 loop 2 的同一失败
+    # 是两次独立事件（应累加 occurrences 触发反思），而同一轮内重复上报仍是同一事件。
+    token = dedupe_token or (
+        f"{fingerprint}#L{int(loop)}" if int(loop or 0) > 0 else fingerprint
+    )
     key = signal_key(task_id, signal_type, fingerprint, token)
     now = S.now_ms()
 
@@ -181,13 +188,13 @@ def _feedback_index(db: Path) -> dict[tuple[str, str], dict[str, Any]]:
 
 
 def _memory_is_stale(entry: dict[str, Any] | None) -> bool:
+    """只看结构化冲突标记（status / conflict_marker / superseded_by），不扫正文措辞。"""
     if entry is None:
         return False
-    meta = entry.get("metadata", {})
-    if meta.get("status") == "superseded":
+    meta = entry.get("metadata", {}) or {}
+    if str(meta.get("status") or "").strip().lower() in CONFLICT_STATUSES:
         return True
-    text = f"{entry.get('value', '')}\n{meta}"
-    return any(marker in text for marker in HARD_CONFLICT_MARKERS)
+    return any(bool(meta.get(field)) for field in CONFLICT_MARKER_FIELDS)
 
 
 def evaluate(db: Path, *, task_id: str | None = None) -> dict[str, Any]:
@@ -401,8 +408,8 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--fingerprint", required=True, help="同类问题指纹，如 test-insufficient:checkout")
     rec.add_argument("--evidence", action="append", default=[], help="证据引用（file:/memory:/anchor:）")
     rec.add_argument("--summary", default="", help="一句话事实")
-    rec.add_argument("--dedupe-token", default="", help="同一任务内区分不同轮次；缺省等于 fingerprint")
-    rec.add_argument("--loop", type=int, default=0)
+    rec.add_argument("--dedupe-token", default="", help="同一任务内区分不同轮次；缺省 = 指纹+Loop（loop>0 时自动分轮）")
+    rec.add_argument("--loop", type=int, default=0, help="当前 Loop；建议每次记录都传，用于区分不同轮次的同一失败")
     rec.add_argument("--cost-files", type=int, default=0)
     rec.add_argument("--cost-loops", type=int, default=0)
     rec.add_argument("--unverified", action="store_true", help="模型判断/未确认事件；不进入强制反思")

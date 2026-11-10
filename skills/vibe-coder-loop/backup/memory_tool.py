@@ -860,7 +860,8 @@ def cmd_touch(args, db):
       - value 不改（只动 metadata / updated_at / ttl_expires_at）
       - metadata 其余字段（title / note / relevance_score 等）原样保留
       - tags 列不触碰（避免整体替换语义导致 tag 丢失）
-      - 有限 TTL 按「剩余时长」重锚，防续期漂移
+      - 有限 TTL 默认保持绝对值不变；显式 `--renew-ttl` 时按**原始时长**（ttl-created）从当前时间重锚，
+        避免「反复命中仍到期淘汰」把提升阈值（如 lesson 90 天内 ≥3 次）掐断
 
     逐 key 容错：单条 metadata 畸形（非 JSON / 非对象 / access_count 非数字）只跳过该条，
     不拖垮整批（原实现会裸抛异常 + 整批回滚，且不指出是哪条 key）。
@@ -873,7 +874,7 @@ def cmd_touch(args, db):
         conn.execute("BEGIN IMMEDIATE")
         for k in args.keys:
             row = conn.execute(
-                "SELECT metadata, ttl_expires_at FROM memory WHERE key = ?", (k,)
+                "SELECT metadata, ttl_expires_at, created_at FROM memory WHERE key = ?", (k,)
             ).fetchone()
             if row is None:
                 missing.append(k)
@@ -885,8 +886,12 @@ def cmd_touch(args, db):
                 meta["access_count"] = int(meta.get("access_count") or 0) + 1
                 if args.hit:
                     meta["cache_hit_count"] = int(meta.get("cache_hit_count") or 0) + 1
-                # TTL 绝对值保持不变（既不续期也不提前过期）；非数字 → 视为畸形条目
+                # TTL 默认保持绝对值不变（既不续期也不提前过期）；--renew-ttl 时按原始时长重锚
                 ttl = int(row[1]) if row[1] is not None else None
+                if args.renew_ttl and ttl is not None and row[2] is not None:
+                    span = ttl - int(row[2])
+                    if span > 0:
+                        ttl = now_ms + span
             except (json.JSONDecodeError, TypeError, ValueError) as e:
                 failed.append((k, f"{type(e).__name__}: {e}"))
                 continue
@@ -2245,6 +2250,11 @@ def main():
     p_touch.add_argument("keys", nargs="+", metavar="KEY", help="被消费的记忆 key")
     p_touch.add_argument(
         "--hit", action="store_true", help="同时 cache_hit_count+1（内容经 E2+ 验证与事实一致）"
+    )
+    p_touch.add_argument(
+        "--renew-ttl",
+        action="store_true",
+        help="按原始 TTL 时长从当前时间重锚过期时间（lesson 90 天等门槛不会被未过期前的静默淘汰掐断）",
     )
     p_metrics = sub.add_parser("metrics", help="仪表盘 upsert（叠加本轮 delta）")
     for flag, help_text in (

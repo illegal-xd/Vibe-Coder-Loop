@@ -202,6 +202,24 @@ class ReflectionSignalTests(Base):
         self.assertEqual(report["groups"][0]["occurrences"], 2)
         self.assertEqual(report["groups"][0]["distinct_tasks"], 1)
 
+    def test_same_task_across_loops_aggregates_without_token(self) -> None:
+        """缺省 dedupe_token 按 Loop 分轮：loop 1 / loop 2 的同一失败算两次事件。"""
+        for loop in (1, 2):
+            reflection_signals.record_signal(
+                self.db,
+                task_id="task:a",
+                signal_type="repeated_failure",
+                fingerprint="boundary-missing:checkout",
+                source="test",
+                evidence_ids=[f"anchor:loop{loop}"],
+                summary=f"Loop {loop} 同一失败",
+                loop=loop,
+            )
+        report = reflection_signals.evaluate(self.db, task_id="task:a")
+        self.assertEqual(report["decision"], "reflect")
+        self.assertEqual(report["groups"][0]["occurrences"], 2)
+        self.assertEqual(report["groups"][0]["distinct_tasks"], 1)
+
     def test_existing_lesson_used_but_failed(self) -> None:
         self.seed(
             "lesson:checkout-boundary",
@@ -238,8 +256,9 @@ class ReflectionSignalTests(Base):
     def test_stale_lesson_triggers_conflict_check(self) -> None:
         self.seed(
             "lesson:old-checkout-boundary",
-            "# 旧结账边界\n\n已废弃：旧接口不再适用。",
+            "# 旧结账边界\n\n旧接口已被取代。",
             layer="L3",
+            meta={"status": "superseded"},
         )
         reflection_signals.record_signal(
             self.db,
@@ -254,6 +273,30 @@ class ReflectionSignalTests(Base):
         self.assertEqual(report["decision"], "reflect")
         self.assertEqual(report["groups"][0]["classification"], "lesson_stale")
         self.assertEqual(report["groups"][0]["action"], "correct")
+
+    def test_text_marker_alone_is_not_stale(self) -> None:
+        """正文出现「已废弃」常是反例说明：未标 status=superseded 不算失效。"""
+        self.seed(
+            "lesson:deprecated-api-note",
+            "# 旧接口备注\n\n旧写法已废弃，改用 createOrder({ id })；不要再用 createOrder(id)。",
+            layer="L3",
+        )
+        self.seed(
+            "lesson:deprecated-api-note-2",
+            "# 旧接口备注补充\n\n同一场景的补充说明。",
+            layer="L3",
+        )
+        reflection_signals.record_signal(
+            self.db,
+            task_id="task:a",
+            signal_type="verification_failure",
+            fingerprint="deprecated-api-note",
+            source="test",
+            evidence_ids=["anchor:test"],
+            summary="校验失败但经验未失效",
+        )
+        report = reflection_signals.evaluate(self.db, task_id="task:a")
+        self.assertNotEqual(report["groups"][0]["classification"], "lesson_stale")
 
     def test_unverified_signal_does_not_pollute_confirmed_group(self) -> None:
         for task in ("task:a", "task:b"):
@@ -631,6 +674,51 @@ class SkillDraftTests(Base):
         item = report["candidates"][0]
         self.assertEqual(item["status"], "deferred")
         self.assertIn("insufficient_task_evidence", item["reasons"])
+
+    def test_single_task_with_three_instances_is_drafted(self) -> None:
+        """单任务内 ≥3 条实例引用可替代「≥2 任务」，与 promotion 的 ≥3 实例门槛对齐。"""
+        self.seed_pattern(recurrence=3, refs=3)
+        report = skill_draft.generate(
+            self.db, out_dir=self.dir / "drafts", skills_dir=ROOT / "skills"
+        )
+        item = report["candidates"][0]
+        self.assertEqual(item["status"], "drafted", item.get("reasons"))
+
+    def test_text_conflict_words_do_not_block_draft(self) -> None:
+        """正文里的「已废弃 / 不再适用」是反例说明，不是未解决冲突。"""
+        self.seed_pattern(
+            extra="\n## 反例\n- 旧写法已废弃，不再适用，不要再用回调式状态更新\n"
+        )
+        report = skill_draft.generate(
+            self.db, out_dir=self.dir / "drafts", skills_dir=ROOT / "skills"
+        )
+        item = report["candidates"][0]
+        self.assertNotIn("unresolved_conflict", item.get("reasons", []))
+
+    def test_structured_conflict_marker_still_blocks(self) -> None:
+        # 结构化标记来自 metadata（正文措辞不作判据）
+        self.seed(
+            "pattern:async-state-race",
+            (
+                "# 异步状态竞态修复\n\n## 步骤\n1. 校验请求代次\n\n## 验证\n- 连续切换不覆盖\n"
+            ),
+            layer="L5",
+            tags=("pattern", "p_high"),
+            meta={
+                "scope": "global",
+                "review_status": "approved",
+                "recurrence_count": 3,
+                "evidence_ids": [f"memory:lesson:{i}" for i in range(3)],
+                "projects": ["proj-a", "proj-b"],
+                "conflict_marker": "unresolved",
+            },
+        )
+        report = skill_draft.generate(
+            self.db, out_dir=self.dir / "drafts2", skills_dir=ROOT / "skills"
+        )
+        item = report["candidates"][0]
+        self.assertEqual(item["status"], "deferred")
+        self.assertIn("unresolved_conflict", item["reasons"])
 
     def test_existing_skill_overlap_generates_proposal(self) -> None:
         self.seed_pattern()

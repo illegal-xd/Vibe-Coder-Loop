@@ -37,8 +37,11 @@ import evolution_store as S  # noqa: E402
 DRAFT_SCHEMA = "skill-draft/v1"
 INDEX_SCHEMA = "skill-draft-index/v1"
 PATTERN_PREFIX = "pattern:"
-HARD_CONFLICT_MARKERS = ("已废弃", "不再适用", "被取代", "superseded", "冲突未解决")
 COUNTER_MARKERS = ("反例", "不适用", "避免", "不要")
+# 冲突一律看结构化元数据：正文里的「已废弃 / 不再适用 / 被取代」通常是**反例或历史说明**
+# （"旧写法已废弃，改用 X"），按子串判定会把最有价值的经验误判为 unresolved_conflict。
+CONFLICT_STATUSES = ("superseded", "conflict", "contradict")
+CONFLICT_MARKER_FIELDS = ("conflict_marker", "marker", "conflict", "conflict_with", "superseded_by")
 # 英文 slug ↔ 中文技能正文的高信号别名（只用于「是否已有技能覆盖」判定）
 ALIASES = {
     "memory": ("记忆",),
@@ -185,9 +188,11 @@ def _task_refs(meta: dict[str, Any]) -> list[str]:
     return _unique(_as_list(meta.get("task_ids")) + _as_list(meta.get("tasks")))
 
 
-def _has_hard_conflict(value: str, meta: dict[str, Any]) -> bool:
-    text = f"{value}\n{json.dumps(meta, ensure_ascii=False)}"
-    return any(marker in text for marker in HARD_CONFLICT_MARKERS)
+def _has_hard_conflict(meta: dict[str, Any]) -> bool:
+    """只认结构化冲突标记（status / conflict_marker / superseded_by），不看正文措辞。"""
+    if str(meta.get("status") or "").strip().lower() in CONFLICT_STATUSES:
+        return True
+    return any(bool(meta.get(field)) for field in CONFLICT_MARKER_FIELDS)
 
 
 def _has_counterexamples(value: str) -> bool:
@@ -226,11 +231,13 @@ def candidate_from_entry(
         blocked.append("review_rejected")
     if instance_count < min_instances:
         blocked.append("insufficient_instances")
-    if effective_tasks < 2:
+    # 任务维度证据：≥2 个任务，**或** ≥min_instances 条独立实例引用（单任务内多次复现同样可提炼，
+    # 与 promotion.md「同指纹 ≥3 实例建 pattern」对齐，避免 pattern 已建、草稿却永远 deferred）
+    if effective_tasks < 2 and len(refs) < min_instances:
         blocked.append("insufficient_task_evidence")
     if not refs and not _as_list(meta.get("evidence_ids")):
         blocked.append("insufficient_evidence")
-    if _has_hard_conflict(value, meta):
+    if _has_hard_conflict(meta):
         blocked.append("unresolved_conflict")
     if len(projects) < 2:
         warnings.append("single_project")
