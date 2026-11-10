@@ -13,9 +13,11 @@ test("defaults are safe and explicit", () => {
   assert.equal(config.enabled, true);
   assert.equal(config.preview, false);
   assert.deepEqual(config.tools, ["read", "grep", "glob"]);
-  assert.equal(config.barrierOnNonWhitelistedTools, true);
   assert.equal(config.protectCallIdReferences, true);
-  assert.deepEqual(config.deduplication, { enabled: true });
+  assert.deepEqual(config.deduplication, {
+    enabled: true,
+    tools: ["read", "grep", "glob", "bash"],
+  });
   assert.equal(config.errorPurge.enabled, true);
   assert.equal(config.errorPurge.preview, false);
   assert.equal(config.errorPurge.preserveAcrossUserTurns, true);
@@ -24,8 +26,9 @@ test("defaults are safe and explicit", () => {
   assert.equal(config.errorPurge.pruneRepeatedFailures, true);
   assert.equal(config.errorPurge.protectReferences, true);
   assert.equal(config.errorPurge.minSuccesses, 1);
-  // OpenCode reports exit 0 for failed shell commands: completions are not success.
-  assert.equal(config.errorPurge.shellExitReliable, false);
+  // The runtime reports a real exit status, so completed shell calls are
+  // success/failure evidence instead of being ignored.
+  assert.equal(config.errorPurge.shellExitReliable, true);
   assert.equal(config.errorPurge.shellFailureDetection, "ambiguous");
   assert.deepEqual(config.log, DEFAULT_CONFIG.log);
 });
@@ -150,25 +153,34 @@ test("protection lists default to empty and accept empty overrides", () => {
   assert.deepEqual(custom.protectedFilePatterns, ["**/.env"]);
 });
 
-test("error purge input options validate and default conservatively", () => {
+test("error purge input options validate with a turn-based default", () => {
   const defaults = resolveConfig({}, {});
   assert.equal(defaults.errorPurge.redactInputPayload, true);
-  assert.equal(defaults.errorPurge.staleInputAfterUserTurns, null);
+  // Reference parity: confirmed failures older than 4 user turns keep their
+  // error text but drop the bulky input payload.
+  assert.equal(defaults.errorPurge.staleInputAfterTurns, 4);
   assert.ok(defaults.errorPurge.inputPlaceholder.startsWith("[vibe-context-dedup]"));
 
+  const off = resolveConfig({ errorPurge: { staleInputAfterTurns: null } }, {});
+  assert.equal(off.errorPurge.staleInputAfterTurns, 0);
+
+  // Pre-v2 key name remains an alias so an existing config file keeps working.
+  const legacy = resolveConfig({ errorPurge: { staleInputAfterUserTurns: 2 } }, {});
+  assert.equal(legacy.errorPurge.staleInputAfterTurns, 2);
+
   const disabled = resolveConfig(
-    { errorPurge: { redactInputPayload: false, staleInputAfterUserTurns: 3 } },
+    { errorPurge: { redactInputPayload: false, staleInputAfterTurns: 3 } },
     {},
   );
   assert.equal(disabled.errorPurge.redactInputPayload, false);
-  assert.equal(disabled.errorPurge.staleInputAfterUserTurns, 3);
+  assert.equal(disabled.errorPurge.staleInputAfterTurns, 3);
 
   assert.throws(
     () => resolveConfig({ errorPurge: { redactInputPayload: "yes" } }, {}),
     ConfigError,
   );
   assert.throws(
-    () => resolveConfig({ errorPurge: { staleInputAfterUserTurns: 0 } }, {}),
+    () => resolveConfig({ errorPurge: { staleInputAfterTurns: 0 } }, {}),
     ConfigError,
   );
   assert.throws(

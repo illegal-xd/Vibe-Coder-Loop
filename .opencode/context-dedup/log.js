@@ -96,6 +96,7 @@ function sanitizeSupersedeWritesStats(stats) {
     confirmedWriteCount: Number(stats.confirmedWriteCount) || 0,
     ambiguousResultCount: Number(stats.ambiguousResultCount) || 0,
     observedReadCount: Number(stats.observedReadCount) || 0,
+    readCandidateCount: Number(stats.readCandidateCount) || 0,
     confirmedReadCount: Number(stats.confirmedReadCount) || 0,
     fullReadCount: Number(stats.fullReadCount) || 0,
     ambiguousWriteCount: Number(stats.ambiguousWriteCount) || 0,

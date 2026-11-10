@@ -2,13 +2,13 @@
 
 > 范围：**重复只读结果去重（Dedup）**、**过期工具错误裁剪（Error Purge）**、**写操作上下文覆盖（Supersede Writes）**与 **Slim Edit**（工具描述压缩 / read 输出压缩 / 行区间编辑展开，改编自 [openslimedit](https://github.com/ASidorenkoCode/openslimedit)，MIT）。不包含压缩摘要或其他上下文治理策略。
 >
-> 状态：核心算法与 OpenCode 消息适配已实现；**276 项 Node 测试全部通过**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
+> 状态：核心算法与 OpenCode 消息适配已实现；**293 项 Node 测试全部通过**；`experimental.chat.messages.transform` 与 `ToolPart` 结构已对照本机安装的类型定义校验。**未在本机用真实模型请求跑通端到端 hook**，限制见「十二、已知限制与未验证行为」。
 
 ## 一、结论先行
 
 - 六条策略共用同一插件入口与统计漏斗，但**独立开关、独立预览、独立统计**：三条消息裁剪走 `experimental.chat.messages.transform`，三条 Slim Edit 走工具 hook。
 - Dedup 只处理默认白名单 `read` / `grep` / `glob`；Error Purge 只处理**结构化确认**的工具失败；Supersede Writes 只处理**确认成功**的写工具。
-- Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败；默认只认 `ToolPart.state.status === "error"` 且有非空 `state.error`。对 `bash`，本机运行时把失败也报成 `completed` + `exit:0`，因此默认 `shellExitReliable:false`，`completed` shell 不作为 superseder；可显式开启保守的 shell 失败文本识别（见 4.8）。
+- Error Purge **不会**因为输出里出现 `error` / `failed` / `warning` 就判定失败。确认错误来自结构化证据：`state.status === "error"`（非空 `state.error`），或 shell 调用 `completed` 且 `metadata.exit !== 0`（裁剪 `state.output`，保留退出码）；文本识别仅在缺少退出码时补充（见 4.8）。
 - Supersede Writes **只**在同一文件的后续**完整、成功、足够新鲜**的读取之后，抹去旧写操作的正文载荷（`state.input` 的内容字段与 `state.output`），保留文件路径、`status`、callID、metadata、消息顺序与审计身份。
 - Error Purge 只把确认失败的 `state.error` 替换为说明原因的占位文本；当输入载荷的裁剪收益为正时，同时抹去该失败调用输入中的大体积字符串（路径与标识字段保留）。`status: "error"`、callID、metadata、消息顺序均不改变；不删除消息或 ToolPart。
 - 原始会话对象不被修改：Adapter 只克隆受影响的 ToolPart 与消息，再替换本次请求的 `output.messages`。
@@ -66,22 +66,24 @@ ToolStateError: { status: "error", input, error, metadata, time }
 ToolStateCompleted: { status: "completed", input, output, title, metadata, time }
 ```
 
-## 三、Dedup 规则（v1）
+## 三、Dedup 规则（v2）
 
 候选必须同时满足：
 
 1. ToolPart 有非空 `callID` / `tool`；
-2. 工具名在 `tools` 白名单（默认 `read` / `grep` / `glob`，且不在 `mutationTools` 硬拒绝列表）；
+2. 工具名在 `deduplication.tools` 白名单（默认 `read` / `grep` / `glob` / `bash`）；
 3. `state.status === "completed"`；
 4. `state.output` 非空且不是占位文本；
-5. 能确定 `info.path.cwd`；
-6. 参数可规范化。
+5. shell 调用（默认 `bash`）的 `metadata` 不含失败信号（非零 `exit` 等），失败输出属于 Error Purge；
+6. 能确定 `info.path.cwd`；
+7. 参数可规范化。
 
 签名由「工具名 + 规范化参数 + cwd/root + 参数内显式 cwd」组成；路径只做词法规范化，不解析软链、不访问文件系统。同一签名下只有**输出完全一致**的记录进入同组，保留最新一条，裁剪更早的。裁剪前还需：
 
-- 新旧调用之间出现非白名单工具 → 不裁剪；
 - 旧 callID 在裁剪点与保留结果之间被后续文本/工具输入/输出/错误/metadata/subtask 引用 → 不裁剪；保留结果之后的引用不阻塞（保留结果内容完全相同，引用仍可解析）；
 - 估算旧输出 token 不大于占位符 → 不裁剪。
+
+> **为什么不再有“中间工具屏障”（v2）**：进入同一组的记录输出**逐字节相同**，说明可观察结果没有变化；中间调用（`todowrite`、`bash`、`edit` 等）不可能让更早的副本重新变得有信息量。旧 callID 被引用的情况由上面的引用守卫单独覆盖。v1 的 `barrierOnNonWhitelistedTools` 因此移除；实测它拦掉了 64 对完全重复输出（约 40 万字符）且不提供额外安全性。
 
 ## 四、Error Purge 规则
 
@@ -93,16 +95,17 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 - `typeof state.error === "string"` 且去空白后非空；
 - 没有结构化取消/中止标记（`metadata.cancelled/canceled/aborted === true`）。
 
+此外，`bash` 等 shell 工具的 `status === "completed"` 记录若 `metadata` 给出非零退出码（`exit` / `exitCode` / `exit_code` / `code`），同样视为**确认失败**；其失败载荷是 `state.output`（而不是 `state.error`），裁剪时替换 `state.output`、保留 `status` 与 `metadata.exit`。
+
 以下情况**不是**确认错误，默认保留：
 
 - `status === "completed"`，即使 `output` 含 `error` / `failed` / `warning`；
 - `status === "error"` 但 `error` 为空或缺失；
 - `status === "pending"` / `"running"` / 未知；
-- `status === "completed"` 但 `metadata` 明确给出失败信号（非零 `exitCode` / `exit_code` / `exit` / `code`、`success:false`、`ok:false`、`failed:true`、`isError:true`、`timedOut:true`、`status:"error"/"failed"`、非空 `error`/`exception`）；
-- 取消/中止标记；
-- **OpenCode 适配层默认 `shellExitReliable: false`**：`bash` 的 `metadata.exit` 在本机运行时对失败命令也返回 `0`，因此 `completed` + 空 `error` 的 shell 记录**不能证明成功**，计入 `unverifiedShellCount`，不会被用作 superseder。
+- 取消/中止标记（`metadata.cancelled/canceled/aborted`），即使退出码非零；
+- `shellExitReliable: false`（可选回退）时的 shell 记录：`completed` + 空 `error` 不能证明成功，计入 `unverifiedShellCount`，不会被用作 superseder。
 
-后几类计入 `ambiguousResultCount` / `unverifiedShellCount`，不会被用作 superseder。
+其余无法归类的记录计入 `ambiguousResultCount`，不会被用作 superseder。
 
 ### 4.2 操作等价
 
@@ -152,7 +155,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|---|
 | `superseded_by_success` | high | 通过全部守卫才裁剪 |
 | `duplicate_failure` | medium | 保留最新等价失败，裁剪更早重复项 |
-| `stale_failure_input` | medium | 仅在 `staleInputAfterUserTurns` 开启时裁剪输入，error 原文保留 |
+| `stale_failure_input` | medium | 仅在 `staleInputAfterTurns` 开启时裁剪输入，error 原文保留 |
 | 无后续成功 / 跨轮次 / 状态变更 / 引用 / 范围不一致 / 短文本 | — | 保留 |
 
 统计中分别记录 high/medium 决策数、`preservedCount` 与 `skippedReasons`。
@@ -162,44 +165,47 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 上游 DCP 的 Error Purge 只裁剪失败调用的 **input**；本实现此前只处理 error 文本。现在两条规则命中时，会同时评估输入载荷：
 
 - 只替换**顶层字符串**中 token 估算大于占位符的字段；
-- `filePath` / `path` / `file` / `filename` / `fileName` / `cwd` / `root` / `pattern` / `glob` / `include` / `exclude` / `query` / `url` / `name` / `id` / `description` 永不替换；
+- `filePath` / `path` / `file` / `filename` / `fileName` / `cwd` / `root` / `pattern` / `glob` / `include` / `exclude` / `query` / `url` / `name` / `id` / `description` / `command` 永不替换；
 - 对象结构与字段类型不变，`state.input` 只做字段值替换；
 - 安全性来自签名等价：命中的 keeper（后续成功或最新的同签名失败）携带**相同参数**，被抹去的载荷在上下文中仍然可得；
 - 收益独立计算：`error` 文本小于占位符时保留原文，只裁剪输入；两项都没有正收益则不产生决策（`no_token_benefit`）；
 - `errorPurge.redactInputPayload: false` 可整体关闭输入裁剪。
 
-### 4.7 可选：按 user turn 年龄清理陈旧失败输入
+### 4.7 按 turn 年龄清理陈旧失败输入（对齐上游默认）
 
-上游按“轮次阈值”裁剪失败输入。本实现默认不采用**无证据**裁剪，但提供等价的 opt-in 规则：
+上游按 `purgeErrors.turns`（`step-start` 计数）裁剪失败输入。v2 默认启用同一规则：
 
 ```json
-{ "errorPurge": { "staleInputAfterUserTurns": 4 } }
+{ "errorPurge": { "staleInputAfterTurns": 4 } }
 ```
 
 - 仅处理**确认错误**；`error` 原文、`status`、callID、metadata 全部保留；
-- 年龄 = 最新 `userSegment` − 该错误的 `userSegment`，达到阈值才处理；
+- 年龄 = 最新 `turn` − 该错误的 `turn`，`turn` 为 assistant `step-start` 计数（一次自主运行 = 1 个 user segment，但有很多 step；用 user 消息计龄会恒为 0）；
 - 只裁剪 4.6 定义的“大体积字符串”，路径与标识字段保留；
-- 默认 `null`（关闭）；开启后每个决策计入 `decisionKinds.stale_failure_input`，输入使用独立的 `staleInputPlaceholder`（不声称存在“更新的等价调用”）；
+- 默认 `4`（与参考实现 `purgeErrors.turns: 4` 对齐）；设为 `null` 可关闭；每个决策计入 `decisionKinds.stale_failure_input`，输入使用独立的 `staleInputPlaceholder`（不声称存在“更新的等价调用”）；
 - 与 Rule 1 / Rule 2 互斥：已有证据的候选先按高/中置信度规则处理。
 
 ### 4.8 Shell 失败识别与 exit 可信度
 
-本机 OpenCode 对失败的 `bash` 命令也写入 `state.status === "completed"`、空 `state.error`、`metadata.exit === 0`，只把错误文本放在 `state.output`。由此有两个必须处理的问题：
+本机 OpenCode 对失败的 `bash` 命令写入 `state.status === "completed"`、空 `state.error`，并把**真实退出码**写入 `metadata.exit`、错误文本写入 `state.output`（实测历史 1,633 条 bash：exit=0 1,194 条，非零 95 条）。
 
-1. **假成功（P0）**：`completed` + `exit 0` 的 shell 记录不能当作 superseder。OpenCode 适配层默认 `shellExitReliable: false`，这类记录归为 `unverified_shell`，不参与“已被后续成功取代”。
-2. **失败不可见（P1）**：可选开启保守的 shell 失败识别，只匹配明确的硬失败文本（`command not found`、`No such file or directory`、`Cannot find module`、`npm ERR!`、`ERROR Build failed`、`exit=1` 等）。
+因此 v2 的处理是：
+
+1. **非零退出码 = 确认失败**：`completed` + `metadata.exit !== 0`（未取消）进入确认错误候选，裁剪对象是 `state.output`，`status` 与 `metadata.exit` 原样保留（决策 `field: "output"`）。
+2. **零退出码 = 成功**：可作为“后续等价成功”的 superseder（默认 `shellExitReliable: true`）。
+3. **文本识别仍保留为补充**：仅用于没有结构化退出码的宿主。
 
 ```json
-{ "errorPurge": { "shellExitReliable": false, "shellFailureDetection": "ambiguous" } }
+{ "errorPurge": { "shellExitReliable": true, "shellFailureDetection": "ambiguous" } }
 ```
 
-- `shellExitReliable`：默认 `false`（OpenCode）。设为 `true` 才把 `completed` + 空 `error` + 无失败 metadata 的 shell 记录当作成功；仅在确认宿主能正确上报退出码时开启。
-- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `ambiguous`。
-  - `off`：忽略输出文本，仍受 `shellExitReliable` 约束；
+- `shellExitReliable`：默认 `true`。设为 `false` 时退回 v1 行为（`completed` shell 既不是成功也不是失败，计入 `unverifiedShellCount`），仅用于会掩盖失败退出码的宿主。
+- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `ambiguous`，只在缺少结构化退出码时补充判断。
+  - `off`：忽略输出文本；
   - `ambiguous`：命中硬失败文本的 shell 记录归为歧义（保留、不作 superseder，计入 `shellFailureCount`）；
-  - `error`：命中时作为**确认错误**候选（计入 `confirmedErrorCount` / `shellFailureCount`），仍需满足 4.3 的同签名后续成功等全部守卫。生产默认 `shellExitReliable: false` 时，若要真正裁剪 shell 错误，需同时显式设为 `true`。
+  - `error`：命中时作为确认错误候选，仍需满足 4.3 的全部守卫。
 - 识别只作用于 `bash`（`SHELL_TOOLS`）；`read`/`write` 等结构化工具不按文本猜测失败。
-- `unverifiedShellCount` 与 `shellFailureCount` 分别统计“exit 不可信”和“命中失败文本”的记录数，便于判断零裁剪原因。
+- `unverifiedShellCount` 与 `shellFailureCount` 分别统计“exit 不可信”和“shell 失败”的记录数，便于判断零裁剪原因。
 
 ## 四·五、Supersede Writes 规则
 
@@ -209,7 +215,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 1. 工具名在 `supersedeWrites.writeTools`（默认 `write` / `edit` / `multiedit` / `patch` / `apply_patch`）；
 2. `state.status === "completed"`，无结构化失败信号（非零 `exitCode` / `success:false` / `failed:true` / `timedOut` / 取消标记等）；
-3. `state.input` 是对象，且能解析出文件路径（`filePath` / `path` / `file` / `filename` / `fileName`）；
+3. `state.input` 是对象，且能解析出**唯一**文件路径（`filePath` / `path` / `file` / `filename` / `fileName`；`apply_patch` / `patch` 从 `patchText` 的 `*** Add/Delete/Update File:` 行解析，多文件补丁视为身份不确定）；
 4. 能确定执行环境 `info.path.cwd`。
 
 失败、超时、取消、pending/running、仅计划未执行的记录**不会**进入待覆盖状态。候选只记录文件身份与操作元数据，**不复制文件正文**。
@@ -318,14 +324,14 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   "enabled": true,
   "preview": false,
   "tools": ["read", "grep", "glob"],
-  "placeholder": "[vibe-context-dedup] Duplicate read-only tool result omitted; an identical newer result is retained later in the conversation.",
-  "barrierOnNonWhitelistedTools": true,
+  "placeholder": "[vibe-context-dedup] Duplicate tool result omitted; an identical newer result is retained later in the conversation.",
   "protectCallIdReferences": true,
   "mutationTools": ["bash", "edit", "write", "patch", "multiedit", "apply_patch", "task", "skill", "webfetch", "websearch", "todowrite", "question"],
   "protectedTools": [],
   "protectedFilePatterns": [],
   "deduplication": {
-    "enabled": true
+    "enabled": true,
+    "tools": ["read", "grep", "glob", "bash"]
   },
   "errorPurge": {
     "enabled": true,
@@ -335,14 +341,14 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "inputPlaceholder": "[vibe-context-dedup] Failed call input omitted: an equivalent newer call retains the same arguments. The failure status is retained.",
     "staleInputPlaceholder": "[vibe-context-dedup] Failed call input omitted: the failure is older than the retention window. The failure status and error message are retained.",
     "redactInputPayload": true,
-    "staleInputAfterUserTurns": null,
+    "staleInputAfterTurns": 4,
     "preserveAcrossUserTurns": true,
     "preserveRepeatedFailuresAcrossUserTurns": false,
     "preserveOnStateChanges": true,
     "pruneRepeatedFailures": true,
     "protectReferences": true,
     "minSuccesses": 1,
-    "shellExitReliable": false,
+    "shellExitReliable": true,
     "shellFailureDetection": "ambiguous"
   },
   "supersedeWrites": {
@@ -380,11 +386,11 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|---|
 | `enabled` | 插件总开关（所有策略） | `true` |
 | `preview` | 全局观察模式；Dedup 直接使用，其余策略默认继承 | `false` |
-| `tools` | Dedup 只读白名单；同时作为 Error Purge 的“只读工具”集合 | `["read","grep","glob"]` |
+| `tools` | 只读工具集合，供 Error Purge / Supersede 判定“非变更工具” | `["read","grep","glob"]` |
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
-| `barrierOnNonWhitelistedTools` | Dedup 依赖屏障 | `true` |
+| `deduplication.tools` | Dedup 白名单（含 `bash`；失败 shell 自动排除） | `["read","grep","glob","bash"]` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
-| `mutationTools` | Dedup 硬拒绝的变更工具；Error Purge 也将其视为状态变更 | 见上 |
+| `mutationTools` | Error Purge 视为状态变更的工具集合 | 见上 |
 | `protectedTools` | 三条策略共用：工具名（支持 `*`/`?` glob）永不裁剪 | `[]` |
 | `protectedFilePatterns` | 三条策略共用：文件 glob 永不裁剪；匹配原始参数、cwd 绝对路径与项目相对路径 | `[]` |
 | `deduplication.enabled` | Dedup 独立开关 | `true` |
@@ -395,14 +401,14 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.inputPlaceholder` | 规则 1/2 命中时失败调用输入的占位文本 | 见上 |
 | `errorPurge.staleInputPlaceholder` | 年龄规则命中时失败调用输入的占位文本（错误原文保留） | 见上 |
 | `errorPurge.redactInputPayload` | 命中规则时是否同时裁剪失败调用的大体积输入字符串 | `true` |
-| `errorPurge.staleInputAfterUserTurns` | 可选：确认错误超过 N 个 user turn 后只裁剪其输入（error 原文保留）；`null` 关闭 | `null` |
+| `errorPurge.staleInputAfterTurns` | 确认错误超过 N 个 assistant step 后只裁剪其输入（error 原文保留）；`null` 关闭；旧键 `staleInputAfterUserTurns` 仍作为别名接受 | `4` |
 | `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误（仅作用于“后续成功取代失败”规则） | `true` |
 | `errorPurge.preserveRepeatedFailuresAcrossUserTurns` | 重复相同失败的裁剪是否也受 user turn 限制；默认 `false`，因为保留的最新失败仍带相同正文与参数 | `false` |
 | `errorPurge.preserveOnStateChanges` | 失败与成功之间存在状态变更工具时保留 | `true` |
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
 | `errorPurge.protectReferences` | 旧错误 callID 被后续引用时保留 | `true` |
 | `errorPurge.minSuccesses` | 需要多少个后续等价成功才 supersede | `1` |
-| `errorPurge.shellExitReliable` | 是否信任 `completed` shell 的 exit；OpenCode 失败命令也报 `0`，默认不信任 | `false` |
+| `errorPurge.shellExitReliable` | 是否信任 `completed` shell 的 exit（非零即确认失败） | `true` |
 | `errorPurge.shellFailureDetection` | shell 输出硬失败识别：`off` / `ambiguous` / `error` | `ambiguous` |
 | `supersedeWrites.enabled` | Supersede Writes 独立开关 | `true` |
 | `supersedeWrites.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
@@ -466,7 +472,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|---|
 | `record_scan` | 进入合格集之前的记录 | `unsupported_tool`、`not_completed`、`already_pruned`、`protected_tool` / `protected_path`、`missing_environment`、`missing_description` / `missing_args`、`directory`、`unparsed_output` |
 | `eligible` | 合格但未成为可裁剪候选 | Dedup：`unique_signature`、`same_signature_different_output`、`same_target_args_changed`；Error Purge：`no_success_for_signature`、`later_success_args_changed`、`success_only_before_error`；Supersede：`no_superseding_read`、`read_not_full`；Slim Edit：`already_slim`、`no_change`、`not_line_range`、`literal_match`、`range_out_of_bounds` |
-| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_side_effect`、`intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
+| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
 | `application` | 已标记但未能写回 | `apply_*`、`preview`、`output_read_only`、`args_read_only` |
 
 因此 `eligible - candidate` 由 `eligible` 原因解释，`candidate - changed` 由 `candidate` 原因 + 每组刻意保留的 keeper 解释；`preserved_items` 只统计后者（候选保留数），不包含候选之前的合格记录。
@@ -491,7 +497,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `uniqueSignatureCount` / `sameSignatureDifferentOutputCount` | 合格记录中“签名唯一”/“签名相同但输出不同”的数量（解释为何不可裁剪） |
 | `sameSignatureDifferentOutputGroups` | 同签名不同输出的签名组数 |
 | `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
-| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `intervening_side_effect` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `shell_failure` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省 |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的全部决策估算节省 |
 | `tokenCounting` | `estimate_heuristic_v1` |
@@ -827,10 +833,10 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | `changed_items` / `removed_items` | 实际裁剪数 | 真正改动了请求副本的决策数（`removed_items` 为兼容别名，等于 `changed_items`） |
 | `preserved_items` | 保留候选数 | `candidate_items − changed_items` |
 | `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
-| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `full` / `rejected_reasons`（`read_truncated` 等） |
+| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `candidate`（通过结构校验的读取）/ `full` / `rejected_reasons`（`read_truncated` 等） |
 | `skipped.record_scan` | 扫描记录数 | 未进入合格集的记录（`unsupported_tool` 计 bash/edit 等非白名单调用，`not_completed` / `already_pruned` / `protected_tool` / `protected_path` / `missing_environment` / `missing_description` / `missing_args` / `directory` 等结构缺失，**可合法大于 `candidate_items`**） |
 | `skipped.eligible` | 合格记录数 | 合格但未成为可裁剪候选（Dedup `unique_signature` / `same_signature_different_output` / `same_target_args_changed`；Error Purge `no_success_for_signature` / `later_success_args_changed` / `success_only_before_error`；Supersede `no_superseding_read` / `read_not_full`；Slim Edit `already_slim` / `no_change` / `not_line_range` / `literal_match` / `range_out_of_bounds` 等） |
-| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_side_effect` / `intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
+| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
 | `skipped.application` | 应用阶段决策数 | 已标记但未能写回（`apply_*`、`preview`、`output_read_only`、`args_read_only`） |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
 | `token_unit` | — | v4 固定为 `estimated_tokens_char_weight_v1`；说明 `removed_tokens` 是估算 Token 数，不是字符数，也不是计费值 |
@@ -892,15 +898,14 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - `tool.definition` / `tool.execute.before` / `tool.execute.after` 与 `experimental.chat.messages.transform` 的真实调用顺序；当前实现按“定义/工具结果先发生、用量记录后发生”的保守假设归属统计。
 - 实际模型请求下的端到端裁剪、Slim Edit 行为与 token 计费变化。
 - 与其他插件（如 advisor、DCP）同时加载时的 handler 顺序与叠加效果。
-- OpenCode 各工具实际写入 `state.metadata` 的失败信号形态；当前只做保守的结构化歧义判断。
-- **已确认（2026-10-30）**：本机 OpenCode 对失败的 `bash` 命令也写 `status:"completed"`、空 `error`、`metadata.exit:0`，退出码不可信。因此适配层默认 `shellExitReliable:false`，所有 `completed` shell 记录都不能作为 superseder；只有显式设为 `true`（并可选 `shellFailureDetection:"error"`）才会恢复 shell 成功取代失败。
+- **已修订（2026-11-10）**：旧结论“本机 OpenCode 对失败命令也报 `exit:0`”不成立。实测 1,633 条 `bash` 记录中 `metadata.exit` 存在且非零 95 条（exit 1/2/7/127），失败命令 `status:"completed"`、`error:""`、`metadata.exit:1`。因此 v2 默认 `shellExitReliable:true`：非零退出码为确认失败，零退出码可作 superseder；旧行为仍可用 `shellExitReliable:false` 回退。
 
 **已验证：**
 
 - 本机安装的 `@opencode-ai/plugin` 类型定义中存在该 hook，消息结构为 `{ info: Message, parts: Part[] }`。
 - 本机安装的 SDK 类型中 `ToolPart` 含 `callID`、`tool`、`state`；错误态含 `status: "error"` 与 `error: string`，完成态含 `status: "completed"` 与 `output: string`。
 - 参考项目 `opencode-dynamic-context-pruning` 使用同一 hook 并就地修改 `output.messages`。
-- Node/Bun 可加载插件入口并注册 hook；267 项 Node 测试全部通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
+- Node/Bun 可加载插件入口并注册 hook；293 项 Node 测试全部通过；原始消息对象不被修改、结构校验与回退路径有测试覆盖。
 
 ## 十三、卸载 / 回滚
 

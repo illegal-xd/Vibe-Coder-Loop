@@ -7,6 +7,7 @@
  */
 
 import {
+  DEFAULT_DEDUP_TOOLS,
   DEFAULT_MUTATION_TOOLS,
   DEFAULT_PLACEHOLDER,
   DEFAULT_READ_ONLY_TOOLS,
@@ -34,7 +35,6 @@ export const DEFAULT_CONFIG = Object.freeze({
   preview: false,
   tools: Object.freeze([...DEFAULT_READ_ONLY_TOOLS]),
   placeholder: DEFAULT_PLACEHOLDER,
-  barrierOnNonWhitelistedTools: true,
   protectCallIdReferences: true,
   mutationTools: Object.freeze([...DEFAULT_MUTATION_TOOLS]),
   /** Tools that must never be pruned by any strategy (exact or glob). */
@@ -43,6 +43,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   protectedFilePatterns: Object.freeze([]),
   deduplication: Object.freeze({
     enabled: true,
+    tools: Object.freeze([...DEFAULT_DEDUP_TOOLS]),
   }),
   errorPurge: Object.freeze({
     enabled: true,
@@ -52,7 +53,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     inputPlaceholder: DEFAULT_ERROR_INPUT_PLACEHOLDER,
     staleInputPlaceholder: DEFAULT_STALE_INPUT_PLACEHOLDER,
     redactInputPayload: true,
-    staleInputAfterUserTurns: null,
+    staleInputAfterTurns: 4,
     preserveAcrossUserTurns: true,
     preserveRepeatedFailuresAcrossUserTurns: false,
     preserveOnStateChanges: true,
@@ -60,8 +61,12 @@ export const DEFAULT_CONFIG = Object.freeze({
     pruneRepeatedFailures: true,
     protectReferences: true,
     minSuccesses: 1,
-    /** OpenCode reports exit 0 for failed shell commands, so completions are not proof of success. */
-    shellExitReliable: false,
+    /**
+     * The runtime reports a real exit status (`metadata.exit`) for shell calls,
+     * so non-zero exits are confirmed failures and zero exits are successes.
+     * Set false only for hosts that mask failures as exit 0.
+     */
+    shellExitReliable: true,
     shellFailureDetection: DEFAULT_SHELL_FAILURE_DETECTION,
   }),
   supersedeWrites: Object.freeze({
@@ -100,6 +105,19 @@ export function isTruthy(value) {
   if (value === true) return true;
   if (typeof value !== "string") return false;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+/**
+ * Turn window for stale-input pruning: a positive integer, or null to disable
+ * (resolved to 0 so the core stays a plain number).
+ */
+function resolveTurnWindow(value, fallback) {
+  if (value === undefined) return fallback;
+  if (value === null) return 0;
+  if (Number.isInteger(value) && value > 0) return value;
+  throw new ConfigError(
+    "errorPurge.staleInputAfterTurns must be a positive integer or null",
+  );
 }
 
 function assertBoolean(value, field) {
@@ -173,6 +191,11 @@ function resolveDeduplication(raw) {
       raw.enabled === undefined
         ? DEFAULT_CONFIG.deduplication.enabled
         : assertBoolean(raw.enabled, "deduplication.enabled"),
+    tools: stringList(
+      raw.tools,
+      "deduplication.tools",
+      DEFAULT_CONFIG.deduplication.tools,
+    ),
   };
   if (raw.normalizeReadOutput !== undefined) {
     result.normalizeReadOutput = assertBoolean(
@@ -240,16 +263,14 @@ function resolveErrorPurge(raw, env, globalPreview) {
       raw.redactInputPayload === undefined
         ? DEFAULT_CONFIG.errorPurge.redactInputPayload
         : assertBoolean(raw.redactInputPayload, "errorPurge.redactInputPayload"),
-    staleInputAfterUserTurns:
-      raw.staleInputAfterUserTurns === undefined || raw.staleInputAfterUserTurns === null
-        ? DEFAULT_CONFIG.errorPurge.staleInputAfterUserTurns
-        : Number.isInteger(raw.staleInputAfterUserTurns) && raw.staleInputAfterUserTurns > 0
-          ? raw.staleInputAfterUserTurns
-          : (() => {
-              throw new ConfigError(
-                "errorPurge.staleInputAfterUserTurns must be a positive integer or null",
-              );
-            })(),
+    // `staleInputAfterUserTurns` is the pre-v2 name, kept as an alias so an
+    // existing config file does not silently lose the setting.
+    staleInputAfterTurns: resolveTurnWindow(
+      raw.staleInputAfterTurns !== undefined
+        ? raw.staleInputAfterTurns
+        : raw.staleInputAfterUserTurns,
+      DEFAULT_CONFIG.errorPurge.staleInputAfterTurns,
+    ),
     preserveAcrossUserTurns:
       raw.preserveAcrossUserTurns === undefined
         ? DEFAULT_CONFIG.errorPurge.preserveAcrossUserTurns
@@ -532,11 +553,6 @@ export function resolveConfig(raw = {}, env = process.env) {
     DEFAULT_CONFIG.placeholder,
   );
 
-  const barrierOnNonWhitelistedTools =
-    raw.barrierOnNonWhitelistedTools === undefined
-      ? DEFAULT_CONFIG.barrierOnNonWhitelistedTools
-      : assertBoolean(raw.barrierOnNonWhitelistedTools, "barrierOnNonWhitelistedTools");
-
   const protectCallIdReferences =
     raw.protectCallIdReferences === undefined
       ? DEFAULT_CONFIG.protectCallIdReferences
@@ -554,7 +570,6 @@ export function resolveConfig(raw = {}, env = process.env) {
     preview: isTruthy(env.VIBE_CONTEXT_DEDUP_PREVIEW) ? true : preview,
     tools,
     placeholder,
-    barrierOnNonWhitelistedTools,
     protectCallIdReferences,
     mutationTools,
     protectedTools,

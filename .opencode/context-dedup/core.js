@@ -6,13 +6,16 @@
  * decisions plus aggregate statistics. Keeping it host-neutral makes the
  * rules independently testable and reusable by another adapter.
  *
- * Safety policy (v1):
- * - only explicitly whitelisted read-only tools are considered;
+ * Safety policy (v2):
+ * - only tools in the deduplication whitelist are considered (read-only
+ *   built-ins plus shell); the adapter passes the resolved list;
  * - only successful, completed, non-empty, non-placeholder outputs;
+ * - failed shell calls (non-zero exit in metadata) are never candidates,
+ *   because their output is the failure evidence;
  * - an older output is pruned only when a newer call has the same tool,
  *   canonical arguments, execution environment, AND byte-identical output;
- * - a non-whitelisted tool call between the two observations is treated as a
- *   dependency barrier;
+ *   identical output proves the observable result did not change, so no
+ *   intervening-call barrier is needed;
  * - records whose tool or file path matches the user's protection rules are
  *   never pruned (same guard as the reference implementation);
  * - call-ID references are checked by the adapter because only it can see the
@@ -22,15 +25,34 @@
 export const PRUNE_MARKER = "[vibe-context-dedup]";
 
 export const DEFAULT_PLACEHOLDER =
-  `${PRUNE_MARKER} Duplicate read-only tool result omitted; ` +
+  `${PRUNE_MARKER} Duplicate tool result omitted; ` +
   "an identical newer result is retained later in the conversation.";
 
 /** Read-only OpenCode built-ins verified from the Tools documentation. */
 export const DEFAULT_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "glob"]);
 
 /**
- * Tools that are known to mutate state. They are barriers even if a user
- * accidentally adds them to the read-only whitelist.
+ * Deduplication scope. Shell output is eligible too: two calls with identical
+ * arguments and byte-identical output carry the same information, so pruning
+ * the older result is lossless. Failed shell calls are excluded separately by
+ * the metadata failure check below.
+ */
+export const DEFAULT_DEDUP_TOOLS = Object.freeze([
+  ...DEFAULT_READ_ONLY_TOOLS,
+  "bash",
+]);
+
+/**
+ * Shell tools whose exit status (not the output text) decides success.
+ * Only used by deduplication to exclude failed calls; error-purge owns the
+ * full failure classification.
+ */
+export const DEFAULT_SHELL_TOOLS = Object.freeze(["bash"]);
+
+/**
+ * Tools that are known to mutate state. Kept for Error Purge, where a state
+ * change between a failure and a later success invalidates the supersession,
+ * and to keep shell/orchestration tools out of the read-only set.
  */
 export const DEFAULT_MUTATION_TOOLS = Object.freeze([
   "bash",
@@ -514,16 +536,16 @@ export function hasOrderInRange(sortedOrders, lowerExclusive, upperExclusive) {
 
 function normalizeOptions(config = {}) {
   const enabled = config.enabled !== false;
-  const rawTools = Array.isArray(config.tools) ? config.tools : DEFAULT_READ_ONLY_TOOLS;
+  const rawTools = Array.isArray(config.tools) ? config.tools : DEFAULT_DEDUP_TOOLS;
   const tools = rawTools
     .filter((tool) => typeof tool === "string" && tool.trim().length > 0)
     .map((tool) => tool.trim());
   const toolSet = new Set(tools);
-  const rawMutationTools = Array.isArray(config.mutationTools)
-    ? config.mutationTools
-    : DEFAULT_MUTATION_TOOLS;
-  const mutationTools = new Set(
-    rawMutationTools
+  const rawShellTools = Array.isArray(config.shellTools)
+    ? config.shellTools
+    : DEFAULT_SHELL_TOOLS;
+  const shellTools = new Set(
+    rawShellTools
       .filter((tool) => typeof tool === "string" && tool.trim().length > 0)
       .map((tool) => tool.trim()),
   );
@@ -545,9 +567,8 @@ function normalizeOptions(config = {}) {
   return {
     enabled,
     toolSet,
-    mutationTools,
+    shellTools,
     placeholder,
-    barrierOnNonWhitelistedTools: config.barrierOnNonWhitelistedTools !== false,
     protectedTools,
     protectedFilePatterns,
     normalizeReadOutput: normalizeRead,
@@ -610,23 +631,11 @@ export function planDeduplication(records, config = {}) {
     return { decisions: [], stats };
   }
 
-  // Barrier timeline is independent of the duplicate pair, so build it once.
-  // A mutation tool, or any non-whitelisted tool when that guard is enabled,
-  // blocks every duplicate group that spans it.
-  const barrierOrders = [];
-  for (const record of records) {
-    if (!record || typeof record !== "object") continue;
-    if (!Number.isFinite(record.order)) continue;
-    if (options.mutationTools.has(record.tool)) {
-      barrierOrders.push(record.order);
-      continue;
-    }
-    if (options.barrierOnNonWhitelistedTools && !options.toolSet.has(record.tool)) {
-      barrierOrders.push(record.order);
-    }
-  }
-  barrierOrders.sort((left, right) => left - right);
-
+  // Earlier outputs are pruned only when a newer call has the same tool,
+  // canonical arguments, environment, AND byte-identical output. Identical
+  // output proves the observable result did not change, so a tool call in
+  // between cannot invalidate the duplicate pair; references to the old call
+  // id are guarded separately by the adapter (`protectCallIdReferences`).
   const eligible = [];
   const seenIds = new Set();
 
@@ -639,11 +648,7 @@ export function planDeduplication(records, config = {}) {
       increment(stats.skippedReasons, "invalid_call_id");
       continue;
     }
-    if (
-      typeof record.tool !== "string" ||
-      !options.toolSet.has(record.tool) ||
-      options.mutationTools.has(record.tool)
-    ) {
+    if (typeof record.tool !== "string" || !options.toolSet.has(record.tool)) {
       increment(stats.skippedReasons, "unsupported_tool");
       continue;
     }
@@ -657,6 +662,12 @@ export function planDeduplication(records, config = {}) {
     }
     if (isPrunedOutput(record.output)) {
       increment(stats.skippedReasons, "already_pruned");
+      continue;
+    }
+    // A failed shell call's output is the failure evidence, not a duplicate
+    // read of otherwise-available data. Keep it until Error Purge decides.
+    if (options.shellTools.has(record.tool) && hasFailureMetadata(record.metadata)) {
+      increment(stats.skippedReasons, "shell_failure");
       continue;
     }
     if (!isPlainObject(record.args)) {
@@ -761,12 +772,6 @@ export function planDeduplication(records, config = {}) {
       let keeper = outputGroup[0];
       for (let index = 1; index < outputGroup.length; index += 1) {
         const next = outputGroup[index];
-        if (hasOrderInRange(barrierOrders, keeper.order, next.order)) {
-          increment(stats.skippedReasons, "intervening_side_effect");
-          keeper = next;
-          continue;
-        }
-
         const estimatedTokensSaved = keeperTokens(keeper) - placeholderTokens;
         if (estimatedTokensSaved <= 0) {
           increment(stats.skippedReasons, "no_token_benefit");

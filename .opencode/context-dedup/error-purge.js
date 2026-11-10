@@ -33,10 +33,11 @@
  * same arguments, so the content still exists later in the conversation. The
  * error message itself is only replaced when that replacement is smaller.
  *
- * An optional, disabled-by-default rule (`staleInputAfterUserTurns`) redacts
- * the input of confirmed errors older than N user turns without touching the
- * error message. The reference implementation prunes on turn age alone; this
- * port keeps that behavior opt-in so the default stays evidence-based.
+ * A turn-age rule (`staleInputAfterTurns`, default 4) redacts the input of
+ * confirmed errors older than N assistant steps without touching the error
+ * message. "Turn" is the `step-start` counter the reference implementation
+ * uses (`purgeErrors.turns`); a long autonomous run is one user message but
+ * many steps, so user-message age would never fire in practice.
  */
 
 import {
@@ -128,6 +129,9 @@ const ERROR_INPUT_KEEP_KEYS = new Set([
   "name",
   "id",
   "description",
+  // Shell commands identify what failed; keep them so the pruned output still
+  // has diagnostic context.
+  "command",
 ]);
 
 /**
@@ -240,9 +244,9 @@ function normalizeOptions(config = {}) {
         (pattern) => typeof pattern === "string" && pattern.trim().length > 0,
       )
     : [];
-  const staleInputAfterUserTurns =
-    Number.isInteger(config.staleInputAfterUserTurns) && config.staleInputAfterUserTurns > 0
-      ? config.staleInputAfterUserTurns
+  const staleInputAfterTurns =
+    Number.isInteger(config.staleInputAfterTurns) && config.staleInputAfterTurns > 0
+      ? config.staleInputAfterTurns
       : 0;
   // Host-neutral default is "trusted" for backward compatibility. The
   // OpenCode adapter resolves `shellExitReliable: false` because that runtime
@@ -283,7 +287,7 @@ function normalizeOptions(config = {}) {
     pruneRepeatedFailures: config.pruneRepeatedFailures !== false,
     minSuccesses,
     redactInputPayload: config.redactInputPayload !== false,
-    staleInputAfterUserTurns,
+    staleInputAfterTurns,
     shellExitReliable,
     shellFailureDetection,
     protectedTools,
@@ -316,6 +320,22 @@ function hasCancellationMetadata(record) {
 
 function isShellTool(tool) {
   return typeof tool === "string" && SHELL_TOOLS.includes(tool);
+}
+
+/**
+ * A completed shell call whose metadata reports a non-zero exit is a
+ * confirmed failure. The bulky failed output (stderr/logs) is the payload
+ * Error Purge may replace; the exit status and command are preserved.
+ * Cancellation/abort metadata is not a command failure and is excluded.
+ */
+function isShellExitError(record) {
+  return (
+    !!record &&
+    isShellTool(record.tool) &&
+    record.status === "completed" &&
+    !hasCancellationMetadata(record) &&
+    hasFailureMetadata(record.metadata)
+  );
 }
 
 /**
@@ -410,7 +430,8 @@ function barrierReason(candidate, newer, options, timeline) {
   return all > sameOperation ? "intervening_state_change" : "";
 }
 
-function candidateError(record, stats, signature, options) {
+function candidateError(record, stats, signature, options, source) {
+  const field = source?.field === "output" ? "output" : "error";
   if (typeof record.tool !== "string" || record.tool.length === 0) {
     increment(stats.skippedReasons, "invalid_tool");
     return null;
@@ -435,7 +456,12 @@ function candidateError(record, stats, signature, options) {
     increment(stats.skippedReasons, "missing_environment");
     return null;
   }
-  if (isPrunedOutput(record.error)) {
+  const text = field === "output" ? record.output : record.error;
+  if (typeof text !== "string" || text.length === 0) {
+    increment(stats.skippedReasons, "empty_output");
+    return null;
+  }
+  if (isPrunedOutput(text)) {
     increment(stats.skippedReasons, "already_pruned");
     return null;
   }
@@ -452,8 +478,10 @@ function candidateError(record, stats, signature, options) {
   return {
     record,
     signature,
-    errorText: record.error,
+    field,
+    errorText: text,
     userSegment: userSegmentOf(record),
+    turn: Number.isFinite(record.turn) ? record.turn : 0,
     order: record.order,
     blockedReason: "",
     rule1Reason: "",
@@ -542,6 +570,18 @@ export function planErrorPurge(records, config = {}) {
     }
 
     const shellFailure = detectShellFailure(record);
+    // Structured exit status is stronger evidence than output text: a
+    // non-zero exit on a completed shell call is a confirmed failure, and the
+    // failed output is the payload that may be pruned.
+    if (isShellExitError(record)) {
+      classifications[index] = "error";
+      stats.confirmedErrorCount += 1;
+      stats.shellFailureCount += 1;
+      if (typeof record.tool === "string" && record.tool.length > 0) {
+        candidateTools.add(record.tool);
+      }
+      continue;
+    }
     if (
       shellFailure &&
       options.shellFailureDetection === "error" &&
@@ -623,7 +663,8 @@ export function planErrorPurge(records, config = {}) {
     }
 
     if (kind === "error") {
-      const candidate = candidateError(record, stats, signature, options);
+      const source = isShellExitError(record) ? { field: "output" } : undefined;
+      const candidate = candidateError(record, stats, signature, options, source);
       if (candidate) candidates.push(candidate);
       continue;
     }
@@ -682,7 +723,7 @@ export function planErrorPurge(records, config = {}) {
       order: candidate.order,
       keeperId: keeper?.record?.id,
       keeperOrder: keeper?.order,
-      field: "error",
+      field: candidate.field ?? "error",
       expectedValue: candidate.errorText,
       replacement: replaceError ? replacement : candidate.errorText,
       replaceError,
@@ -828,16 +869,16 @@ export function planErrorPurge(records, config = {}) {
   // purge): redact the input payload of confirmed errors older than N user
   // turns while preserving the error message. Disabled by default so the
   // default policy still requires positive evidence that the failure is dead.
-  if (options.redactInputPayload && options.staleInputAfterUserTurns > 0) {
-    let latestUserSegment = 0;
+  if (options.redactInputPayload && options.staleInputAfterTurns > 0) {
+    let latestTurn = 0;
     for (const record of records) {
-      if (record && Number.isFinite(record.userSegment)) {
-        latestUserSegment = Math.max(latestUserSegment, record.userSegment);
+      if (record && Number.isFinite(record.turn)) {
+        latestTurn = Math.max(latestTurn, record.turn);
       }
     }
     for (const candidate of candidates) {
       if (candidate.decided) continue;
-      if (latestUserSegment - candidate.userSegment < options.staleInputAfterUserTurns) {
+      if (latestTurn - candidate.turn < options.staleInputAfterTurns) {
         continue;
       }
       const redaction = redactErrorInput(

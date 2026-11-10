@@ -475,3 +475,56 @@ test("disabled strategy returns no decisions and no candidates", () => {
   assert.equal(decisions.length, 0);
   assert.equal(stats.skippedReasons.disabled, 2);
 });
+
+test("apply_patch resolves a single-file identity from patchText", () => {
+  const patch = {
+    tool: "apply_patch",
+    args: { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n@@\n+ok\n*** End Patch" },
+    env: { cwd: "/repo", root: "/repo" },
+  };
+  assert.equal(
+    fileIdentityOf(patch),
+    fileIdentityOf({ tool: "edit", args: { filePath: "src/a.ts" }, env: { cwd: "/repo", root: "/repo" } }),
+  );
+});
+
+test("apply_patch with several files has no unambiguous identity", () => {
+  const patch = {
+    tool: "apply_patch",
+    args: {
+      patchText:
+        "*** Begin Patch\n*** Update File: src/a.ts\n@@\n*** Add File: src/b.ts\n+ok\n*** End Patch",
+    },
+    env: { cwd: "/repo", root: "/repo" },
+  };
+  assert.equal(fileIdentityOf(patch), "");
+});
+
+test("a full read supersedes a single-file apply_patch and redacts patchText", () => {
+  const patchText =
+    "*** Begin Patch\n*** Update File: src/a.ts\n" +
+    "+export const value = 42;\n".repeat(120) +
+    "*** End Patch";
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1, tool: "apply_patch", args: { patchText } }),
+    readRec({ id: "r1", order: 2 }),
+  ]);
+
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].redactedInput.patchText, DEFAULT_SUPERSEDE_PLACEHOLDER);
+  assert.equal(decisions[0].redactedInput.filePath, undefined);
+  assert.ok(stats.tokenSavingsEstimatedIfApplied > 0);
+});
+
+test("a partial read never supersedes and is counted separately", () => {
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({ id: "r1", order: 2, args: { filePath: "src/a.ts", offset: 40 } }),
+  ]);
+
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.observedReadCount, 1);
+  assert.equal(stats.readCandidateCount, 1);
+  assert.equal(stats.confirmedReadCount, 0);
+  assert.equal(stats.readRejectedReasons.read_partial_offset, 1);
+});

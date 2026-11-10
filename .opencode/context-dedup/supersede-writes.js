@@ -50,6 +50,7 @@ import {
   isPrunedOutput,
   normalizePath,
   protectedReason,
+  recordFilePaths,
   textTokenUnits,
   validPlaceholder,
 } from "./core.js";
@@ -79,6 +80,7 @@ export const CONTENT_KEYS = Object.freeze([
   "new_string",
   "edits",
   "patch",
+  "patchText",
   "diff",
   "input",
 ]);
@@ -149,6 +151,10 @@ export function createSupersedeWritesStats() {
     // (eligible) -> writes that share identity with an accepted full read
     // (candidate) -> decisions (marked) -> applied (changed).
     observedReadCount: 0,
+    // Reads that pass the structural candidate checks (successful, non-empty,
+    // non-placeholder). `confirmedReadCount` counts only complete reads, so
+    // this is the denominator for "why was my write not superseded?".
+    readCandidateCount: 0,
     confirmedReadCount: 0,
     fullReadCount: 0,
     ambiguousWriteCount: 0,
@@ -220,8 +226,15 @@ export function fileIdentityOf(record) {
   const cwd = typeof env.cwd === "string" && env.cwd.length > 0 ? env.cwd : "";
   const root = typeof env.root === "string" && env.root.length > 0 ? env.root : "";
   if (!cwd) return "";
-  const raw = rawPathArg(record.args);
-  if (!raw) return "";
+  let raw = rawPathArg(record.args);
+  if (!raw) {
+    // `apply_patch` carries its targets inside `patchText`, not in a path
+    // argument. Only a single-target patch has an unambiguous file identity;
+    // a multi-file patch is treated as unresolved (fail safe).
+    const paths = recordFilePaths(record);
+    if (paths.length !== 1) return "";
+    raw = paths[0];
+  }
   const normalized = normalizePath(raw, cwd);
   if (!normalized) return "";
   return [normalized, normalizePath(cwd, null), normalizePath(root, null)].join("\u0000");
@@ -549,6 +562,7 @@ export function planSupersedeWrites(records, config = {}) {
 
     if (typeof record.tool === "string" && options.readTools.has(record.tool)) {
       stats.observedReadCount += 1;
+      if (isReadCandidate(record, options)) stats.readCandidateCount += 1;
       const inspection = options.requireFullRead
         ? inspectRead(record, options)
         : { full: isReadCandidate(record, options), reason: "read_partial" };

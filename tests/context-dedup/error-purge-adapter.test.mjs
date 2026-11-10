@@ -143,9 +143,22 @@ test("Error Purge replaces only state.error and preserves call/result integrity"
   assert.deepEqual(messages, original);
 });
 
-test("default config treats completed shell output as unverified, not success", () => {
+test("default config trusts the shell exit status and prunes the superseded error", () => {
   const messages = errorConversation();
   const result = transformMessages(messages, SAFE_CONFIG);
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.errorPurge.prunedCount, 1);
+  assert.equal(result.stats.errorPurge.confirmedErrorCount, 1);
+  assert.equal(result.stats.errorPurge.unverifiedShellCount, 0);
+});
+
+test("untrusted shell exit (opt-in) keeps completed output out of the superseder set", () => {
+  const messages = errorConversation();
+  const result = transformMessages(
+    messages,
+    resolveConfig({ errorPurge: { shellExitReliable: false } }, {}),
+  );
 
   assert.equal(result.changed, false);
   assert.equal(result.stats.errorPurge.prunedCount, 0);
@@ -286,7 +299,10 @@ test("incomplete or structured-ambiguous results do not supersede", () => {
     CONFIG,
   );
   assert.equal(failureMetadata.changed, false);
-  assert.equal(failureMetadata.stats.errorPurge.ambiguousResultCount, 1);
+  assert.equal(failureMetadata.stats.errorPurge.ambiguousResultCount, 0);
+  // The completed call failed, so it is a confirmed error itself and can
+  // never act as the later success.
+  assert.equal(failureMetadata.stats.errorPurge.confirmedErrorCount, 2);
 });
 
 test("observation-only mode reports candidates without changing content", () => {
@@ -561,6 +577,14 @@ test("Error Purge stale-input rule redacts old failed inputs but keeps the messa
       id: "a_later",
       parentID: "u2",
       parts: [
+        // Five assistant steps after the failure: the age rule counts
+        // `step-start` parts, not user messages.
+        ...[0, 1, 2, 3, 4].map((index) => ({
+          id: `prt_step_${index}`,
+          sessionID: "ses_test",
+          messageID: "a_later",
+          type: "step-start",
+        })),
         toolPart({
           messageID: "a_later",
           callID: "r1",
@@ -571,7 +595,7 @@ test("Error Purge stale-input rule redacts old failed inputs but keeps the messa
       ],
     }),
   );
-  const config = resolveConfig({ errorPurge: { staleInputAfterUserTurns: 1 } }, {});
+  const config = resolveConfig({ errorPurge: { staleInputAfterTurns: 1 } }, {});
   const result = transformMessages(messages, config);
   assert.equal(result.stats.errorPurge.prunedCount, 1);
   assert.deepEqual(result.stats.errorPurge.decisionKinds, { stale_failure_input: 1 });
@@ -591,4 +615,54 @@ test("Error Purge leaves protected file paths untouched", () => {
   assert.equal(result.changed, false);
   assert.equal(result.stats.errorPurge.prunedCount, 0);
   assert.equal(result.stats.errorPurge.skippedReasons.protected_path, 1);
+});
+
+test("completed shell failure output is replaced, status and exit are preserved", () => {
+  const failedOutput = "AssertionError: expected 200 but got 500\n".repeat(120);
+  const messages = [
+    userMessage({ id: "u1", text: "run the check" }),
+    assistantMessage({
+      id: "a1",
+      parentID: "u1",
+      cwd: "/repo",
+      parts: [
+        toolPart({
+          messageID: "a1",
+          callID: "f1",
+          tool: "bash",
+          input: { command: "npm test" },
+          output: failedOutput,
+          status: "completed",
+          metadata: { exit: 1 },
+        }),
+      ],
+    }),
+    assistantMessage({
+      id: "a2",
+      parentID: "u1",
+      cwd: "/repo",
+      parts: [
+        toolPart({
+          messageID: "a2",
+          callID: "s1",
+          tool: "bash",
+          input: { command: "npm test" },
+          output: "all tests passed",
+          status: "completed",
+          metadata: { exit: 0 },
+        }),
+      ],
+    }),
+  ];
+
+  const result = transformMessages(messages, resolveConfig({}, {}));
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.errorPurge.prunedCount, 1);
+  const pruned = result.messages[1].parts[0];
+  assert.equal(pruned.state.status, "completed");
+  assert.equal(pruned.state.metadata.exit, 1);
+  assert.equal(pruned.state.output, DEFAULT_ERROR_PLACEHOLDER);
+  assert.deepEqual(pruned.state.input, { command: "npm test" });
+  assert.equal(result.messages[2].parts[0].state.output, "all tests passed");
 });

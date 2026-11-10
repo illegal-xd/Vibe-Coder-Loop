@@ -21,6 +21,7 @@ function errorRecord({
   root = "/repo",
   error = LONG_ERROR,
   userSegment = 1,
+  turn = 0,
 } = {}) {
   return {
     id,
@@ -33,6 +34,7 @@ function errorRecord({
     error,
     metadata: {},
     userSegment,
+    turn,
   };
 }
 
@@ -46,6 +48,7 @@ function successRecord({
   output = "ok",
   metadata = {},
   userSegment = 1,
+  turn = 0,
 } = {}) {
   return {
     id,
@@ -58,6 +61,7 @@ function successRecord({
     error: "",
     metadata,
     userSegment,
+    turn,
   };
 }
 
@@ -273,14 +277,15 @@ test("a completed result with diagnostic text is not classified as an error", ()
   assert.equal(stats.ambiguousResultCount, 0);
 });
 
-test("completed metadata that signals failure is ambiguous and cannot supersede", () => {
+test("completed shell metadata signaling failure is a confirmed error, not a success", () => {
   const { decisions, stats } = planErrorPurge([
     errorRecord({ id: "e1", order: 1 }),
     successRecord({ id: "s1", order: 3, metadata: { exitCode: 1 } }),
   ]);
   assert.equal(decisions.length, 0);
-  assert.equal(stats.ambiguousResultCount, 1);
-  assert.equal(stats.confirmedErrorCount, 1);
+  assert.equal(stats.ambiguousResultCount, 0);
+  assert.equal(stats.confirmedErrorCount, 2);
+  assert.equal(stats.shellFailureCount, 1);
 });
 
 test("completed shell output with unreliable exit is not a success", () => {
@@ -518,15 +523,22 @@ test("stale input rule is opt-in, preserves the error text, and respects age", (
   const payload = "trace line\n".repeat(500);
   const args = { filePath: "/repo/a.ts", content: payload };
   const records = [
-    errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 1 }),
-    successRecord({ id: "r1", order: 2, tool: "read", args: { filePath: "/repo/b.ts" }, userSegment: 2 }),
+    errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 1, turn: 0 }),
+    successRecord({
+      id: "r1",
+      order: 2,
+      tool: "read",
+      args: { filePath: "/repo/b.ts" },
+      userSegment: 1,
+      turn: 5,
+    }),
   ];
 
   const disabled = planErrorPurge(records);
   assert.equal(disabled.decisions.length, 0);
   assert.equal(reason(disabled.stats, "no_success_for_signature"), 1);
 
-  const enabled = planErrorPurge(records, { staleInputAfterUserTurns: 1 });
+  const enabled = planErrorPurge(records, { staleInputAfterTurns: 1 });
   assert.equal(enabled.decisions.length, 1);
   assert.equal(enabled.decisions[0].kind, "stale_failure_input");
   assert.equal(enabled.decisions[0].confidence, "medium");
@@ -538,10 +550,10 @@ test("stale input rule is opt-in, preserves the error text, and respects age", (
   assert.deepEqual(enabled.stats.decisionKinds, { stale_failure_input: 1 });
 
   const tooRecent = planErrorPurge(
-    [errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 3 })],
-    { staleInputAfterUserTurns: 1 },
+    [errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 3, turn: 3 })],
+    { staleInputAfterTurns: 1 },
   );
-  // latest user segment is 3, so age 0 < 1: retained.
+  // latest turn is 3, so age 0 < 1: retained.
   assert.equal(tooRecent.decisions.length, 0);
 });
 
@@ -551,9 +563,60 @@ test("stale input rule never fires on an already-redacted payload", () => {
     content: "[vibe-context-dedup] already redacted",
   };
   const records = [
-    errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 1 }),
-    successRecord({ id: "r1", order: 2, tool: "read", args: { filePath: "/repo/b.ts" }, userSegment: 4 }),
+    errorRecord({ id: "e1", order: 1, tool: "write", args, userSegment: 1, turn: 0 }),
+    successRecord({
+      id: "r1",
+      order: 2,
+      tool: "read",
+      args: { filePath: "/repo/b.ts" },
+      userSegment: 4,
+      turn: 5,
+    }),
   ];
-  const { decisions } = planErrorPurge(records, { staleInputAfterUserTurns: 1 });
+  const { decisions } = planErrorPurge(records, { staleInputAfterTurns: 1 });
   assert.equal(decisions.length, 0);
+});
+
+test("shell exit failure prunes the failed output once an equivalent call succeeds", () => {
+  const shell = (id, order, output, exit) =>
+    successRecord({ id, order, output, metadata: { exit } });
+
+  const { decisions, stats } = planErrorPurge([
+    shell("f1", 1, LONG_ERROR, 1),
+    shell("s1", 3, "all tests passed", 0),
+  ]);
+
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].id, "f1");
+  assert.equal(decisions[0].field, "output");
+  assert.equal(decisions[0].kind, "superseded_by_success");
+  assert.equal(decisions[0].expectedValue, LONG_ERROR);
+  assert.equal(decisions[0].replaceError, true);
+  assert.equal(stats.confirmedErrorCount, 1);
+  assert.equal(stats.shellFailureCount, 1);
+});
+
+test("repeated identical shell failures keep the newest output", () => {
+  const shell = (id, order) =>
+    successRecord({ id, order, output: LONG_ERROR, metadata: { exit: 1 } });
+
+  const { decisions } = planErrorPurge([shell("f1", 1), shell("f2", 3)]);
+
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].id, "f1");
+  assert.equal(decisions[0].field, "output");
+  assert.equal(decisions[0].kind, "duplicate_failure");
+});
+
+test("cancelled shell calls are not shell exit failures", () => {
+  const { decisions, stats } = planErrorPurge([
+    successRecord({
+      id: "c1",
+      order: 1,
+      output: LONG_ERROR,
+      metadata: { exit: 130, aborted: true },
+    }),
+  ]);
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.confirmedErrorCount, 0);
 });

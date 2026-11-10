@@ -73,18 +73,18 @@ function readPart({ callID = "r1", messageID = "a1", output = REPEATED, tool = "
 
 // --- dedup classification -------------------------------------------------
 
-test("dedup: duplicate candidates blocked by a side effect are not removals", () => {
+test("dedup: byte-identical duplicates spanning a side effect are still removals", () => {
   const plan = planDeduplication([
     readRecord({ id: "r1", order: 1 }),
     editRecord(2),
     readRecord({ id: "r2", order: 3 }),
   ]);
 
-  assert.equal(plan.decisions.length, 0);
+  assert.equal(plan.decisions.length, 1);
+  assert.equal(plan.decisions[0].id, "r1");
   assert.equal(plan.stats.eligibleCount, 2);
   assert.equal(plan.stats.duplicateCandidateCount, 2);
-  assert.equal(plan.stats.markedCount, 0);
-  assert.equal(plan.stats.skippedReasons.intervening_side_effect, 1);
+  assert.equal(plan.stats.markedCount, 1);
 
   const summary = summarizePruning({
     deduplicationEnabled: true,
@@ -93,17 +93,15 @@ test("dedup: duplicate candidates blocked by a side effect are not removals", ()
     eligibleCount: plan.stats.eligibleCount,
     duplicateCandidateCount: plan.stats.duplicateCandidateCount,
     markedCount: plan.stats.markedCount,
-    prunedCount: 0,
-    tokenSavingsEstimated: 0,
+    prunedCount: plan.decisions.length,
+    tokenSavingsEstimated: plan.stats.tokenSavingsEstimated,
     skippedReasons: plan.stats.skippedReasons,
   });
   assert.equal(summary.deduplication.eligible_items, 2);
   assert.equal(summary.deduplication.candidate_items, 2);
-  assert.equal(summary.deduplication.marked_items, 0);
-  assert.equal(summary.deduplication.changed_items, 0);
-  assert.equal(summary.deduplication.removed_items, 0);
-  assert.equal(summary.deduplication.skipped.candidate.intervening_side_effect, 1);
-  assert.equal(summary.deduplication.removed_tokens.value, 0);
+  assert.equal(summary.deduplication.marked_items, 1);
+  assert.equal(summary.deduplication.changed_items, 1);
+  assert.equal(summary.deduplication.removed_items, 1);
 });
 
 test("dedup: unique signatures are reported as the reason nothing is prunable", () => {

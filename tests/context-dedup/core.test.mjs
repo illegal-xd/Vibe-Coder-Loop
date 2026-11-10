@@ -18,8 +18,6 @@ const CONFIG = {
   enabled: true,
   tools: ["read", "grep", "glob"],
   placeholder: DEFAULT_PLACEHOLDER,
-  mutationTools: ["bash", "edit", "write", "patch", "multiedit", "apply_patch", "task", "skill", "webfetch"],
-  barrierOnNonWhitelistedTools: true,
 };
 
 function reasons(stats) {
@@ -113,16 +111,45 @@ test("skips tools with side effects even when their output looks identical", () 
   assert.equal(reasons(stats).unsupported_tool, 2);
 });
 
-test("mutation tools remain a hard denylist even if added to the whitelist", () => {
+test("tools outside the dedup whitelist are skipped", () => {
   const { decisions, stats } = planDeduplication(
     [
       toolRecord({ id: "a", order: 1, tool: "write", output: LONG_OUTPUT }),
       toolRecord({ id: "b", order: 3, tool: "write", output: LONG_OUTPUT }),
     ],
-    { ...CONFIG, tools: ["read", "write"] },
+    CONFIG,
   );
   assert.equal(decisions.length, 0);
   assert.equal(reasons(stats).unsupported_tool, 2);
+});
+
+test("identical shell calls are deduplicated, failed shell calls are not", () => {
+  const shell = (id, order, extra = {}) =>
+    toolRecord({
+      id,
+      order,
+      tool: "bash",
+      args: { command: "git status --short" },
+      output: LONG_OUTPUT,
+      ...extra,
+    });
+
+  const ok = planDeduplication(
+    [shell("a", 1), shell("b", 3)],
+    { ...CONFIG, tools: ["read", "grep", "glob", "bash"] },
+  );
+  assert.equal(ok.decisions.length, 1);
+  assert.equal(ok.decisions[0].id, "a");
+
+  const failed = planDeduplication(
+    [
+      shell("a", 1, { metadata: { exit: 1 } }),
+      shell("b", 3, { metadata: { exit: 1 } }),
+    ],
+    { ...CONFIG, tools: ["read", "grep", "glob", "bash"] },
+  );
+  assert.equal(failed.decisions.length, 0);
+  assert.equal(reasons(failed.stats).shell_failure, 2);
 });
 
 test("does not prune when same arguments produced different outputs", () => {
@@ -150,8 +177,10 @@ test("short outputs are left alone when the placeholder would cost more tokens",
   assert.equal(reasons(stats).no_token_benefit, 1);
 });
 
-test("any non-whitelisted tool between observations is a dependency barrier", () => {
-  const { decisions, stats } = planDeduplication(
+test("byte-identical duplicates are pruned even when another tool ran between them", () => {
+  // Identical output proves the observable result was unchanged; the
+  // intervening call cannot make the older copy informative again.
+  const withTodo = planDeduplication(
     [
       toolRecord({ id: "a", order: 1, output: LONG_OUTPUT }),
       toolRecord({ id: "todo", order: 2, tool: "todowrite", args: {}, output: "ok" }),
@@ -159,21 +188,19 @@ test("any non-whitelisted tool between observations is a dependency barrier", ()
     ],
     CONFIG,
   );
-  assert.equal(decisions.length, 0);
-  assert.equal(reasons(stats).intervening_side_effect, 1);
-});
+  assert.equal(withTodo.decisions.length, 1);
+  assert.equal(withTodo.decisions[0].id, "a");
 
-test("a non-read-only tool between observations is a dependency barrier", () => {
-  const { decisions, stats } = planDeduplication(
+  const withEdit = planDeduplication(
     [
-      toolRecord({ id: "a", order: 1, output: "same" }),
+      toolRecord({ id: "a", order: 1, output: LONG_OUTPUT }),
       toolRecord({ id: "edit", order: 2, tool: "edit", args: { filePath: "a.txt" }, output: "ok" }),
-      toolRecord({ id: "b", order: 3, output: "same" }),
+      toolRecord({ id: "b", order: 3, output: LONG_OUTPUT }),
     ],
     CONFIG,
   );
-  assert.equal(decisions.length, 0);
-  assert.equal(reasons(stats).intervening_side_effect, 1);
+  assert.equal(withEdit.decisions.length, 1);
+  assert.equal(withEdit.decisions[0].id, "a");
 });
 
 test("prunes a chain down to the newest identical output", () => {

@@ -102,6 +102,11 @@ export function extractToolRecords(messages) {
   let structuralFailure = "";
   let order = 0;
   let userSegment = 0;
+  // Assistant step counter (reference parity: `purgeErrors.turns` counts
+  // `step-start` parts, not user messages). A long autonomous run is one user
+  // segment but many steps, so step age is the useful "how old is this?"
+  // measure for stale-input pruning.
+  let turn = 0;
 
   if (!Array.isArray(messages)) {
     return {
@@ -138,9 +143,14 @@ export function extractToolRecords(messages) {
       const part = message.parts[partIndex];
       const partOrder = order;
       order += 1;
-      orderedParts.push({ order: partOrder, messageIndex, partIndex, part, userSegment });
+      orderedParts.push({ order: partOrder, messageIndex, partIndex, part, userSegment, turn });
 
-      if (!part || typeof part !== "object" || part.type !== TOOL_PART) continue;
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "step-start") {
+        turn += 1;
+        continue;
+      }
+      if (part.type !== TOOL_PART) continue;
 
       if (
         typeof part.callID !== "string" ||
@@ -178,6 +188,7 @@ export function extractToolRecords(messages) {
         metadata,
         time,
         userSegment,
+        turn,
       };
       records.push(record);
 
@@ -612,11 +623,17 @@ function validateErrorStructure(before, after, appliedIds, changes) {
       }
 
       const change = changes.get(beforePart.callID);
+      let replacedField = null;
       if (!change) {
         failures.push(`change_missing:${messageIndex}:${partIndex}`);
       } else {
+        if (change.error !== undefined) replacedField = "error";
+        if (change.output !== undefined) replacedField = "output";
         if (change.error !== undefined && afterState.error !== change.error) {
           failures.push(`error_replacement:${messageIndex}:${partIndex}`);
+        }
+        if (change.output !== undefined && afterState.output !== change.output) {
+          failures.push(`output_replacement:${messageIndex}:${partIndex}`);
         }
         if (change.input !== undefined && !sameValue(afterState.input, change.input)) {
           failures.push(`input_redaction:${messageIndex}:${partIndex}`);
@@ -624,12 +641,16 @@ function validateErrorStructure(before, after, appliedIds, changes) {
         if (change.error === undefined && !sameValue(beforeState.error, afterState.error)) {
           failures.push(`state_error_changed:${messageIndex}:${partIndex}`);
         }
+        if (change.output === undefined && !sameValue(beforeState.output, afterState.output)) {
+          failures.push(`state_output_changed:${messageIndex}:${partIndex}`);
+        }
         if (change.input === undefined && !sameValue(beforeState.input, afterState.input)) {
           failures.push(`state_input_changed:${messageIndex}:${partIndex}`);
         }
       }
 
       for (const key of unchangedStateKeys) {
+        if (key === replacedField) continue;
         if (!sameValue(beforeState[key], afterState[key])) {
           failures.push(`state_${key}_changed:${messageIndex}:${partIndex}`);
         }
@@ -646,14 +667,16 @@ function validateErrorStructure(before, after, appliedIds, changes) {
 }
 
 /**
- * Error Purge decisions: replace the structured error string and, when the
- * planner found a profitable redaction, the bulky strings of the failed call's
- * `state.input`. Paths and identifying fields are preserved.
+ * Error Purge decisions: replace the structured error string (or the failed
+ * output of a completed shell call) and, when the planner found a profitable
+ * redaction, the bulky strings of the failed call's `state.input`. Paths and
+ * identifying fields are preserved.
  */
 export function applyErrorPurgeDecisions(messages, decisions, locations) {
   const byId = new Map();
   for (const decision of decisions) {
-    if (!decision || typeof decision.id !== "string" || decision.field !== "error") continue;
+    if (!decision || typeof decision.id !== "string") continue;
+    if (decision.field !== "error" && decision.field !== "output") continue;
     if (!byId.has(decision.id)) byId.set(decision.id, decision);
   }
 
@@ -684,24 +707,31 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
         dropped.push({ id: part.callID, reason: "location_mismatch" });
         return part;
       }
-      if (!part.state || part.state.status !== "error") {
+      // Error Purge prunes either a structured error (status "error") or the
+      // failed output of a completed shell call (status "completed" + non-zero
+      // exit). The decision names which text field it replaces.
+      const field = decision.field === "output" ? "output" : "error";
+      const requiredStatus = field === "output" ? "completed" : "error";
+      if (!part.state || part.state.status !== requiredStatus) {
         dropped.push({ id: part.callID, reason: "state_mismatch" });
         return part;
       }
 
+      const currentText = field === "output" ? part.state.output : part.state.error;
+      const locationValue = field === "output" ? location.output : location.error;
       const replaceError = decision.replaceError !== false;
       if (replaceError) {
         const expected =
-          decision.expectedValue !== undefined ? decision.expectedValue : location.error;
+          decision.expectedValue !== undefined ? decision.expectedValue : locationValue;
         if (
-          typeof part.state.error !== "string" ||
-          part.state.error !== expected ||
+          typeof currentText !== "string" ||
+          currentText !== expected ||
           typeof decision.replacement !== "string"
         ) {
           dropped.push({ id: part.callID, reason: "state_mismatch" });
           return part;
         }
-        if (isPrunedOutput(part.state.error)) {
+        if (isPrunedOutput(currentText)) {
           dropped.push({ id: part.callID, reason: "already_pruned" });
           return part;
         }
@@ -722,26 +752,26 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
         redactedInput = decision.redactedInput;
       }
 
-      const nextError = replaceError ? decision.replacement : part.state.error;
+      const nextText = replaceError ? decision.replacement : currentText;
       const nextInput = redactedInput !== undefined ? redactedInput : part.state.input;
-      if (nextError === part.state.error && nextInput === part.state.input) {
+      if (nextText === currentText && nextInput === part.state.input) {
         dropped.push({ id: part.callID, reason: "no_change" });
         return part;
       }
 
       applied.push({
         ...decision,
-        previousValue: part.state.error,
+        previousValue: currentText,
         previousInput: part.state.input,
       });
       appliedIds.add(part.callID);
       changes.set(part.callID, {
-        error: replaceError ? decision.replacement : undefined,
+        [field]: replaceError ? decision.replacement : undefined,
         input: redactedInput,
       });
 
       const nextState = { ...part.state };
-      if (replaceError) nextState.error = decision.replacement;
+      if (replaceError) nextState[field] = decision.replacement;
       if (redactedInput !== undefined) nextState.input = redactedInput;
       return { ...part, state: nextState };
     });
@@ -1187,6 +1217,10 @@ export function transformMessages(messages, config = {}) {
   const dedupPlan = planDeduplication(extraction.records, {
     ...config,
     enabled: dedupEnabled,
+    // Deduplication has its own scope (read-only built-ins + shell); the
+    // top-level `tools` list is the read-only set shared by the other
+    // strategies and must not narrow this one.
+    tools: config.deduplication?.tools,
     placeholder,
   });
   stats.recordsTotal = dedupPlan.stats.recordsTotal;

@@ -430,6 +430,7 @@ const RECORD_SCAN_REASONS = new Set([
   "unsupported_tool",
   "not_completed",
   "empty_output",
+  "shell_failure",
   "already_pruned",
   "invalid_args",
   "missing_environment",
