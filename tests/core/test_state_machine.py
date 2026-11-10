@@ -13,7 +13,8 @@ class TransitionTests(CoreTest):
             result = self.t(target, level=2 if target == "S4" else None)
             self.assertTrue(result.ok, result.message)
         for target in ("S8", "S9", "S10", "S13", "S0"):
-            result = self.t(target)
+            # S4 出口必须显式写 level（新规则：缺省沿用旧值会让 loop_max 退化）
+            result = self.t(target, **({"level": 2} if target == "S8" else {}))
             self.assertTrue(result.ok, result.message)
         state = self.core.get_state()
         self.assertEqual(state.phase, "S0 Idle")
@@ -113,6 +114,23 @@ class TransitionTests(CoreTest):
         self.assertEqual(state.loop, 2)
         self.assertEqual(self.core.store.snapshot().fields["_resume_from"], "")
 
+    def test_v30b_incidental_negation_elsewhere_still_confirms(self) -> None:
+        """「继续，不要再问」是确认；只有紧邻确认词的否定才算拒绝。"""
+        self.seed_code("S14", loop=1, status="paused", _resume_from="S8 Code")
+        checklist = ExitChecklist("S14", [], ["用户说：继续，不要再问了"])
+        result = self.t("RESUME", exit_checklist=checklist)
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(self.core.get_state().phase, "S8 Code")
+
+    def test_v30c_negated_confirmation_is_rejected(self) -> None:
+        for said in ("用户说：不要继续", "不，继续", "先别接受", "接受不了"):
+            self.seed_code("S14", loop=1, status="paused", _resume_from="S8 Code")
+            checklist = ExitChecklist("S14", [], [said])
+            result = self.t(
+                "RESUME" if "继续" in said else "S13", exit_checklist=checklist
+            )
+            self.assertFalse(result.ok, f"{said} 不应被当作确认")
+
     def test_v31_stop_from_s14(self) -> None:
         self.seed_code("S14", loop=2, status="paused", _resume_from="S8 Code")
         checklist = ExitChecklist("S14", [], ["用户说：接受当前代码"])
@@ -140,9 +158,16 @@ class TransitionTests(CoreTest):
 
     def test_v34_quick_loop_initializes_to_one(self) -> None:
         self.seed_code("S4", loop=0, level=0)
-        result = self.t("S8")
+        result = self.t("S8", level=0)
         self.assertTrue(result.ok)
         self.assertEqual(result.loop, 1)
+
+    def test_v34b_s4_exit_requires_level(self) -> None:
+        self.seed_code("S4", loop=0, level=2)
+        result = self.t("S8")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.code, "INVALID_ARGUMENT")
+        self.assertIn("level", result.message)
 
     def test_pause_keeps_phase_and_sets_status(self) -> None:
         self.seed_code("S1")
@@ -205,11 +230,18 @@ class FlowPathTests(CoreTest):
 
     def _walk(self, steps: list[str]) -> list[str]:
         reached: list[str] = []
+        prev = ""
         for step in steps:
-            kwargs = {"level": 2} if step == "S4" else {}
+            kwargs: dict[str, object] = {}
+            if prev == "S4":
+                # S4 出口必须写 level；Investigation 分支另需 loop=0
+                kwargs["level"] = 2
+                if step == "S7":
+                    kwargs["loop"] = 0
             result = self.t(step, **kwargs)
             self.assertTrue(result.ok, f"{result.from_state} -> {step} 失败: {result.message}")
             reached.append(step)
+            prev = step
         return reached
 
     def test_quick_loop_path(self) -> None:
@@ -229,7 +261,7 @@ class FlowPathTests(CoreTest):
 
     def test_investigation_entry_resets_loop(self) -> None:
         self.seed_code("S4", loop=2, level=2)
-        result = self.t("S7", loop=0)
+        result = self.t("S7", loop=0, level=2)
         self.assertTrue(result.ok, result.message)
         self.assertEqual(result.loop, 0)
 

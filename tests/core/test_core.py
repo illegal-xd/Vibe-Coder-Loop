@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from runtime.core import ExecResult, WorkflowCore
-from runtime.core.state_machine import STATE_LABELS
+from runtime.core.state_machine import STATE_LABELS, ExitChecklist
 
 from .util import CoreTest
 
@@ -25,17 +25,58 @@ class CoreApiTests(CoreTest):
         )
         self.assertEqual(first.consecutive_count, 1)
         self.assertFalse(first.no_progress)
+        # 同一 Loop 内重跑同一失败 = 正常调试：第二次不判无进展
         second = self.core.feed_exec(
             ExecResult(exec_id="e3", ok=False, exit_code=1, fingerprint="fp:a", errors=["boom"])
         )
         self.assertEqual(second.consecutive_count, 2)
-        self.assertTrue(second.no_progress)
-        self.assertEqual(second.code, "NO_PROGRESS")
-        self.assertTrue(second.escalated)
+        self.assertEqual(second.failure_loops, 1)
+        self.assertFalse(second.no_progress)
+        self.assertFalse(second.escalated)
+        # 跨到下一个 Loop 仍复现同一指纹 = 两轮 Code→Review 无改善 → SAFE MODE
+        loop_two = self.core.store.write(
+            {"loop": 2}, expected_rev=self.core.store.snapshot().rev
+        )
+        self.assertTrue(loop_two.ok)
+        third = self.core.feed_exec(
+            ExecResult(exec_id="e4", ok=False, exit_code=1, fingerprint="fp:a", errors=["boom"])
+        )
+        self.assertEqual(third.failure_loops, 2)
+        self.assertTrue(third.no_progress)
+        self.assertEqual(third.code, "NO_PROGRESS")
+        self.assertTrue(third.escalated)
         state = self.core.store.snapshot().fields
         self.assertEqual(state["phase"], "S14 Safe Mode")
         self.assertEqual(state["_resume_from"], "S8 Code")
-        self.assertEqual(state["review"]["failure_state"]["consecutive_count"], 2)
+
+    def test_plan_contract_missing_is_reported(self) -> None:
+        """S7 未声明文件集：记录空契约，漂移不可判定但必须显式标记。"""
+        (self.root / ".vibe-kernel").mkdir(parents=True, exist_ok=True)
+        (self.root / ".vibe-kernel" / "plan.md").write_text("step 1 拆模块\n", encoding="utf-8")
+        self.seed_code("S7", loop=0)
+        checklist = ExitChecklist("S7", ["step 1"], ["模块划分已输出"])
+        result = self.t("S8", exit_checklist=checklist)
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(self.core.store.snapshot().fields["review"]["plan_files"], [])
+        fed = self.core.feed_exec(
+            ExecResult(exec_id="e1", ok=True, files_modified=["src/a.py"])
+        )
+        self.assertTrue(fed.plan_contract_missing)
+        self.assertFalse(fed.plan_drift)
+        self.assertIn("契约缺失", fed.message)
+
+    def test_declared_plan_contract_still_detects_drift(self) -> None:
+        self.seed_code("S7", loop=0)
+        (self.root / "src").mkdir(parents=True, exist_ok=True)
+        (self.root / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        checklist = ExitChecklist("S7", ["path:src/a.py"], ["模块划分已输出"])
+        result = self.t("S8", exit_checklist=checklist)
+        self.assertTrue(result.ok, result.message)
+        fed = self.core.feed_exec(
+            ExecResult(exec_id="e2", ok=True, files_modified=["src/b.py"])
+        )
+        self.assertTrue(fed.plan_drift)
+        self.assertFalse(fed.plan_contract_missing)
 
     def test_feed_exec_is_idempotent_by_exec_id(self) -> None:
         self.seed_code("S8", loop=1)
@@ -77,10 +118,15 @@ class CoreApiTests(CoreTest):
         self.assertEqual(first.consecutive_count, 1)
         again = self.core.repeat_check("fp:1")
         self.assertEqual(again.consecutive_count, 2)
-        self.assertTrue(again.no_progress)
-        self.assertEqual(again.code, "NO_PROGRESS")
+        # 同一 Loop 内重复不判无进展（与 feed-exec 同口径）
+        self.assertFalse(again.no_progress)
         third = self.core.repeat_check("fp:1")
         self.assertEqual(third.consecutive_count, 3)
+        # 跨 Loop 复现 → NO_PROGRESS
+        self.core.store.write({"loop": 2}, expected_rev=self.core.store.snapshot().rev)
+        across = self.core.repeat_check("fp:1")
+        self.assertTrue(across.no_progress)
+        self.assertEqual(across.code, "NO_PROGRESS")
         second = self.core.repeat_check("fp:2")
         self.assertEqual(second.consecutive_count, 1)
 

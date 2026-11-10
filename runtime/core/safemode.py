@@ -20,6 +20,11 @@ SAFE_MODE_ENFORCED: dict[str, int | bool] = {
     "hard_constraint_violation": 1,
 }
 
+# 「无进展」的两种数法（对齐 kernel.md §5）：
+# - 跨 Loop 复现 = 两轮 Code→Review 解决不了同一问题（阈值复用上面 2 个 Loop）
+# - 单 Loop 内重复 = Loop 未递增时的兜底，避免同一轮无限重跑同一失败
+NO_PROGRESS_INTRALOOP_REPEAT = 4
+
 # Phase 1 只观测（写入 metrics，不改变状态）
 SAFE_MODE_OBSERVED: dict[str, int | float] = {
     "files_touched": 10,
@@ -110,3 +115,21 @@ def observed_keys() -> set[str]:
 
 def enforced_keys() -> set[str]:
     return set(SAFE_MODE_ENFORCED)
+
+
+def no_progress_signal(*, repeats: int, distinct_loops: int) -> int:
+    """把「同指纹重复次数 + 跨 Loop 跨度」折算成 evaluate 的 consecutive 信号。
+
+    触发口径（kernel.md §5「无进展」）：
+    - 同一失败指纹在 **≥2 个不同 Loop** 复现 → 视为两轮 Code→Review 无改善；
+    - 或在**同一 Loop 内**重复 ≥ ``NO_PROGRESS_INTRALOOP_REPEAT`` 次 → 同一轮内打转
+      （Quick Loop 不递增 Loop，没有跨轮信号，需此兜底）。
+
+    单次修复失败（同一 Loop 内重跑 2–3 次）**不触发**——那是正常调试，不是无进展。
+    """
+    threshold = int(SAFE_MODE_ENFORCED["consecutive_same_failures"])
+    if distinct_loops >= threshold:
+        return threshold
+    if repeats >= NO_PROGRESS_INTRALOOP_REPEAT:
+        return threshold
+    return 0

@@ -279,6 +279,7 @@ class Round2Hardening(CoreTest):
     def test_feed_exec_replay_reports_current_phase(self) -> None:
         self.seed_code("S8", loop=1)
         self.core.feed_exec(ExecResult(exec_id="e1", ok=False, fingerprint="fp:a"))
+        self.core.store.write({"loop": 2}, expected_rev=self.core.store.snapshot().rev)
         payload = ExecResult(exec_id="e2", ok=False, fingerprint="fp:a")
         self.core.feed_exec(payload)
         replay = self.core.feed_exec(payload)
@@ -419,13 +420,27 @@ class SafeModeHardening(CoreTest):
     def test_no_progress_auto_escalates(self) -> None:
         self.seed_code("S8", loop=1)
         self.core.feed_exec(ExecResult(exec_id="e1", ok=False, fingerprint="fp:a"))
+        self.core.store.write({"loop": 2}, expected_rev=self.core.store.snapshot().rev)
         second = self.core.feed_exec(ExecResult(exec_id="e2", ok=False, fingerprint="fp:a"))
         self.assertEqual(second.consecutive_count, 2)
+        self.assertEqual(second.failure_loops, 2)
         self.assertTrue(second.escalated)
         self.assertEqual(second.phase, "S14 Safe Mode")
         fields = self.core.store.snapshot().fields
         self.assertEqual(fields["phase"], "S14 Safe Mode")
         self.assertEqual(fields["_resume_from"], "S8 Code")
+
+    def test_single_loop_repeats_do_not_escalate(self) -> None:
+        """同一 Loop 内 3 次同指纹仍属正常调试；第 4 次才切 SAFE MODE。"""
+        self.seed_code("S8", loop=1)
+        for i in range(3):
+            result = self.core.feed_exec(
+                ExecResult(exec_id=f"e{i}", ok=False, fingerprint="fp:a")
+            )
+            self.assertFalse(result.no_progress, f"第 {i + 1} 次不应判无进展")
+        fourth = self.core.feed_exec(ExecResult(exec_id="e9", ok=False, fingerprint="fp:a"))
+        self.assertTrue(fourth.no_progress)
+        self.assertTrue(fourth.escalated)
 
     def test_s14_evidence_negative_or_missing_user_rejected(self) -> None:
         self.seed_code("S14", status="paused", _resume_from="S8 Code")
@@ -527,7 +542,8 @@ class CliHardening(CoreTest):
 
     def test_feed_exec_fail_closed_exit_four(self) -> None:
         self.seed_code("S8", loop=1)
-        for exec_id in ("e1", "e2"):
+        # 单 Loop 内重复到上限（4 次）才切 SAFE MODE：2–3 次属于正常调试重跑
+        for exec_id in ("e1", "e2", "e3", "e4"):
             payload = json.dumps(
                 {"exec_id": exec_id, "ok": False, "fingerprint": "fp:a", "errors": ["boom"]}
             )

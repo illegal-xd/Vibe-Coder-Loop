@@ -314,6 +314,19 @@ _CONFIRM_PREFIX = re.compile(
 
 _DEFERRAL = ("later", "tomorrow", "if ", "unless", "等待", "等", "暂停", "稍后", "以后", "回头")
 
+_NEG_SUFFIX_RE = re.compile(r"^(?:不了|不掉|不行|不得|不动)")
+
+
+def _negates_word(text: str, start: int, end: int) -> bool:
+    """只判「否定词紧邻确认词」。
+
+    整句扫描会把「继续，不要再问」这类附带否定当成拒绝，导致 S14 无法离开
+    （S14 只能经用户确认退出）。
+    """
+    window_before = text[max(0, start - 8) : start]
+    window_after = text[end : end + 3]
+    return _has_negation(window_before) or bool(_NEG_SUFFIX_RE.match(window_after))
+
 
 def _exact_confirmation(text: str, words: Iterable[str]) -> bool:
     normalized = _normalize_quotes(text).strip().strip("\"'“”‘’ \t")
@@ -328,7 +341,11 @@ def _exact_confirmation(text: str, words: Iterable[str]) -> bool:
         return True
     for word in words:
         pattern = rf"^please\s+{re.escape(word.lower())}(?![a-z])" if word.isascii() else rf"^请?{re.escape(word)}"
-        if re.match(pattern, lowered) and not _has_negation(lowered):
+        match = re.match(pattern, lowered)
+        if not match:
+            continue
+        start = max(match.start(), match.end() - len(word.lower()))
+        if not _negates_word(lowered, start, match.end()):
             return True
     return False
 
@@ -498,6 +515,17 @@ def transition(
             action="把 phase 修正为 S0–S14 + Label 后重试",
         )
     current_code = raw_code or "S0"
+    # S4 出口必须显式写入 level：缺省会沿用旧值（默认 0），使 loop_max 退化为 Quick 上限，
+    # 后续 S9/S10 → S8 的 N+1 会被预算守卫误拒（L2+ 任务永远做不了第二轮）。
+    if current_code == "S4" and level is None and normalize_target(to_state) != "S14":
+        return _fail(
+            vc_codes.INVALID_ARGUMENT,
+            "S4 出口必须传 level（0–4）：否则 loop_max 与复杂度门禁沿用旧值而失真",
+            snapshot,
+            current_code=current_code,
+            to_code=normalize_target(to_state),
+            action="补 level=<0-4> 后重试",
+        )
     current_loop = int(snapshot.fields.get("loop", 0) or 0)
     current_level = int(snapshot.fields.get("level", 0) or 0)
     if snapshot.exists and not snapshot.numeric_valid:
@@ -780,7 +808,9 @@ def transition(
             for item in exit_checklist.referenced_outputs
             if "/" in item or _PATH_SUFFIX_RE.search(item)
         ]
-    if plan_set:
+    # S7 出口一律记录计划文件集（允许为空列表）：空集 = 契约缺失，可被 feed-exec 识别；
+    # 不记录则与「未到 S7」无法区分，漂移校验会被静默跳过。
+    if plan_set is not None:
         review_dict["plan_files"] = [str(p) for p in plan_set]
     if escalation:
         failure_state = review_dict.get("failure_state")
@@ -807,6 +837,8 @@ def transition(
         ):
             updates[key] = defaults.get(key, [] if key != "resume" else "")
         updates["_resume_from"] = ""
+        # 新任务不复用上一任务的复杂度分级：level 归 0，由本轮 S4 重新判定
+        updates["level"] = 0
     expected_for_write = (
         0 if archived else (snapshot.rev if expected_rev is None else expected_rev)
     )

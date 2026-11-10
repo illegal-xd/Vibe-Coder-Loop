@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping
 
+from . import safemode
 from . import vc_codes
 from .artifacts import ArtifactStore
 from .checkpoint import (
@@ -96,8 +97,10 @@ class FeedResult:
     ok: bool
     rev: int = 0
     consecutive_count: int = 0
+    failure_loops: int = 0
     no_progress: bool = False
     plan_drift: bool = False
+    plan_contract_missing: bool = False
     escalated: bool = False
     phase: str = ""
     code: str = ""
@@ -110,8 +113,10 @@ class FeedResult:
             "ok": self.ok,
             "rev": self.rev,
             "consecutive_count": self.consecutive_count,
+            "failure_loops": self.failure_loops,
             "no_progress": self.no_progress,
             "plan_drift": self.plan_drift,
+            "plan_contract_missing": self.plan_contract_missing,
             "escalated": self.escalated,
             "phase": self.phase,
         }
@@ -382,12 +387,18 @@ class WorkflowCore:
             failure_dict.get("last_exec_id") == result.exec_id or result.exec_id in recent
         ):
             count = _safe_int(failure_dict.get("consecutive_count"), 0)
+            stored_loops = failure_dict.get("failure_loops", [])
+            distinct = len(stored_loops) if isinstance(stored_loops, list) else 0
             current_phase = str(snapshot.fields.get("phase", ""))
             return FeedResult(
                 ok=True,
                 rev=snapshot.rev,
                 consecutive_count=count,
-                no_progress=count >= 2,
+                failure_loops=distinct,
+                no_progress=bool(
+                    count
+                    and safemode.no_progress_signal(repeats=count, distinct_loops=distinct)
+                ),
                 plan_drift=bool(failure_dict.get("last_plan_drift", False)),
                 escalated=state_code(current_phase) == "S14",
                 phase=current_phase,
@@ -416,19 +427,32 @@ class WorkflowCore:
         if planned is None and isinstance(review_dict.get("plan_files"), list):
             planned = [str(x) for x in review_dict["plan_files"]]
         plan_drift = False
+        plan_contract_missing = False
         if planned is not None:
             allowed = {str(item) for item in planned}
             actual = {str(item) for item in result.files_modified}
-            plan_drift = bool(actual - allowed) if allowed or actual else False
+            if not allowed:
+                # S7 声明为空 = 计划契约缺失：无法判定漂移，显式标记而不是静默跳过
+                plan_contract_missing = bool(actual)
+            else:
+                plan_drift = bool(actual - allowed)
 
         # 连续失败计数（持久化）
         count = _safe_int(failure_dict.get("consecutive_count"), 0)
         last_fp = str(failure_dict.get("last_fingerprint", "") or "")
+        loop_now = _safe_int(snapshot.fields.get("loop"), 0)
+        raw_loops = failure_dict.get("failure_loops", [])
+        failure_loops = (
+            [x for x in (_safe_int(item, -1) for item in raw_loops) if x >= 0]
+            if isinstance(raw_loops, list)
+            else []
+        )
         raw_history = failure_dict.get("history", [])
         history = [str(x) for x in raw_history] if isinstance(raw_history, list) else []
         if result.ok:
             count = 0
             last_fp = ""
+            failure_loops = []
             failure_dict["last_ok_at"] = now_to_minute()
         else:
             fingerprint = _bounded_fingerprint(result.fingerprint)
@@ -444,17 +468,24 @@ class WorkflowCore:
                     last_fp = fingerprint
                     history.append(fingerprint)
                     history = history[-10:]
+                    failure_loops = []
+                if loop_now not in failure_loops:
+                    failure_loops.append(loop_now)
+                failure_loops = failure_loops[-10:]
             else:
                 # 缺失指纹：按设计「计数缺失 → 按 1 处理，不误触发」
                 count = 1
                 last_fp = ""
+                failure_loops = []
         failure_dict.update(
             {
                 "last_fingerprint": last_fp,
                 "consecutive_count": count,
+                "failure_loops": failure_loops,
                 "history": history,
                 "last_exec_id": result.exec_id or "",
                 "last_plan_drift": plan_drift,
+                "last_plan_contract_missing": plan_contract_missing,
                 "recent_exec_ids": (
                     [*recent, result.exec_id] if result.exec_id else recent
                 )[-20:],
@@ -478,38 +509,60 @@ class WorkflowCore:
                 next=write.next,
             )
 
-        codes = [vc_codes.PLAN_DRIFT] if plan_drift else []
-        if count >= 2:
-            codes.append(vc_codes.NO_PROGRESS)
-        code = vc_codes.NO_PROGRESS if count >= 2 else (vc_codes.PLAN_DRIFT if plan_drift else "")
+        # 无进展判定统一走 safemode（唯一判定点）：单 Loop 内重跑同一失败属于正常调试，
+        # 只有「同一指纹跨 ≥2 个 Loop 复现」或「单 Loop 内重复 ≥4 次」才切 SAFE MODE。
+        level_now = _safe_int(snapshot.fields.get("level"), 0)
+        if result.ok:
+            decision = safemode.SafeModeDecision(triggered=False)
+        else:
+            decision = safemode.evaluate(
+                consecutive_count=safemode.no_progress_signal(
+                    repeats=count, distinct_loops=len(failure_loops)
+                ),
+                loop=loop_now,
+                level=level_now,
+            )
+
+        code = ""
         message = ""
         nxt = ""
         escalated = False
         phase = str(snapshot.fields.get("phase", ""))
-        if code == vc_codes.NO_PROGRESS:
-            message = f"连续 {count} 次相同失败指纹"
-            nxt = vc_codes.next_action(code)
+        if decision.triggered:
+            code = decision.vc_code or vc_codes.NO_PROGRESS
+            if decision.reason == "loop_budget_exhausted":
+                message = f"loop={loop_now} 已达 Level {level_now} 的 loop_max"
+            else:
+                message = (
+                    f"同一失败指纹出现在 {len(failure_loops)} 个 Loop、累计 {count} 次未改善"
+                )
+            nxt = decision.action or vc_codes.next_action(code)
             current_code = state_code(phase)
             if current_code != "S14":
                 esc = self.transition(
                     "S14",
                     force=True,
-                    reason="consecutive_same_failures",
+                    reason=decision.reason,
                     expected_rev=write.rev,
                 )
                 escalated = esc.ok
                 if esc.ok:
                     phase = esc.phase
                     write = type(write)(ok=True, rev=esc.rev, changed=True, warnings=write.warnings)
-        elif code == vc_codes.PLAN_DRIFT:
+        elif plan_drift:
+            code = vc_codes.PLAN_DRIFT
             message = f"实际修改文件超出计划集合: {sorted(set(result.files_modified) - set(planned or []))}"
             nxt = vc_codes.next_action(code)
+        elif plan_contract_missing:
+            message = "S7 未声明计划文件集（契约缺失），本轮漂移无法判定"
         return FeedResult(
             ok=True,
             rev=write.rev,
             consecutive_count=count,
-            no_progress=count >= 2,
+            failure_loops=len(failure_loops),
+            no_progress=decision.triggered,
             plan_drift=plan_drift,
+            plan_contract_missing=plan_contract_missing,
             escalated=escalated,
             phase=phase,
             code=code,
@@ -618,6 +671,13 @@ class WorkflowCore:
         failure_dict: dict[str, Any] = dict(failure) if isinstance(failure, dict) else {}
         last_fp = str(failure_dict.get("last_fingerprint", "") or "")
         count = _safe_int(failure_dict.get("consecutive_count"), 0)
+        loop_now = _safe_int(snapshot.fields.get("loop"), 0)
+        raw_loops = failure_dict.get("failure_loops", [])
+        failure_loops = (
+            [x for x in (_safe_int(item, -1) for item in raw_loops) if x >= 0]
+            if isinstance(raw_loops, list)
+            else []
+        )
         raw_history = failure_dict.get("history", [])
         history = [str(x) for x in raw_history] if isinstance(raw_history, list) else []
         if fingerprint == last_fp:
@@ -625,10 +685,15 @@ class WorkflowCore:
         else:
             new_count = 1
             history.append(fingerprint)
+            failure_loops = []
+        if loop_now not in failure_loops:
+            failure_loops.append(loop_now)
+        failure_loops = failure_loops[-10:]
         failure_dict.update(
             {
                 "last_fingerprint": fingerprint,
                 "consecutive_count": new_count,
+                "failure_loops": failure_loops,
                 "history": history[-10:],
             }
         )
@@ -645,7 +710,10 @@ class WorkflowCore:
                 message=write.message,
                 next=write.next,
             )
-        no_progress = new_count >= 2
+        # 与 feed_exec 同口径：跨 ≥2 个 Loop 复现，或单 Loop 内重复 ≥4 次
+        no_progress = bool(
+            safemode.no_progress_signal(repeats=new_count, distinct_loops=len(failure_loops))
+        )
         rev = write.rev
         if no_progress and state_code(snapshot.fields.get("phase")) != "S14":
             esc = self.transition(
@@ -662,7 +730,11 @@ class WorkflowCore:
             no_progress=no_progress,
             rev=rev,
             code=vc_codes.NO_PROGRESS if no_progress else "",
-            message=f"连续 {new_count} 次相同失败指纹" if no_progress else "",
+            message=(
+                f"同一失败指纹出现在 {len(failure_loops)} 个 Loop、累计 {new_count} 次未改善"
+                if no_progress
+                else ""
+            ),
             next=vc_codes.next_action(vc_codes.NO_PROGRESS) if no_progress else "",
         )
 
