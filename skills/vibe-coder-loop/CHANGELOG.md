@@ -34,6 +34,26 @@
 > 验证：`node --check` 通过；`tests/plugins/vibe-bridge.test.mjs` 覆盖「`grep error` 不判失败 / 同失败命令指纹稳定 / checklist 缺引用即拒 / 冷 pointer 后台预热不阻塞 / deny 抛错」；真实 `runtime.core transition` argparse 校验 `--level`/`--checklist` JSON 接受（临时 `--memory-db`，不污染用户状态）。
 > **真机验证（宿主已加载插件，读 Checkpoint 取证）**：① 只读 `grep`（输出含 `child.on("error")` 等 error 行）被记为 `result: ok` 且 `consecutive_count` 由 3 → **0**（旧版此处必为失败）；② 空输出、exit=1 的 `python3 -c "raise SystemExit(1)"` 被记为 `failed`、count 0→1 —— 空输出无 marker 可匹配，**证明宿主 metadata 确实携带退出码且被读取**；③ 同一命令连跑两次指纹却不同（count 停在 1）→ 定位出宿主把 `description`/`timeout` 等**逐次元数据**放进 `args`，指纹仍不稳定。修复：新增 `fingerprintArgs`——bash 取 `command`，其他工具剥 `description/title/timeout/workdir/callID/id/sessionID` 后排序 JSON；新增「同命令不同 description → 同指纹」「不同命令 → 不同指纹」两条回归。**该修复需重载插件生效**。
 
+> **同版本追加（策略门禁审查：12 项过重/失配判定修复）**：起因是「策略优化链路长期空转」的系统性审查——逐条比对代码与 `kernel.md`/`policy/`/`learning/` 声明，定位到 3 处会锁死循环的过重判定与 3 处阈值互相打架。
+
+| # | 问题 | 处置 | 落点 |
+|---|---|---|---|
+| 1 | 只读命令按退出码判失败（`grep` 无匹配 exit 1）→ 两次即 S14 | `inspection` 既不判输出措辞也不判退出码 | `.opencode/plugins/vibe-bridge.js` |
+| 2 | 同指纹第 2 次即 NO_PROGRESS，`loop_max=3` 形同虚设 | 改为「跨 ≥2 个 Loop 复现」或「单 Loop ≥4 次」，判定收敛到 `safemode.no_progress_signal`（`feed-exec` 与 `repeat-check` 共用） | `runtime/core/safemode.py` / `core.py` |
+| 3 | S4 不传 `level` 静默沿用旧值 → L2+ 任务被锁成 Quick 预算 | Core 强制：S4 出口缺 `level` 返回 `INVALID_ARGUMENT`；S13→S1 归档时 level 归 0 | `runtime/core/state_machine.py` |
+| 4 | 反思信号缺省 `dedupe_token=fingerprint`，任务内重复失败计数恒 1 | 缺省 token = `指纹+Loop`；S9/S10 记录须带 `--loop` | `scripts/memory/reflection_signals.py` |
+| 5 | 草稿「≥2 任务」门与 promotion「≥3 实例」门冲突 | 满足其一即可（≥2 任务 **或** ≥3 条实例引用） | `scripts/memory/skill_draft.py` |
+| 6 | 正文出现「已废弃/不再适用」被判未解决冲突，好经验生成不了草稿 | 冲突只认结构化字段（`status` / `conflict_marker` / `superseded_by`） | `skill_draft.py` / `reflection_signals.py` |
+| 7 | lesson TTL 90 天与「≥3 次」门槛相互掐断 | `touch --renew-ttl` 按原始时长重锚；promotion 明确按未过期实例计数 | `backup/memory_tool.py` / `promotion.md` |
+| 8 | `kernel.md` §5 列 7 条触发，实际只实现 3 条且 `evaluate()` 无调用点 | 表格标注「强制/观测/未实现」；`feed-exec` 改走 `safemode.evaluate` 作为唯一判定点 | `kernel.md` / `core.py` |
+| 9 | `git commit` 文档允许、代码永久拒绝 | 新增 `GIT_AUTHORIZED_SUBCMDS`（commit/add/tag/stash/switch）：默认拒，`allow_high_risk=True` 放行；fetch/pull/clone 仍 fail-closed | `runtime/exec/policy.py` |
+| 10 | `manifest.yaml` 写「文档子集 4 项」，事实源要求 5 项 | 对齐为 5 项 | `manifest.yaml` |
+| 11 | 插件只校验 checklist 非空，不校验「可机械验证」→ 白 spawn 再失败 | `looksVerifiable` 预检（path/user/sym/fn/step/相对路径；绝对路径拒绝） | `vibe-bridge.js` |
+| 12 | S14 离开判定整句扫否定词，「继续，不要再问」无法离开 | 只判**紧邻确认词**的否定与前缀式否定后缀（`接受不了`） | `state_machine.py` |
+| 13 | S7 未声明文件集 → 漂移校验静默跳过 | S7 出口一律记录 `plan_files`（可为空）；`feed-exec` 返回 `plan_contract_missing` 并显式提示 | `state_machine.py` / `core.py` |
+
+**验证（E4）**：`test-runtime-core.sh` 7/7、`test-runtime-exec.sh` 7/7、`test-memory-layers.sh` 16/16、`node --test tests/plugins` 15/15、`backup/test_memory_tool.py` 65/65；新增回归覆盖：只读命令 exit 1 不判失败、单 Loop 3 次不升级 / 跨 Loop 升级、S4 缺 level 拒绝、任务内跨 Loop 反思聚合、单任务 3 实例生成草稿、正文冲突词不禁用草稿、`--renew-ttl` 重锚、git 授权通道、checklist 引用预检、S14 附带否定仍可确认、空计划契约标记。`core check-protocol` 83 项 0 漂移。
+
 ## v1.22.2 — 版本递增（1.22.1 收口）
 
 > 版本策略：**提交后才递增下一版本**。1.22.1 的第八–十一批已随三个 commit 落地，本版做版本号递增与归属声明；本版内后续改动按「同版本第 N 批」继续追加。

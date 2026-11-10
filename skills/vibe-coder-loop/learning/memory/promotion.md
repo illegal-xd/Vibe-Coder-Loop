@@ -20,7 +20,7 @@ status: active
 
 ```text
 [1] 收尾回写（Tool 承担，一条命令）
-    memory_tool.py touch <本轮消费 keys> [--hit]  +  memory_tool.py metrics <delta> --counts
+    memory_tool.py touch <本轮消费 keys> [--hit] [--renew-ttl]  +  memory_tool.py metrics <delta> --counts
     + 若本轮消费过记忆：memory_feedback.py record ...（见 lifecycle.md「记忆效用反馈」）
     → 输出：📌 访问计数回写：<keys> ｜ 📊 系统仪表盘：<简表>
 
@@ -45,8 +45,9 @@ status: active
 4. 同类 ≥5 且涉及 ≥2 项目 → 自动创建 `principle:{name}`，tag=p_critical，TTL=无限
 5. Pattern/Principle 的 value 包含：fingerprint、实例引用列表、适用场景、反模式、提升日期
 6. 聚合时同步扫描 `trigger:high-reuse` 标记条目（写入方已判定「高复用」）与 `recurrence_count ≥ 2` 条目 → **优先进入提升评审**（提前评审 ≠ 降低阈值：仍需其指纹同类实例 ≥3 才建 pattern）
-7. **提升源只来自 L3**：L1/L2 默认不落库（见 `docs/memory-layers.md §6.7`）；L4 是规范类、L6 是指针类，均不参与 L3→L5→L7 阶梯
-8. **审核分层**：L3/L4 有 `evidence_level E2+` 且无 `content:conflict-marker` → 可 `approved`；L5/L6/L7、用户显式修正、安全/失败证据 → 保持 `pending` 人工评审。L6 规则镜像不是 L6，归 `category=skill_mirror` / `layer=null`
+7. **计数窗口与 TTL 对齐**：提升阈值按**未过期实例**计算。lesson 缺省 TTL 90 天，低频领域凑 3 次可能跨过首条到期 → 对已命中的 lesson 执行 `memory_tool.py touch <key> --renew-ttl`（按原始时长重锚）后再计数；只 `touch` 不续期时 TTL 保持绝对值不变。
+8. **提升源只来自 L3**：L1/L2 默认不落库（见 `docs/memory-layers.md §6.7`）；L4 是规范类、L6 是指针类，均不参与 L3→L5→L7 阶梯
+9. **审核分层**：L3/L4 有 `evidence_level E2+` 且无 `content:conflict-marker` → 可 `approved`；L5/L6/L7、用户显式修正、安全/失败证据 → 保持 `pending` 人工评审。L6 规则镜像不是 L6，归 `category=skill_mirror` / `layer=null`
 
 **提升阶梯是双轴正交**（勿混淆——两轴相互独立）：
 
@@ -120,6 +121,8 @@ fingerprint = 失败类型 : 技术栈抽象 : 根因关键词集合(排序去�
 ## 去重协议（Dedup）
 
 去重由 Memory 系统执行（非 Agent 每轮动作）：对新写入的每条 lesson/reflection，先查重再保存。
+
+> **失效/冲突判定只看结构化字段**（`status=superseded|conflict|contradict`、`conflict_marker`、`superseded_by`）。正文出现「已废弃 / 不再适用 / 被取代」多为**反例或历史说明**，按子串判定会让有效经验被误判失效、并拦掉 Skill 草稿生成。
 
 **严格否决规则（命中任一 → 禁止合并，宁严勿宽——误合并造成的边界污染是永久性的）**：
 

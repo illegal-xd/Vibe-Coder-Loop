@@ -43,12 +43,12 @@ S14 -> S13, ALL(resume)              # 用户「停止/接受」→ S13；用户
 
 **与状态转移图的关系**：`engine/state-machine.md`「状态转移图」中的「任何状态 → 检测到异常条件 → S14 Safe Mode」即上表 `ALL -> S14` 的**升级入口**（须用户可感知的风险报告，且从 S14 只能经「停止」或「继续」离开，不能自由跳转）。`S10 -> S6(+1)` 的递增**只发生一次**：随后 `S6→S7→S8` 继承同一 `N+1`，不二次递增。
 
-**与 Adapter（MVP-3）的桥接**：当 OpenCode 宿主加载了 `vibe-bridge` 插件时，`vc_transition` / `vc_state` 工具可用。**每次执行 `>>> 进入 X` 转移前必须先调 `vc_transition(to=X, stage=<当前阶段>, referenced_outputs=[…], checked_items=[…])`**——这是阶段出口的机械落盘动作。Core 侧 `validate_exit_checklist` 会拒绝：空 `checked_items`、空 `referenced_outputs`（至少一项须可机械验证）、`stage` 与当前阶段不符、非法转移（`STATE_ILLEGAL_TRANSITION`）；**插件侧先做同一校验**，缺项直接返回 `CHECKLIST_INVALID` 不浪费 spawn。**S4 出口必须传 `level`（0-4）**记录复杂度分级，否则状态里 `level` 沿用旧值，复杂度门禁与 `loop_max` 失真。`to` 接受 `S0`–`S14` / `PAUSE` / `RESUME`（合法后继见本文件转移表）。插件未加载或 CLI 不可用时返回 `BRIDGE_CLI_UNAVAILABLE`，按 Phase 0（LLM 手动驱动）继续——**不阻断**，但本轮无机械状态记录（`feed-exec` / `repeat-check` / Safe Mode 同样不生效）。
+**与 Adapter（MVP-3）的桥接**：当 OpenCode 宿主加载了 `vibe-bridge` 插件时，`vc_transition` / `vc_state` 工具可用。**每次执行 `>>> 进入 X` 转移前必须先调 `vc_transition(to=X, stage=<当前阶段>, referenced_outputs=[…], checked_items=[…])`**——这是阶段出口的机械落盘动作。Core 侧 `validate_exit_checklist` 会拒绝：空 `checked_items`、空 `referenced_outputs`（至少一项须可机械验证）、`stage` 与当前阶段不符、非法转移（`STATE_ILLEGAL_TRANSITION`）；**插件侧先做同一校验**，缺项直接返回 `CHECKLIST_INVALID` 不浪费 spawn。**S4 出口必须传 `level`（0-4）**记录复杂度分级，否则状态里 `level` 沿用旧值，复杂度门禁与 `loop_max` 失真——**该约束已由 Core 强制**（缺失返回 `INVALID_ARGUMENT`，不靠 Agent 自觉）。`to` 接受 `S0`–`S14` / `PAUSE` / `RESUME`（合法后继见本文件转移表）。插件未加载或 CLI 不可用时返回 `BRIDGE_CLI_UNAVAILABLE`，按 Phase 0（LLM 手动驱动）继续——**不阻断**，但本轮无机械状态记录（`feed-exec` / `repeat-check` / Safe Mode 同样不生效）。
 
 Hook 链路（审查 v3）：
 - `session.created → load-checkpoint`：返回 `resume`/`resume_degraded` 则置一次性待注入标记。
 - `session.compacted`：仅置待注入标记（**不在此处 spawn**）。
-- `tool.execute.after → feed-exec`：**仅默认执行类工具** `bash`/`task` 喂执行结果（`grep`/`webfetch`/`read`/`edit`/`write` 跳过——其输出是数据而非裁决；可用 `VIBE_BRIDGE_EXEC_TOOLS` 扩展）。退出码优先取宿主 metadata（`exitCode`/`exit`/`code`/`status`），缺失时才用 output 内**严格失败标记**；只读命令（`cat`/`grep`/`git log`…）的输出不判失败。指纹 = `sha256(tool, args, error lines)`，**不含 output 正文**——同一失败命令重跑保持同指纹，repeat-check 才会计数（连续 2 次同指纹 → 升级 S14）。
+- `tool.execute.after → feed-exec`：**仅默认执行类工具** `bash`/`task` 喂执行结果（`grep`/`webfetch`/`read`/`edit`/`write` 跳过——其输出是数据而非裁决；可用 `VIBE_BRIDGE_EXEC_TOOLS` 扩展）。退出码优先取宿主 metadata（`exitCode`/`exit`/`code`/`status`），缺失时才用 output 内**严格失败标记**；只读命令（`cat`/`grep`/`git log`…）**既不按输出措辞、也不按退出码判失败**（`grep` 无匹配 exit 1、`diff` 有差异 exit 1 都是查询结果）。指纹 = `sha256(tool, args, error lines)`，**不含 output 正文**——同一失败命令重跑保持同指纹。NO_PROGRESS 口径 = **同指纹跨 ≥2 个 Loop 复现**（两轮 Code→Review 无改善）或**同 Loop 内重复 ≥4 次**；单 Loop 内重跑 2–3 次属正常调试，不升级（`kernel.md` §5）。
 - `experimental.session.compacting → snapshot-task-zone`：在压缩 prompt 上下文里注入完整 TASK 区。
 - `experimental.compaction.autocontinue`：确保压缩后自动续跑一轮（让注入被使用）；`VIBE_BRIDGE_DISABLED` 时跳过。
 - `experimental.chat.system.transform`：有待注入标记 → 一次 full spawn 注入完整 TASK 区；否则注入已预热的 pointer（0 阻塞 spawn），pointer 冷启动时由后台 detached spawn 预热（单飞行、60s TTL、失败退避）。
@@ -166,7 +166,7 @@ Hook 链路（审查 v3）：
 **出口条件**：
 - [ ] 前置检查已完成并标注结果（含 Reflection 反馈检索 + 异步状态防御）
 - [ ] 代码中引用了 Plan 阶段的 Step 编号（Quick Loop Mode 跳过）
-- [ ] **计划漂移校验已执行**（Level 2+）：实际修改/新增文件 **⊆** S7「计划契约」声明的文件集（契约定义见 `rules/plan.md`「计划契约」）。超出 → 输出 `[PLAN_DRIFT] 超出契约: <文件列表>` + `[next] <补记偏离理由 或 回 S7 重规划>`，**记录后继续**（不阻断，但不得静默扩大改动面）。**Level 0/1 无 S7 → 标「不适用」**
+- [ ] **计划漂移校验已执行**（Level 2+）：实际修改/新增文件 **⊆** S7「计划契约」声明的文件集（契约定义见 `rules/plan.md`「计划契约」）。超出 → 输出 `[PLAN_DRIFT] 超出契约: <文件列表>` + `[next] <补记偏离理由 或 回 S7 重规划>`，**记录后继续**（不阻断，但不得静默扩大改动面）。S7 出口未声明任何文件（空契约）→ `feed-exec` 返回 `plan_contract_missing=true`，本轮漂移不可判定，须在输出中标注而非当作「无漂移」。**Level 0/1 无 S7 → 标「不适用」**
 - [ ] **TASK 区可见性（压缩安全）**：**Level 2+** → 输出 📌 TASK 区全量字段（清单唯一事实源 = `engine/state-machine.md`「压缩后状态延续契约」表）；**Level 1** → 精简版（目标 + Level/Phase/Loop + 当前 Step + 下一步）；**Level 0** → `[Phase][Loop]` 标签即可。缺失 → 补输出后再进入 Test
 - [ ] 关键决策说明已输出
 - [ ] 若涉及不确定判断（3 类场景）→ Confidence + Evidence 已标注
@@ -179,12 +179,7 @@ Hook 链路（审查 v3）：
 
 **转移**：`>>> 进入 Test`
 
-**LLM 层自动重试**（S8 出口检查，API 调用失败时执行）：
-- 触发：assistant 响应为可重试错误（429/5xx/网络超时/连接中断）
-- 动作：自动重试，上限 2 次（指数退避 1s/3s），标注 `[Retry: N/2]`
-- 成功 → 重试计数立即重置（防止跨轮累计）
-- 重试耗尽 → 暂停，输出 `⚠️ LLM 调用持续失败（已重试 2 次）`，等用户决策（切换模型/检查网络/继续）
-- 不可重试错误（400/401/认证失败）→ 不重试，直接暂停输出追问清单
+**LLM 层自动重试**（S8 出口检查）：assistant 响应为可重试错误（429/5xx/网络超时/连接中断）→ 自动重试上限 2 次（指数退避 1s/3s，标注 `[Retry: N/2]`）；成功即重置计数（防跨轮累计）；耗尽 → 暂停并输出 `⚠️ LLM 调用持续失败（已重试 2 次）` 等用户决策；不可重试错误（400/401/认证失败）→ 不重试，直接暂停输出追问清单
 
 **Level 0 文档类修改出口检查**（纯文档/配置单行修改，不涉及代码时替代代码出口）：5 项检查定义见 `policy/safety.md` 第 5 节「Level 0 文档修改约束子集」（**单一事实源**），此处不重述。
 
@@ -194,8 +189,7 @@ Hook 链路（审查 v3）：
 - [ ] 测试已执行（subagent 派发 / 降级自测 / Quick Loop 自测）并返回报告
 - [ ] 报告引用了 Code 阶段的函数/类名
 - [ ] 报告含验证结论；涉及不确定判断时含 Confidence + Evidence
-- [ ] **Metrics 记账**：`{cycle:N, test_passed, failure_type, degradation}` 记入内存清单（收尾出口一次提交，聚合由 Tool 承担）
-- [ ] **失败信号已记录**（仅真实失败）：`verification_failure` 写入 `signal:reflection:*`（参数见 S11「信号记录」）
+- [ ] **Metrics 记账**：`{cycle:N, test_passed, failure_type, degradation}` 记入内存清单（收尾出口一次提交，聚合由 Tool 承担）；**失败信号已记录**（仅真实失败）：`verification_failure` 写入 `signal:reflection:*`（参数见 S11「信号记录」）
 - [ ] **steering 队列检查**：若存在 steering 消息 → 注入后回到 S8 Code 继续（同一轮，不递增计数）
 - [ ] **Hard 项不豁免**：回退前判 Hard 违规（清单见 `safety.md` §3）→ 命中则**不得以"测试失败"名义修补**，改走 S10 情况 B（回 `S6[0]`），违规修复合并其中
 
@@ -222,8 +216,7 @@ Hook 链路（审查 v3）：
 **情况 C 后置**：Review 通过后、输出最终结果前，先执行 S11 Reflection 触发判定，再执行 S12 Memory Evolution。
 
 **S10出口操作**：
-- [ ] **Metrics 记账**：`{cycle:N, result:A/B/C, issue_count, structural, hard_violation}` 记入内存清单
-- [ ] **返工/纠正信号已记录**（仅真实事件）：情况 B → `high_cost_rework`；用户纠正 → `user_correction`（参数见 S11「信号记录」）
+- [ ] **Metrics 记账**：`{cycle:N, result:A/B/C, issue_count, structural, hard_violation}` 记入内存清单；**返工/纠正信号已记录**（仅真实事件）：情况 B → `high_cost_rework`；用户纠正 → `user_correction`（参数见 S11「信号记录」）
 - [ ] **早期预警检查**（仅情况 C）：若本轮循环数 > avg_loops * 1.5 或失败类型占比 ≥15% → 触发早期 Reflection + 输出预警报告
 
 ## S11 Reflection → S12 Memory Evolution
@@ -238,9 +231,9 @@ Hook 链路（审查 v3）：
 | 事件 | `record` 参数 |
 |---|---|
 | 用户明确纠正 | `--type user_correction --source user` |
-| S9 验证失败 | `--type verification_failure --source test` |
-| 同类问题再次出现 | `--type repeated_failure --source test` |
-| S10 情况 B / 显著返工 | `--type high_cost_rework --source review` |
+| S9 验证失败 | `--type verification_failure --source test --loop <当前 Loop>` |
+| 同类问题再次出现 | `--type repeated_failure --source test --loop <当前 Loop>` |
+| S10 情况 B / 显著返工 | `--type high_cost_rework --source review --loop <当前 Loop>` |
 
 同一 `(task, type, fingerprint, dedupe_token)` 由脚本去重；不同 token 才计为独立轮次。首次失败默认只记录；重复失败、已验证经验失效或用户纠正才触发。明细见 `learning/reflection.md`「信号驱动判定」。记录失败 → 标注 `[REFLECTION_DEGRADED]` 并继续，**不阻塞 S9/S10 出口**。
 
@@ -293,7 +286,7 @@ Hook 链路（审查 v3）：
 | `EVIDENCE_INSUFFICIENT` | 关键判断 `[Evidence: E0]` 而场景要求证明 | 补 E2+ 证据（read / grep / codegraph），或降级为追问 | 否（降级） |
 | `SCOPE_DENIED` | 操作超出授权（红线 / 生命周期 / 未授权项） | 输出 Conflict Card 或「🗑 待删除清单」，止步 | **是** |
 | `PLAN_DRIFT` | S8 实际修改文件超出 S7 计划声明集合 | 补记偏离理由；范围变更 → 回 S7 重规划 | 否（记录后继续） |
-| `NO_PROGRESS` | 连续 2 次 Code→Review 无改善（`kernel.md` §5） | 进 SAFE MODE，输出风险报告 | **是** |
+| `NO_PROGRESS` | 同一失败指纹跨 ≥2 个 Loop 复现，或单 Loop 内重复 ≥4 次（`kernel.md` §5） | 进 SAFE MODE，输出风险报告 | **是** |
 | `LOOP_BUDGET_EXHAUSTED` | Loop 3 仍未通过 | 停止 + 建议升级 Loop 深度或人工介入 | **是** |
 | `OUTPUT_LIMIT` | 工具输出达字节 / 行上限（**含显式 clamp**：`--limit` 超上限按上限执行时同样报此码，不静默） | 分页续取（`artifact page --offset`） | 否（分页） |
 | `ARTIFACT_NOT_FOUND` | `artifact` ref 不存在或已过 24h TTL | `artifact list` 核对；源在则重新 put | 否（重建） |

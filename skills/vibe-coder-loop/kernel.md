@@ -156,19 +156,19 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 
 当检测到以下任一条件时，自动进入 SAFE MODE（阈值 = `runtime/core/safemode.py` 的强制常量；`manifest.yaml` `tunable_parameters.safe_mode_triggers` 为其**描述性镜像**，`check-protocol` 校验键集与下界。当前**不提供项目级配置链**：调宽/调严须同时改代码常量与本表）：
 
-| 触发条件 | 检测方式 | 缺省阈值 |
-|---|---|---|
-| 单轮修改文件数量超过阈值 | 文件计数 | > 10 个文件 |
-| 删除风险持续增加 | 连续 Review 发现删除操作 | 连续 2 轮 |
-| Workflow 循环震荡 | 同一文件在 Code[N] 和 Code[N+1] 间反复修改 | — |
-| **无进展（No Progress）** | 连续 2 次 Code→Review 满足任一：① 同一 issue 未被解决；② 修改后 issue 数未下降；③ Test 结果无改善（无新增通过项） | 连续 2 次 |
-| **硬约束违规（不可修复）** | S8/S10 出口按 `policy/safety.md` §3 分流：可修复 → 情况 B；不可修复/已不可逆 → 上报 `vc_violation` | 不可修复者 1 次即停 |
-| Memory 产生污染风险 | 记忆更新与 CodeGraph 事实冲突 | ≥3 处 |
-| Skill 规则冲突无法收敛 | 两条规则互相矛盾且无法通过 Rule Priority 仲裁 | — |
+| 触发条件 | 实现状态 | 检测方式 | 缺省阈值 |
+|---|---|---|---|
+| 单轮修改文件数量超过阈值 | **观测**（仅写 metrics，不切态） | 文件计数 | > 10 个文件 |
+| 删除风险持续增加 | **未实现**（需人工判断） | 连续 Review 发现删除操作 | 连续 2 轮 |
+| Workflow 循环震荡 | **未实现**（由无进展口径覆盖） | 同一文件在 Code[N] 和 Code[N+1] 间反复修改 | — |
+| **无进展（No Progress）** | **强制**（`runtime.core.feed-exec` → `safemode.evaluate`） | 同一失败指纹出现在 **≥2 个不同 Loop**，或同一 Loop 内重复 ≥4 次 | 跨 2 个 Loop / 单 Loop 4 次 |
+| **硬约束违规（不可修复）** | **强制**（`vc_violation` / `feed-exec.vc_violation`） | S8/S10 出口按 `policy/safety.md` §3 分流：可修复 → 情况 B；不可修复/已不可逆 → 上报 `vc_violation` | 不可修复者 1 次即停 |
+| Memory 产生污染风险 | **观测**（由 S10 维度层判定） | 记忆更新与 CodeGraph 事实冲突 | ≥3 处 |
+| Skill 规则冲突无法收敛 | **未实现**（走 Conflict Card） | 两条规则互相矛盾且无法通过 Rule Priority 仲裁 | — |
 
 > **镜像口径**：`hard_violation_repeats: 3` 是「重复告警」的观测下界，与上方「硬约束违规 1 次即强制」是两个不同机制（前者观测、后者切态），不可互相替代。
 
-> **无进展判定口径**（保持可数、可判，不做评分）：只比较**相邻两次 Code→Review 的输出**，三个条件取"或"。误判代价可控——SAFE MODE 是暂停等确认，不是终止（用户"继续"即恢复）。异常归类见 `engine/state-machine.md`「异常路径收敛表」。
+> **无进展判定口径**（保持可数、可判，不做评分）：以**失败指纹**为单位——同一指纹跨 ≥2 个 Loop 复现（= 两轮 Code→Review 解决不了同一问题），或同一 Loop 内无改动地重复 ≥4 次。**同一 Loop 内重跑 2–3 次同一失败属于正常调试，不触发**。误判代价可控——SAFE MODE 是暂停等确认，不是终止（用户"继续"即恢复）。异常归类见 `engine/state-machine.md`「异常路径收敛表」。
 
 ### SAFE MODE 行为
 

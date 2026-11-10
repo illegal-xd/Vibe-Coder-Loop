@@ -20,7 +20,7 @@ status: active
 | 删除 | 删除文件 / 代码 / 注释（**代码资产**） | **无用户指令** → 归档注释 `@Iteration` 替代；**用户明确指令** → 输出 Conflict Card + 「🗑 待删除清单」（含可执行命令），**物理删除由用户执行**（Agent 不执行）；**本轮自产草稿** → 可直接删改（见 `policy/lifecycle.md`「适用范围」） |
 | 删除（**记忆条目**） | `memory_forget` / 移除 delx-memory 键 | **Agent 自主执行**（记忆操作常驻授权，无需用户确认）；义务 = 归属为本方 + 可回滚证据已核验；批量 ≥5 条先输出清单（不阻塞）——见 `policy/lifecycle.md`「记忆条目删除义务」 |
 | 覆盖 | 无备份的覆写 | 并存引入新旧两版 |
-| 提交 | git commit | 用户确认后执行 |
+| 提交 | git commit | 用户确认后执行（运行时通道：`runtime/exec` 的 `git commit/add/tag/stash/switch` 默认 fail-closed，授权后以 `allow_high_risk=True` 放行；`push` 仍走 feature 分支 + PR） |
 | 推送 | git push | 创建 feature 分支 + PR |
 | 数据库迁移 | schema 变更 | 输出迁移脚本 + 回滚方案，等确认 |
 | 部署 | 生产环境部署 | 输出部署清单 + 风险评估，等确认 |

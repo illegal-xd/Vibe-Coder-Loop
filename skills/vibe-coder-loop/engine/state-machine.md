@@ -208,7 +208,7 @@ S14 Safe Mode
 | `_rev` | 单调版本号，供并发写校验（乐观锁） | 按 `0` 处理 |
 | `_project_id` | 项目身份 = `sha256(realpath(project_root))` 前 16 位 | 不做归属校验 |
 | `_resume_from` | 仅 S14 期间写入：进入 Safe Mode 前的 `phase`，用户「继续」时据此恢复 | 缺失 → 只能经「停止/接受」走 S13，不能 RESUME |
-| `review.failure_state`（子键） | 连续失败计数与指纹（`last_fingerprint` / `consecutive_count` / `last_ok_at` / `round_started_at` / `history`），供 `NO_PROGRESS` 机械判定 | 按空初始化 |
+| `review.failure_state`（子键） | 连续失败计数与指纹（`last_fingerprint` / `consecutive_count` / `failure_loops` / `last_ok_at` / `round_started_at` / `history`），供 `NO_PROGRESS` 机械判定（`failure_loops` = 该指纹出现过的 Loop 集合，跨 ≥2 个即无进展） | 按空初始化 |
 
 **兼容规则（三条硬约束）**：① **未知键必须原样保留**——写入方不得丢弃不认识的键（防「Skill 先加字段、工具后升级」互相破坏）；② `_schema` 高于读取方支持版本 → 降级为「仅参考」，**只读不写**；③ 保留键缺失不构成损坏，按上表缺省处理。
 

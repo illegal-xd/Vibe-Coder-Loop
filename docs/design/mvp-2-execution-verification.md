@@ -366,6 +366,12 @@ def repeat_check(self, fingerprint: str, *, exec_id: str = "") -> RepeatResult:
 
 **为什么不用 `fingerprint in history`**：集合包含判断无法表达"连续"。设历史 `[A, B, A]`，再出现 `A` 时集合判断会说"重复"，但实际序列是 `A→B→A`——中间有变化，**不是连续无改善**。连续只能由 `last_* + count` 表达。
 
+> **实现修订（判定口径）**：`consecutive_count >= 2` 会把「同一 Loop 内重跑两次同一失败」直接判成无进展——
+> 那是正常调试（改了代码重跑测试），第 2 次就进 S14 让 `loop_max=3` 形同虚设。
+> 现行口径（`kernel.md` §5 / `runtime/core/safemode.py`）：**同一指纹跨 ≥2 个不同 Loop** 复现（= 两轮 Code→Review 无改善），
+> 或**同一 Loop 内重复 ≥4 次**。实现上新增 `review.failure_state.failure_loops`（该指纹出现过的 Loop 集合），
+> `feed-exec` 与 `repeat-check` 共用 `safemode.no_progress_signal()`。
+
 **持久化**：计数写入 `.state.md` 的 `review.failure_state`（MVP-1 §5.4）。原设计的 `self._consecutive_same` 是内存变量，进程重启/会话恢复即归零 → `NO_PROGRESS` 永不触发（或误触发），这是 P0 级缺陷。
 
 **重置规则**（穷举，避免"什么时候归零"靠猜）：
@@ -375,7 +381,7 @@ def repeat_check(self, fingerprint: str, *, exec_id: str = "") -> RepeatResult:
 | 出现不同指纹 | `count = 1`，`last_fingerprint` 更新 | 失败内容变了 = 有变化 |
 | 任意一次 `ok=True` 执行 | `count = 0`，`last_fingerprint = ""`，记 `last_ok_at` | 成功即打断连续 |
 | 新任务（S13→S1 / `goal` 变更） | `count = 0` 全清 | 重试预算重置（`kernel.md` §1 follow-up） |
-| `loop` 递增（S9→S8 / S10→S8 / S10→S6） | **不重置** | 预算消耗 ≠ 失败序列中断 |
+| `loop` 递增（S9→S8 / S10→S8 / S10→S6） | **count 不重置**，但记入 `failure_loops` | 预算消耗 ≠ 失败序列中断；跨 Loop 复现才是无进展证据 |
 | 阶段变化（S8↔S9） | **不重置** | 同错误跨阶段仍是同失败（配合 stage 不进指纹） |
 | **代码被修改但仍同指纹** | **不重置** | 改了代码错误照旧 = *更强*的无进展证据，应更早触发而非重置 |
 | 用户显式 override（`vc_state --reset-no-progress`） | `count = 0` + 写 `decisions` 记账 | 人工介入后重新计 |

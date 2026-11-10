@@ -18,7 +18,7 @@ complexity:
     - level: 0
       name: 文字修改
       loop: quick
-      stages: [S1, S2, S4, S8, S10, S13]  # L0 的 S10 为「文档子集 4 项」内联（见 complexity-gate 矩阵）
+      stages: [S1, S2, S4, S8, S10, S13]  # L0 的 S10 为「文档子集 5 项」内联（见 complexity-gate 矩阵 + safety.md §5）
     - level: 1
       name: 单文件修改
       loop: quick

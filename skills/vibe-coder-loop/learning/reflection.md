@@ -50,7 +50,7 @@ S11 首选运行 `python3 scripts/memory/reflection_signals.py evaluate --task-i
 
 **信号类型**：`user_correction` / `verification_failure` / `repeated_failure` / `high_cost_rework`。记录必须带证据（`file:` / `memory:` / `anchor:`）；模型猜测用 `--unverified`，不进入强制反思。
 
-**聚合与分类**：同一 fingerprint 合并为一个 group；同一 `(task, type, fingerprint, dedupe_token)` 只算一次。分类为 `lesson_not_followed`（已有经验未被采用）/ `lesson_ineffective`（用了仍失败）/ `lesson_stale`（经验失效/冲突）/ `new_experience` / `sporadic` / `insufficient_evidence`。已有相似经验时优先 `supplement` 或 `correct`，不新增重复记录。
+**聚合与分类**：同一 fingerprint 合并为一个 group；同一 `(task, type, fingerprint, dedupe_token)` 只算一次；`dedupe_token` 缺省 = `指纹+Loop`，因此**同一任务的不同 Loop 会各自计一次**（记录时必须带 `--loop <N>`，否则跨轮重复失败无法累计）。分类为 `lesson_not_followed`（已有经验未被采用）/ `lesson_ineffective`（用了仍失败）/ `lesson_stale`（经验失效/冲突）/ `new_experience` / `sporadic` / `insufficient_evidence`。已有相似经验时优先 `supplement` 或 `correct`，不新增重复记录。
 
 **触发 ≠ 晋升**：脚本固定输出 `promotion_authorized=false`。是否写入 L3/L5、是否提升，仍由本文件 Card 质量审计 + `learning/memory/promotion.md` 阈值独立决定。反思判定失败不阻塞编码/测试/恢复；按 `[REFLECTION_DEGRADED]` 降级。
 
