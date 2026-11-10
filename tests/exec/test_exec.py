@@ -266,7 +266,7 @@ class TestE6FingerprintStability(ExecTest):
         self.assertNotEqual(r1.fingerprint, r2.fingerprint)
 
     def test_e6_consecutive_to_core(self) -> None:
-        """E6: 连续 2 次同指纹 → Core repeat_check 触发 NO_PROGRESS。"""
+        """E6: 同指纹跨 2 个 Loop 复现 → Core 判 NO_PROGRESS（单 Loop 内重复不算）。"""
         from runtime.core import WorkflowCore, transition
 
         os.environ["HOME"] = self.tmp
@@ -281,8 +281,14 @@ class TestE6FingerprintStability(ExecTest):
 
         r2 = run(_req(cmd, self.tmp, timeout_ms=10000))
         fr2 = core.feed_exec(r2.to_core_result())
-        self.assertTrue(fr2.no_progress)
+        self.assertFalse(fr2.no_progress, "同一 Loop 内 2 次属于正常调试")
         self.assertEqual(fr2.consecutive_count, 2)
+
+        core.store.write({"loop": 1}, expected_rev=core.store.snapshot().rev)
+        r3 = run(_req(cmd, self.tmp, timeout_ms=10000))
+        fr3 = core.feed_exec(r3.to_core_result())
+        self.assertTrue(fr3.no_progress)
+        self.assertEqual(fr3.failure_loops, 2)
 
     def test_e6d_aba_no_progress(self) -> None:
         """E6d：A→B→A 三次失败 → 不触发 NO_PROGRESS（连续 ≠ 集合包含）。"""
@@ -770,6 +776,38 @@ class TestArgValidation(ExecTest):
             )
         self.assertEqual(rc, 2, buf.getvalue())
         self.assertIn("INVALID_ARGUMENT", buf.getvalue())
+
+
+class GitAuthorizationTests(unittest.TestCase):
+    """写类 git 子命令：默认拒绝，显式授权后放行（policy/safety.md §1 提交需用户确认）。"""
+
+    def test_commit_denied_without_authorization(self) -> None:
+        decision = policy.check_policy(["git", "commit", "-m", "x"])
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.code, "SCOPE_DENIED")
+        self.assertTrue(decision.high_risk)
+
+    def test_commit_allowed_with_authorization(self) -> None:
+        decision = policy.check_policy(["git", "commit", "-m", "x"], allow_high_risk=True)
+        self.assertTrue(decision.allowed)
+        self.assertTrue(decision.high_risk)
+        self.assertEqual(decision.code, "")
+
+    def test_add_and_tag_need_authorization(self) -> None:
+        for sub in ("add", "tag", "stash", "switch"):
+            self.assertFalse(policy.check_policy(["git", sub]).allowed, sub)
+            self.assertTrue(policy.check_policy(["git", sub], allow_high_risk=True).allowed, sub)
+
+    def test_unlisted_git_subcommand_still_fail_closed(self) -> None:
+        """fetch/pull/clone 即便 allow_high_risk 也不放行（可执行 hooks / 下载任意代码）。"""
+        for sub in ("fetch", "pull", "clone"):
+            self.assertFalse(
+                policy.check_policy(["git", sub], allow_high_risk=True).allowed, sub
+            )
+
+    def test_push_still_requires_authorization(self) -> None:
+        self.assertFalse(policy.check_policy(["git", "push"]).allowed)
+        self.assertTrue(policy.check_policy(["git", "push"], allow_high_risk=True).allowed)
 
 
 if __name__ == "__main__":

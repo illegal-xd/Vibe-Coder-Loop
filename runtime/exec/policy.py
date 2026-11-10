@@ -47,7 +47,14 @@ HIGH_RISK_BINARIES: frozenset[str] = frozenset(
 )
 
 HIGH_RISK_GIT_SUBCMDS: frozenset[str] = frozenset(
-    {"push", "reset", "clean", "checkout", "rebase", "merge", "cherry-pick", "filter-branch"}
+    {"push", "reset", "clean", "checkout", "rebase", "merge", "cherry-pick", "filter-branch", "restore"}
+)
+
+# 写类 git 子命令：`policy/safety.md` §1 允许「用户确认后提交」，
+# 因此这里给的是**授权后放行**（allow_high_risk=True），而不是永久拒绝。
+# 未列入任何集合的子命令（fetch/pull/clone/submodule…）仍 fail-closed。
+GIT_AUTHORIZED_SUBCMDS: frozenset[str] = frozenset(
+    {"commit", "add", "tag", "stash", "switch"}
 )
 
 HIGH_RISK_NPM_SUBCMDS: frozenset[str] = frozenset({"publish", "unpublish"})
@@ -160,12 +167,13 @@ def check_policy(
                 False, code="ENV_ERROR", reason="git 缺少子命令", next="补全子命令后重试"
             )
         sub = cmd[1]
-        if sub in HIGH_RISK_GIT_SUBCMDS:
+        if sub in HIGH_RISK_GIT_SUBCMDS or sub in GIT_AUTHORIZED_SUBCMDS:
             if not allow_high_risk:
+                label = "高风险" if sub in HIGH_RISK_GIT_SUBCMDS else "需用户授权"
                 return PolicyDecision(
                     False,
                     code="SCOPE_DENIED",
-                    reason=f"高风险 git 子命令 git {sub}（需 allow_high_risk + 用户授权）",
+                    reason=f"{label} git 子命令 git {sub}（需 allow_high_risk + 用户授权）",
                     next="经宿主 permission.ask 取得用户授权后设置 allow_high_risk=True",
                     high_risk=True,
                 )
