@@ -613,6 +613,7 @@ class SkillDraftTests(Base):
         review_status: str = "approved",
         extra: str = "",
         evidence_ids: list[str] | None = None,
+        task_ids: list[str] | None = None,
     ) -> None:
         value = (
             "# 异步状态竞态修复\n\n"
@@ -634,6 +635,7 @@ class SkillDraftTests(Base):
                 "evidence_ids": evidence_ids
                 or [f"memory:lesson:{i}" for i in range(refs)],
                 "projects": list(projects),
+                **({"task_ids": list(task_ids)} if task_ids is not None else {}),
             },
         )
 
@@ -677,12 +679,27 @@ class SkillDraftTests(Base):
 
     def test_single_task_with_three_instances_is_drafted(self) -> None:
         """单任务内 ≥3 条实例引用可替代「≥2 任务」，与 promotion 的 ≥3 实例门槛对齐。"""
-        self.seed_pattern(recurrence=3, refs=3)
+        self.seed_pattern(recurrence=3, refs=3, task_ids=["task:a"])
         report = skill_draft.generate(
             self.db, out_dir=self.dir / "drafts", skills_dir=ROOT / "skills"
         )
         item = report["candidates"][0]
         self.assertEqual(item["status"], "drafted", item.get("reasons"))
+        # 直接断言门槛判定：单任务 + 3 条实例 → 不因任务数被 block
+        candidate = skill_draft.load_candidates(self.db)[0]
+        self.assertEqual(candidate["distinct_tasks"], 1)
+        self.assertEqual(candidate["task_evidence"], "instance_refs")
+        self.assertEqual(candidate["blocked_reasons"], [])
+
+    def test_single_task_with_single_instance_is_deferred(self) -> None:
+        """单任务 + 仅 1 条实例引用：任务证据不足，仍须 deferred。"""
+        self.seed_pattern(recurrence=3, refs=1, task_ids=["task:a"])
+        report = skill_draft.generate(
+            self.db, out_dir=self.dir / "drafts", skills_dir=ROOT / "skills"
+        )
+        item = report["candidates"][0]
+        self.assertEqual(item["status"], "deferred")
+        self.assertIn("insufficient_task_evidence", item["reasons"])
 
     def test_text_conflict_words_do_not_block_draft(self) -> None:
         """正文里的「已废弃 / 不再适用」是反例说明，不是未解决冲突。"""

@@ -34,12 +34,12 @@
 > 验证：`node --check` 通过；`tests/plugins/vibe-bridge.test.mjs` 覆盖「`grep error` 不判失败 / 同失败命令指纹稳定 / checklist 缺引用即拒 / 冷 pointer 后台预热不阻塞 / deny 抛错」；真实 `runtime.core transition` argparse 校验 `--level`/`--checklist` JSON 接受（临时 `--memory-db`，不污染用户状态）。
 > **真机验证（宿主已加载插件，读 Checkpoint 取证）**：① 只读 `grep`（输出含 `child.on("error")` 等 error 行）被记为 `result: ok` 且 `consecutive_count` 由 3 → **0**（旧版此处必为失败）；② 空输出、exit=1 的 `python3 -c "raise SystemExit(1)"` 被记为 `failed`、count 0→1 —— 空输出无 marker 可匹配，**证明宿主 metadata 确实携带退出码且被读取**；③ 同一命令连跑两次指纹却不同（count 停在 1）→ 定位出宿主把 `description`/`timeout` 等**逐次元数据**放进 `args`，指纹仍不稳定。修复：新增 `fingerprintArgs`——bash 取 `command`，其他工具剥 `description/title/timeout/workdir/callID/id/sessionID` 后排序 JSON；新增「同命令不同 description → 同指纹」「不同命令 → 不同指纹」两条回归。**该修复需重载插件生效**。
 
-> **同版本追加（策略门禁审查：12 项过重/失配判定修复）**：起因是「策略优化链路长期空转」的系统性审查——逐条比对代码与 `kernel.md`/`policy/`/`learning/` 声明，定位到 3 处会锁死循环的过重判定与 3 处阈值互相打架。
+> **同版本追加（策略门禁审查：13 项过重/失配判定修复）**：起因是「策略优化链路长期空转」的系统性审查——逐条比对代码与 `kernel.md`/`policy/`/`learning/` 声明，定位到 3 处会锁死循环的过重判定与 3 处阈值互相打架。
 
 | # | 问题 | 处置 | 落点 |
 |---|---|---|---|
 | 1 | 只读命令按退出码判失败（`grep` 无匹配 exit 1）→ 两次即 S14 | `inspection` 既不判输出措辞也不判退出码 | `.opencode/plugins/vibe-bridge.js` |
-| 2 | 同指纹第 2 次即 NO_PROGRESS，`loop_max=3` 形同虚设 | 改为「跨 ≥2 个 Loop 复现」或「单 Loop ≥4 次」，判定收敛到 `safemode.no_progress_signal`（`feed-exec` 与 `repeat-check` 共用） | `runtime/core/safemode.py` / `core.py` |
+| 2 | 同指纹第 2 次即 NO_PROGRESS，`loop_max=3` 形同虚设 | 改为「跨 ≥2 个 Loop 复现」或「单 Loop ≥4 次」，判定收敛到 `safemode.no_progress_signal`（无进展口径由 `feed-exec` 与 `repeat-check` 共用；loop 预算判定仅在 `feed-exec`） | `runtime/core/safemode.py` / `core.py` |
 | 3 | S4 不传 `level` 静默沿用旧值 → L2+ 任务被锁成 Quick 预算 | Core 强制：S4 出口缺 `level` 返回 `INVALID_ARGUMENT`；S13→S1 归档时 level 归 0 | `runtime/core/state_machine.py` |
 | 4 | 反思信号缺省 `dedupe_token=fingerprint`，任务内重复失败计数恒 1 | 缺省 token = `指纹+Loop`；S9/S10 记录须带 `--loop` | `scripts/memory/reflection_signals.py` |
 | 5 | 草稿「≥2 任务」门与 promotion「≥3 实例」门冲突 | 满足其一即可（≥2 任务 **或** ≥3 条实例引用） | `scripts/memory/skill_draft.py` |

@@ -112,6 +112,21 @@ class CoreApiTests(CoreTest):
         result = self.core.feed_exec(ExecResult(exec_id="e1", ok=True, files_modified=["src/a.py"]))
         self.assertFalse(result.plan_drift)
 
+    def test_aba_across_loops_not_escalated(self) -> None:
+        """指纹切换必须清空 Loop 集合：A(loop1) → B(loop2) → A(loop2) 不算无进展。"""
+        self.seed_code("S8", loop=1)
+        first = self.core.feed_exec(ExecResult(exec_id="e1", ok=False, fingerprint="fp:a"))
+        self.assertEqual(first.failure_loops, 1)
+        self.assertFalse(first.no_progress)
+        self.core.store.write({"loop": 2}, expected_rev=self.core.store.snapshot().rev)
+        second = self.core.feed_exec(ExecResult(exec_id="e2", ok=False, fingerprint="fp:b"))
+        self.assertEqual(second.failure_loops, 1)
+        self.assertFalse(second.no_progress)
+        third = self.core.feed_exec(ExecResult(exec_id="e3", ok=False, fingerprint="fp:a"))
+        self.assertEqual(third.failure_loops, 1)
+        self.assertFalse(third.no_progress)
+        self.assertFalse(third.escalated)
+
     def test_repeat_check_accumulates_same_fingerprint(self) -> None:
         self.seed_code("S8", loop=1)
         first = self.core.repeat_check("fp:1")

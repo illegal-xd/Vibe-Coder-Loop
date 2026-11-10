@@ -82,10 +82,12 @@ class TransitionTests(CoreTest):
         self.assertTrue(self.t("S8").ok)
 
     def test_v5_follow_up_resets_loop(self) -> None:
-        self.seed_code("S13", loop=2)
+        self.seed_code("S13", loop=2, level=2, status="complete")
         result = self.t("S1", loop=0)
         self.assertTrue(result.ok)
         self.assertEqual(result.loop, 0)
+        # 新任务不复用上一任务的复杂度分级（否则 loop_max 沿用旧值）
+        self.assertEqual(self.core.store.snapshot().fields["level"], 0)
         self.assertEqual(self.core.get_state().status, "active")
 
     def test_v27_escalation_requires_force_and_reason(self) -> None:

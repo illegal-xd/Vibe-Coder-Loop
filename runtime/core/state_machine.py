@@ -323,6 +323,9 @@ def _negates_word(text: str, start: int, end: int) -> bool:
     整句扫描会把「继续，不要再问」这类附带否定当成拒绝，导致 S14 无法离开
     （S14 只能经用户确认退出）。
     """
+    # window_before 为防御性保留：当前两处调用都以 `^` 锚定确认词（`^请?<word>` / `^please <word>`），
+    # 前缀只可能是空串或「请」，实际不可达；若将来放开锚定（如允许「用户说：不要继续」），
+    # 这里必须能兜住紧邻否定。
     window_before = text[max(0, start - 8) : start]
     window_after = text[end : end + 3]
     return _has_negation(window_before) or bool(_NEG_SUFFIX_RE.match(window_after))
@@ -837,8 +840,9 @@ def transition(
         ):
             updates[key] = defaults.get(key, [] if key != "resume" else "")
         updates["_resume_from"] = ""
-        # 新任务不复用上一任务的复杂度分级：level 归 0，由本轮 S4 重新判定
-        updates["level"] = 0
+        # 归档路径由 CheckpointStore 以 normalize_fields({}) 重置（loop/level 归 0），
+        # 故这里无需显式写 level；「新任务不复用上一任务分级」由
+        # tests/core/test_state_machine.py::test_v5_follow_up_resets_loop 守护。
     expected_for_write = (
         0 if archived else (snapshot.rev if expected_rev is None else expected_rev)
     )

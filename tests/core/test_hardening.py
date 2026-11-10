@@ -430,6 +430,22 @@ class SafeModeHardening(CoreTest):
         self.assertEqual(fields["phase"], "S14 Safe Mode")
         self.assertEqual(fields["_resume_from"], "S8 Code")
 
+    def test_loop_budget_exhausted_escalates_from_feed(self) -> None:
+        """feed-exec 也是 loop 预算判定入口（此前该分支不可达、无测试）。"""
+        self.seed_code("S8", loop=5, level=0)
+        result = self.core.feed_exec(ExecResult(exec_id="e1", ok=False, fingerprint="fp:x"))
+        self.assertTrue(result.escalated)
+        self.assertEqual(result.code, "LOOP_BUDGET_EXHAUSTED")
+        self.assertEqual(self.core.get_state().phase, "S14 Safe Mode")
+
+    def test_feed_at_loop_limit_does_not_escalate(self) -> None:
+        """loop == loop_max 不属于超限：锁住 evaluate 用 `>` 而非 `>=`。"""
+        self.seed_code("S8", loop=1, level=0)
+        result = self.core.feed_exec(ExecResult(exec_id="e1", ok=False, fingerprint="fp:x"))
+        self.assertFalse(result.escalated)
+        self.assertFalse(result.no_progress)
+        self.assertEqual(self.core.get_state().phase, "S8 Code")
+
     def test_single_loop_repeats_do_not_escalate(self) -> None:
         """同一 Loop 内 3 次同指纹仍属正常调试；第 4 次才切 SAFE MODE。"""
         self.seed_code("S8", loop=1)

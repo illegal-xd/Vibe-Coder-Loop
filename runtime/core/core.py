@@ -532,10 +532,10 @@ class WorkflowCore:
             code = decision.vc_code or vc_codes.NO_PROGRESS
             if decision.reason == "loop_budget_exhausted":
                 message = f"loop={loop_now} 已达 Level {level_now} 的 loop_max"
+            elif len(failure_loops) >= 2:
+                message = f"同一失败指纹出现在 {len(failure_loops)} 个 Loop、累计 {count} 次未改善"
             else:
-                message = (
-                    f"同一失败指纹出现在 {len(failure_loops)} 个 Loop、累计 {count} 次未改善"
-                )
+                message = f"同一 Loop 内重复 {count} 次未改善（loop={loop_now}）"
             nxt = decision.action or vc_codes.next_action(code)
             current_code = state_code(phase)
             if current_code != "S14":
@@ -731,7 +731,11 @@ class WorkflowCore:
             rev=rev,
             code=vc_codes.NO_PROGRESS if no_progress else "",
             message=(
-                f"同一失败指纹出现在 {len(failure_loops)} 个 Loop、累计 {new_count} 次未改善"
+                (
+                    f"同一失败指纹出现在 {len(failure_loops)} 个 Loop、累计 {new_count} 次未改善"
+                    if len(failure_loops) >= 2
+                    else f"同一 Loop 内重复 {new_count} 次未改善（loop={loop_now}）"
+                )
                 if no_progress
                 else ""
             ),
