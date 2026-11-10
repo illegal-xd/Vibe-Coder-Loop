@@ -209,6 +209,35 @@ test("host metadata exit code is authoritative", async () => {
   assert.equal(last.ok, false);
 });
 
+test("inspection command exit 1 (grep no match) is a query result, not a failure", async () => {
+  const p = await newPlugin();
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "i1", args: { command: "grep -rn createOrder src/" } },
+    { output: "", metadata: { exitCode: 1 } }
+  );
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "i2", args: { command: "diff a.txt b.txt" } },
+    { output: "1c1", metadata: { exitCode: 1 } }
+  );
+  const feeds = await readJsonLines(feedsFile);
+  const a = feeds.find((f) => f.exec_id === "hook:i1");
+  const b = feeds.find((f) => f.exec_id === "hook:i2");
+  assert.equal(a.ok, true, "grep exit 1 means 'no match', not a failed execution");
+  assert.equal(b.ok, true, "diff exit 1 means 'files differ', not a failed execution");
+});
+
+test("inspection command with host exit metadata still does not extract error markers", async () => {
+  const p = await newPlugin();
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "i3", args: { command: "cat error.log" } },
+    { output: "ERROR: something exploded", metadata: { exitCode: 0 } }
+  );
+  const feeds = await readJsonLines(feedsFile);
+  const last = feeds[feeds.length - 1];
+  assert.equal(last.ok, true);
+  assert.deepEqual(last.errors, []);
+});
+
 test("green test summary '0 failed' is not a failure", async () => {
   const p = await newPlugin();
   await p["tool.execute.after"](
@@ -253,8 +282,9 @@ test("vc_transition rejects empty referenced_outputs without spawning", async ()
 
 test("vc_transition forwards --level and a valid checklist", async () => {
   const p = await newPlugin();
-  const ref = path.join(tmp, "plan.md");
-  await writeFile(ref, "goal: ship it\n");
+  // 出口引用只允许项目内相对路径（core `_project_relative_exists` 拒绝绝对路径）
+  const ref = "plan.md";
+  await writeFile(path.join(tmp, ref), "goal: ship it\n");
   const res = await p.tool.vc_transition.execute(
     {
       to: "S1",
@@ -271,6 +301,24 @@ test("vc_transition forwards --level and a valid checklist", async () => {
   assert.ok(t, "transition call logged");
   assert.equal(t.level, "1", "--level forwarded");
   assert.equal(t.has_checklist, true);
+});
+
+test("vc_transition rejects unverifiable references without spawning", async () => {
+  const p = await newPlugin();
+  const before = await readJsonLines(callsFile);
+  const res = await p.tool.vc_transition.execute(
+    {
+      to: "S1",
+      stage: "S0",
+      referenced_outputs: ["已经全部完成", "/abs/plan.md"],
+      checked_items: ["done"],
+    },
+    {}
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "CHECKLIST_INVALID");
+  const after = await readJsonLines(callsFile);
+  assert.equal(after.length, before.length, "no CLI spawn when refs are unverifiable");
 });
 
 test("cold pointer is warmed in background without blocking the request", async () => {

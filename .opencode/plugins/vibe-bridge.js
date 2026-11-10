@@ -347,15 +347,23 @@ function extractFilesModified(tool, args) {
  * marker in output that is not an inspection command's data. Marking output
  * with an incidental "error" substring as failed used to escalate two
  * consecutive identical calls straight into S14 Safe Mode.
+ *
+ * Inspection commands (`grep` / `diff` / `which` / `git diff` …) use the exit
+ * status as a QUERY RESULT, not as a verdict on the change: `grep` exits 1 on
+ * "no match", `diff` exits 1 on "files differ", `which` exits 1 on "not found".
+ * Counting that as a failed execution used to push two ordinary exploration
+ * calls into S14 Safe Mode, so for inspection commands only output-level
+ * failure markers (which are already suppressed for data output) can fail.
  */
 function buildExecResult(hookInput, hookOutput) {
   const output = hookOutput?.output;
   const tool = hookInput?.tool;
   const metaExit = exitCodeFromMetadata(hookOutput?.metadata);
   const inspection = tool === "bash" && isInspectionCommand(hookInput?.args);
-  const exitCode = metaExit ?? extractExitCode(output) ?? 0;
-  const errors = metaExit === null && inspection ? [] : extractErrors(output);
-  const failed = exitCode !== 0 || errors.length > 0;
+  const exitCode =
+    metaExit ?? (inspection ? null : extractExitCode(output)) ?? 0;
+  const errors = inspection ? [] : extractErrors(output);
+  const failed = (exitCode !== 0 && !inspection) || errors.length > 0;
   return {
     exec_id: `hook:${hookInput?.callID || Date.now()}`,
     ok: !failed,
@@ -364,6 +372,21 @@ function buildExecResult(hookInput, hookOutput) {
     files_modified: extractFilesModified(tool, hookInput?.args),
     errors,
   };
+}
+
+/** Mirrors core `_reference_verifiable` shape (without touching the filesystem):
+ *  `path:` / `user:` / `sym:` / `fn:` / `step N` / `s12`, or anything carrying a
+ *  relative path (`a/b`) or a file suffix. Absolute paths are rejected by core. */
+const REF_SUFFIX_RE = /\.[A-Za-z0-9]{1,8}$/;
+const REF_STEP_RE = /^(?:step\s+\d+|s\d{1,2})$/i;
+
+function looksVerifiable(item) {
+  const text = String(item || "").trim();
+  if (!text) return false;
+  if (/^(?:path|user|sym|fn):/i.test(text)) return true;
+  if (REF_STEP_RE.test(text)) return true;
+  if (text.includes("/") || REF_SUFFIX_RE.test(text)) return !text.startsWith("/");
+  return false;
 }
 
 /** Mirrors core `validate_exit_checklist`: stage + non-empty checked_items +
@@ -378,6 +401,7 @@ function normalizeChecklist(raw) {
     ? raw.checked_items.filter((x) => typeof x === "string" && x.trim() !== "")
     : [];
   if (!stage || checks.length === 0 || refs.length === 0) return null;
+  if (!refs.some(looksVerifiable)) return null;
   return { stage, referenced_outputs: refs, checked_items: checks };
 }
 
