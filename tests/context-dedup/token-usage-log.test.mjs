@@ -72,13 +72,16 @@ test("the default archive is the shared ~/.config/opencode/token-usage directory
     path.join(os.homedir(), "usage", "token-usage.jsonl"),
   );
   // tokenUsage.path remains an explicit override, resolved against the project.
+  // Use a platform-absolute project so the expectation matches `path.resolve`
+  // on Windows too (`/project` resolves to the current drive there).
+  const project = path.join(path.parse(os.tmpdir()).root, "project");
   assert.equal(
     resolveUsageLogPath(
       resolveConfig({ tokenUsage: { path: "logs/usage.jsonl" } }, {}),
-      "/project",
+      project,
       {},
     ),
-    path.join("/project", "logs", "usage.jsonl"),
+    path.join(project, "logs", "usage.jsonl"),
   );
 });
 

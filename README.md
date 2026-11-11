@@ -28,7 +28,7 @@ Vibe-Coder-Loop/
 │   ├── core/                  # 状态机 / Checkpoint / 协议一致性 CLI
 │   └── exec/                  # 受控执行（allowlist / 超时 / 输出截断 / 脱敏）
 ├── .opencode/                 # OpenCode 可选集成（本地插件，无 npm 依赖）
-│   ├── plugins/               # vibe-context-dedup.js（唯一自动加载入口）
+│   ├── plugins/               # vibe-context-dedup.js / vibe-bridge.js（自动加载入口）
 │   └── context-dedup/         # Dedup + Error Purge + Supersede Writes + Slim Edit 核心 / 消息适配 / 配置 / 日志
 ├── tests/
 │   ├── core/                  # runtime/core 单测
@@ -201,6 +201,7 @@ cd tools/memory-viewer && python3 -m http.server 8765   # 浏览器打开 http:/
 ## 文档
 
 - [安装与宿主集成](docs/installation.md)
+- [Windows 平台适配记录（分支 windows）](docs/windows-port.md)
 - [工具入口与调用约定](docs/tooling.md)
 - [OpenCode 上下文裁剪（Dedup + Error Purge + Supersede Writes + Slim Edit）](docs/context-dedup.md)
 - [跨平台兼容矩阵](docs/audits/compatibility.md)

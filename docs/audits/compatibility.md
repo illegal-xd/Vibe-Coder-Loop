@@ -56,7 +56,7 @@
 ## 四、未验证项
 
 - Linux 真实发行版上的 Bash/Python 行为未在本机执行；建议在 CI 或容器中补跑。
-- Windows 原生 / Git Bash / WSL 均未在本机执行；Windows 符号链接权限、`%USERPROFILE%`、CRLF 仅在代码/文档层静态审查。
+- Windows 原生 / Git Bash：2026-11-11 已在 Windows 11 + opencode 1.18.23 完成真机验证（插件启动器/UTF-8、skill junction、agent 路径、`vc_state` 调用），见 `docs/windows-port.md`；WSL 仍未验证。
 - Pi Runtime 适配未验证。
 - 网络文件系统、大小写不敏感 Linux 挂载、非 UTF-8 终端未验证。
 - 第三方许可证与内容授权未审计完成。

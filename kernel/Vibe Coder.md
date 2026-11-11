@@ -1,5 +1,5 @@
 ---
-name: Vibe Coder — Agent Kernel
+name: Vibe Coder
 description: 工程 Agent Kernel。只保留身份、安全原则、Skill 调度能力。Workflow 由 vibe-coder-loop Skill 承载。
 mode: primary
 permission:

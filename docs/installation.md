@@ -65,6 +65,28 @@ New-Item -ItemType SymbolicLink -Force `
   -Target (Join-Path $Repo "kernel\Vibe Coder.md")
 ```
 
+### 3.1.1 Junction（目录链接，无需管理员权限）
+
+目录链接可用 `Junction`，不需要 Developer Mode；Git Bash 会把 junction 当作符号链接（`test -L` / `readlink` 均可用）。
+
+```powershell
+$Repo = "C:\path\to\Vibe-Coder-Loop"
+$AgentsSkills = Join-Path $HOME ".agents\skills"
+$OpenCodeSkills = Join-Path $HOME ".config\opencode\skills"
+
+New-Item -ItemType Directory -Force -Path $AgentsSkills, $OpenCodeSkills | Out-Null
+
+foreach ($name in @("vibe-coder-loop", "delx-memory-protocol", "skill-authoring")) {
+  # 先移除旧 junction（只删链接，不动目标目录）
+  cmd /c rmdir (Join-Path $AgentsSkills $name) 2>$null
+  cmd /c rmdir (Join-Path $OpenCodeSkills $name) 2>$null
+  New-Item -ItemType Junction -Path (Join-Path $AgentsSkills $name) -Target (Join-Path $Repo "skills\$name") | Out-Null
+  New-Item -ItemType Junction -Path (Join-Path $OpenCodeSkills $name) -Target (Join-Path $Repo "skills\$name") | Out-Null
+}
+```
+
+Agent 是单个文件，`Junction` 不适用；按 3.1 创建符号链接，或用 3.2 复制。
+
 ### 3.2 复制（无符号链接权限时）
 
 ```powershell
@@ -113,7 +135,24 @@ Copy-Item -Force (Join-Path $Repo "kernel\Vibe Coder.md") (Join-Path $OpenCodeAg
 
 ### 6.1 OpenCode 上下文裁剪（可选）
 
-本仓库自带一个本地 OpenCode 插件 `.opencode/plugins/vibe-context-dedup.js`，用于 Dedup（重复只读工具结果）、Error Purge（被后续等价成功取代的工具错误）与 Supersede Writes（被后续完整读取取代的写操作上下文）。它不需要 npm 安装，OpenCode 启动时会自动加载 `.opencode/plugins/`；三条策略可用 `deduplication.enabled` / `errorPurge.enabled` / `supersedeWrites.enabled` 独立关闭。规则、配置与限制见 [context-dedup.md](context-dedup.md)。
+本仓库自带两个本地 OpenCode 插件：
+
+- `.opencode/plugins/vibe-context-dedup.js`：Dedup（重复只读工具结果）、Error Purge（被后续等价成功取代的工具错误）与 Supersede Writes（被后续完整读取取代的写操作上下文）。三条策略可用 `deduplication.enabled` / `errorPurge.enabled` / `supersedeWrites.enabled` 独立关闭。规则、配置与限制见 [context-dedup.md](context-dedup.md)。
+- `.opencode/plugins/vibe-bridge.js`：把宿主 hook / 自定义工具桥接到 `runtime.core`（`vc_state` / `vc_transition`）。找不到 `runtime/` 时降级为空操作，不阻塞宿主。
+
+它们不需要 npm 安装。在仓库目录内启动 OpenCode 时会自动加载 `.opencode/plugins/`；**要在任意项目目录生效，在全局配置里按绝对路径注册**：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "file:///path/to/Vibe-Coder-Loop/.opencode/plugins/vibe-bridge.js",
+    "file:///path/to/Vibe-Coder-Loop/.opencode/plugins/vibe-context-dedup.js"
+  ]
+}
+```
+
+Windows 路径写成 URL 形式，例如 `file:///D:/allen_/Documents/github/Vibe-Coder-Loop/.opencode/plugins/vibe-bridge.js`。插件文件内的 `python` / `python3` 启动器与 UTF-8 输出由插件自身按平台处理（Windows 依次尝试 `python`、`py`、`python3`；可用 `VIBE_KERNEL_PYTHON` 覆盖）。
 
 ```bash
 bash scripts/tests/test-context-dedup.sh
@@ -182,7 +221,8 @@ Windows 下若 `python3` 不可用，尝试 `python` 或 `py -3`。
 | `verify-symlinks.sh --host` 报“非软链” | 使用了复制方式，或链接路径不同 | 复制方式不需要宿主软链检查；或设置 `AGENTS_SKILLS_DIR` 等变量 |
 | Windows 无法创建符号链接 | 未启用 Developer Mode / 无管理员权限 | 使用复制方式；或启用 Developer Mode |
 | Bash 脚本报 `bad interpreter` / `\r` | Windows 检出为 CRLF | 确保 `.gitattributes` 生效；执行 `git config core.autocrlf false` 后重新检出 |
-| `python3: command not found` | Windows 只安装了 `python` / `py` | 使用 `python` 或 `py -3`；把 Python 加入 PATH |
+| `python3: command not found` | Windows 只安装了 `python` / `py` | 使用 `python` 或 `py -3`；把 Python 加入 PATH。桥接插件会自动尝试 `python` → `py` → `python3`，也可用 `VIBE_KERNEL_PYTHON` 显式指定 |
+| `vc_state`/`vc_transition` 返回 `BRIDGE_CLI_UNAVAILABLE` | Python 启动器或 `runtime/` 定位失败 | 设置 `VIBE_KERNEL_PYTHON` 指向可执行的 Python；设置 `VIBE_KERNEL_HOME` 指向仓库根；用 `VIBE_BRIDGE_DEBUG=1` 查看启动诊断 |
 | smoke-check 报找不到 core | Skill 安装目录不是同级布局 | 设置 `SMOKE_CORE` |
 | smoke-check 因记忆库缺失失败 | 本机没有 delx-memory 数据库 / 规则集未恢复 | 这是 **fail-closed 的预期结果**（规则库是必填）：按「快速开始」第 3 步恢复私有规则快照，或配置 `DELX_MEMORY_DB` 指向已有库 |
 | `memory_tool.py list` 找不到库 | 数据库路径不同 | 使用 `--db` 或 `DELX_MEMORY_DB`，或修改本地 `backup/config.json`（不要提交） |

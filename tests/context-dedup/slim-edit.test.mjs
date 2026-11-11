@@ -100,9 +100,11 @@ test("compact read shortens the path and drops type/footer boilerplate", () => {
   };
 
   compactReadOutput(directory, { tool: "read" }, output, state, slimConfig());
+  // The shortened path keeps the platform's separators: `path.relative`
+  // returns `src\app.js` on Windows and `src/app.js` on POSIX.
   assert.equal(
     output.output,
-    ["<path>src/app.js</path>", "", "const value = 1", ""].join("\n"),
+    [`<path>${path.join("src", "app.js")}</path>`, "", "const value = 1", ""].join("\n"),
   );
   assert.equal(state.compactRead.changedCount, 1);
   assert.ok(state.compactRead.tokenSavingsEstimated > 0);

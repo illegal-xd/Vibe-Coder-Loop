@@ -137,18 +137,37 @@ function debugWarn(message, detail) {
 }
 
 /**
- * Run a CLI module as argv-array subprocess. Never throws.
- * Returns { out, code } or null when the CLI cannot run at all.
- * Exit code is NOT a gate: protocol rejections (2/3/4) still carry structured
- * JSON on stdout, and callers decide what a non-zero code means.
+ * Python launcher candidates. `VIBE_KERNEL_PYTHON` wins; otherwise the
+ * platform defaults. Windows normally has no `python3` executable (only the
+ * `python` / `py` launchers; the Microsoft Store `python3.exe` alias stub
+ * exits 9009 instead of running Python), so a hard-coded `python3` makes every
+ * hook degrade on Windows even when Python is installed.
  */
-function spawnCli(modulePath, args) {
+function pythonCandidates() {
+  const explicit = (process.env.VIBE_KERNEL_PYTHON || "").trim();
+  if (explicit) return [explicit];
+  return process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+}
+const PYTHON_CANDIDATES = pythonCandidates();
+let pythonLauncher = null; // first candidate that actually started a process
+// cmd.exe reports "command not found" as 9009; the Microsoft Store `python3`
+// alias stub surfaces this instead of failing to spawn.
+const WINDOWS_STORE_ALIAS_EXIT = 9009;
+
+/**
+ * One launch attempt. Resolves null only when the process could not start at
+ * all (ENOENT / spawn error); a non-zero exit still resolves with `out`.
+ */
+function spawnOnce(python, modulePath, args) {
   return new Promise((resolve) => {
-    if (!RUNTIME_DIR) return resolve(null);
     let child;
     try {
-      child = spawn(process.env.VIBE_KERNEL_PYTHON || "python3", ["-m", modulePath, ...args], {
+      child = spawn(python, ["-m", modulePath, ...args], {
         cwd: RUNTIME_DIR,
+        // The core CLI prints UTF-8 JSON / plain text. Without these, Windows
+        // Python falls back to the ANSI code page (e.g. gbk) for pipes, which
+        // corrupts the plain-text `snapshot-task-zone` channel.
+        env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: CLI_TIMEOUT_MS,
       });
@@ -157,16 +176,54 @@ function spawnCli(modulePath, args) {
     }
     let out = "";
     let err = "";
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => {
       if (DEBUG) err = (err + d).slice(-2000);
     });
-    child.on("error", () => resolve(null));
+    // `error` may be followed by `close`; the first outcome wins.
+    child.on("error", () => finish(null));
     child.on("close", (code) => {
       if (DEBUG && code !== 0) debugWarn(`core exit=${code}`, { modulePath, args, stderr: err.trim() });
-      resolve({ out, code });
+      finish({ out, code });
     });
   });
+}
+
+/**
+ * Run a CLI module as argv-array subprocess. Never throws.
+ * Returns { out, code } or null when the CLI cannot run at all.
+ * Exit code is NOT a gate: protocol rejections (2/3/4) still carry structured
+ * JSON on stdout, and callers decide what a non-zero code means.
+ *
+ * The launcher is probed on first use and cached, so the candidate loop costs
+ * nothing on the hot path.
+ */
+async function spawnCli(modulePath, args) {
+  if (!RUNTIME_DIR) return null;
+  const candidates = pythonLauncher ? [pythonLauncher] : PYTHON_CANDIDATES;
+  for (const python of candidates) {
+    const result = await spawnOnce(python, modulePath, args);
+    const storeStub =
+      process.platform === "win32" &&
+      result !== null &&
+      result.code === WINDOWS_STORE_ALIAS_EXIT &&
+      String(result.out).trim() === "";
+    if (result !== null && !storeStub) {
+      if (!pythonLauncher) {
+        pythonLauncher = python;
+        debugWarn(`python launcher resolved: ${python}`);
+      }
+      return result;
+    }
+  }
+  debugWarn("no usable python launcher", { candidates: PYTHON_CANDIDATES });
+  return null;
 }
 
 /** JSON CLI call; null when unusable or stdout is not JSON (CLI truly unavailable). */

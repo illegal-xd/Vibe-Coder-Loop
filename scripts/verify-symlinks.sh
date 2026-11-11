@@ -146,7 +146,15 @@ check_host() {
 
   agents="${AGENTS_SKILLS_DIR:-${HOME:-}/.agents/skills}"
   skills="${OPENCODE_SKILLS_DIR:-${HOME:-}/.config/opencode/skills}"
-  agents_dir="${OPENCODE_AGENTS_DIR:-${HOME:-}/.config/opencode/agents}"
+  # OpenCode accepts both `agent/` and `agents/`; prefer the singular dir when
+  # it exists (that is what the PowerShell install steps use), else plural.
+  if [ -n "${OPENCODE_AGENTS_DIR:-}" ]; then
+    agents_dir="$OPENCODE_AGENTS_DIR"
+  elif [ -d "${HOME:-}/.config/opencode/agent" ]; then
+    agents_dir="${HOME:-}/.config/opencode/agent"
+  else
+    agents_dir="${HOME:-}/.config/opencode/agents"
+  fi
 
   if [ ! -d "$agents" ] && [ ! -d "$skills" ] && [ ! -d "$agents_dir" ]; then
     warn "未检测到宿主目录，跳过 --host 检查"
