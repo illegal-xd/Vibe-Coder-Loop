@@ -187,7 +187,7 @@ class ArchiveHardening(CoreTest):
             completed=["old-task"],
             pending=["old-pending"],
         )
-        self.assertTrue(self.t("S0").ok)
+        self.assertTrue(self.t("S0", exit_checklist=self.s13_checklist()).ok)
         self.assertEqual(self.core.get_state().status, "complete")
         self.assertTrue(self.t("S1", loop=0).ok)
         self.assertEqual(len(self.archive_keys("complete")), 1)
@@ -212,7 +212,13 @@ class ArchiveHardening(CoreTest):
                 "resume": "old",
             }
         )
-        self.assertTrue(core.transition("S1", loop=0).ok)
+        self.assertTrue(
+            core.transition(
+                "S1",
+                loop=0,
+                exit_checklist=self.s13_checklist(project_root=core.resolved.project_root),
+            ).ok
+        )
         prefix = f"vc:checkpoint-quarantine:{core.resolved.project_id}:complete:"
         self.assertEqual(len(core.store.memory.keys(prefix)), 1)
         archived = core.store.memory.get(core.store.memory.keys(prefix)[0])
@@ -526,7 +532,7 @@ class CoreHardening(CoreTest):
 
     def test_complete_state_archived_on_new_cycle(self) -> None:
         self.seed_code("S13", status="complete")
-        self.assertTrue(self.t("S1", loop=0).ok)
+        self.assertTrue(self.t("S1", loop=0, exit_checklist=self.s13_checklist()).ok)
         self.assertEqual(len(self.archive_keys("complete")), 1)
         self.assertEqual(self.core.store.snapshot().fields["completed"], [])
 
@@ -651,7 +657,13 @@ class Round3Hardening(CoreTest):
                 "review": {"failure_state": {"consecutive_count": 2, "last_fingerprint": "fp:a"}},
             }
         )
-        self.assertTrue(core.transition("S1", loop=0).ok)
+        self.assertTrue(
+            core.transition(
+                "S1",
+                loop=0,
+                exit_checklist=self.s13_checklist(project_root=core.resolved.project_root),
+            ).ok
+        )
         fields = core.store.snapshot().fields
         for key in ("completed", "pending", "decisions", "user_decisions"):
             self.assertEqual(fields[key], [], key)

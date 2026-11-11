@@ -35,6 +35,8 @@ status: active
 
 **其余信号属可选**（完成跨模块功能 / 架构调整 / 解决复杂 Bug / 高复用经验 / 高风险域 / 达到最大循环 / Code Confidence=Low）：Agent 判断"确有值得沉淀的规律"才做，**不做不违规**。完整条表（含 tag 体系）见 `skill:learning/reflection:triggers`——**仅在准备写 Card 时查阅**。
 
+> **Quick Loop 适用**：Level 0/1 虽跳过 S11，但强制触发项 ①（用户主动纠正）在 Quick Loop 出口（S8/S10）同样即时写入（见 `memory/lifecycle.md`「Quick Loop 记忆闭环」），不因跳过 S11 而豁免。
+
 ## 信号驱动判定（P1-1）
 
 S11 首选运行 `python3 scripts/memory/reflection_signals.py evaluate --task-id <T>`（仓库根目录）。脚本读取 `signal:reflection:*`（复用 delx-memory `memory` 表；`layer=null` / `category=state`），只做**聚合判定**，不做晋升。**能力边界**：不实现后台监听；信号由 Agent 在 S9/S10 事件点写入，S11 读取判定。

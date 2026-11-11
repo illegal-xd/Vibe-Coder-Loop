@@ -44,7 +44,7 @@ dependencies:
     - rule_store    # = delx-memory 的 skill:* 条目集合（私有通道恢复）；缺失 → 停止，不降级
   optional_integrations:
     # 「可选」只指**规则库之外**的记忆能力；规则库本身是 required（见上），不可降级。
-    - delx-memory   # 记忆后端（三层/回写/仪表盘/检索）。缺失 → 标注降级（回写跳过、检索由 memory_search+Read 替代）；规则条目是否可用取决于 rule_store
+    - delx-memory   # 记忆后端（三层/回写/仪表盘/检索）。缺失 → 标注 `[MEMORY_DEGRADED]` 并显式列出未执行的读取/回写项（不得静默跳过）；检索由 memory_search+Read 替代；规则条目是否可用取决于 rule_store
     - codegraph     # 代码图谱（符号定位/影响分析）；缺失 → 标注后降级 memory_search + Read
     - skill-authoring  # 自检 core（scripts/smoke-check-core.sh——S13 残留验证的检查逻辑唯一事实源）。缺失 → smoke-check 显式 exit 3 并给 [next]，不静默跳过；修复训练外的技能目录时须 SMOKE_CORE 指定 core 路径
 

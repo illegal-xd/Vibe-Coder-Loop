@@ -223,6 +223,9 @@ def validate_exit_checklist(
         missing.append(f"stage={checklist.stage}（期望 {current_code}）")
     if not checklist.checked_items:
         missing.append("checked_items")
+    elif current_code == "S13" and not any("回写" in str(item) for item in checklist.checked_items):
+        # 离开 S13 前必须体现记忆消费回写（协议见 learning/memory/lifecycle.md「回写契约」第 2 条）
+        missing.append("S13 记忆消费回写（checked_items 须含「回写」项）")
     if not checklist.referenced_outputs:
         missing.append("referenced_outputs")
     plan_text = _plan_text_for(project_root)
@@ -609,6 +612,15 @@ def transition(
                 to_code=target,
                 action="追加用户原话证据后重试",
             )
+    elif current_code == "S13" and exit_checklist is None:
+        return _fail(
+            vc_codes.EXIT_CHECKLIST_INCOMPLETE,
+            "S13 出口必须提供出口清单（含「回写」项）",
+            snapshot,
+            current_code=current_code,
+            to_code=target,
+            action="补传 exit_checklist 后重试",
+        )
     elif exit_checklist is not None:
         ok, missing, _evidence = validate_exit_checklist(
             exit_checklist,

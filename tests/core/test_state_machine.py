@@ -14,7 +14,10 @@ class TransitionTests(CoreTest):
             self.assertTrue(result.ok, result.message)
         for target in ("S8", "S9", "S10", "S13", "S0"):
             # S4 出口必须显式写 level（新规则：缺省沿用旧值会让 loop_max 退化）
-            result = self.t(target, **({"level": 2} if target == "S8" else {}))
+            kwargs = {"level": 2} if target == "S8" else {}
+            if target == "S0":
+                kwargs["exit_checklist"] = self.s13_checklist()
+            result = self.t(target, **kwargs)
             self.assertTrue(result.ok, result.message)
         state = self.core.get_state()
         self.assertEqual(state.phase, "S0 Idle")
@@ -83,7 +86,7 @@ class TransitionTests(CoreTest):
 
     def test_v5_follow_up_resets_loop(self) -> None:
         self.seed_code("S13", loop=2, level=2, status="complete")
-        result = self.t("S1", loop=0)
+        result = self.t("S1", loop=0, exit_checklist=self.s13_checklist())
         self.assertTrue(result.ok)
         self.assertEqual(result.loop, 0)
         # 新任务不复用上一任务的复杂度分级（否则 loop_max 沿用旧值）
@@ -218,6 +221,23 @@ class TransitionTests(CoreTest):
         (self.root / "a.py").write_text("x\n", encoding="utf-8")
         result = self.t("S8", exit_checklist=ExitChecklist("S6 Design", ["a.py"], ["done"]))
         self.assertEqual(result.code, "EXIT_CHECKLIST_INCOMPLETE")
+
+    def test_s13_exit_requires_memory_writeback_item(self) -> None:
+        self.seed_code("S13", loop=1, level=2, status="complete")
+        (self.root / "a.py").write_text("x\n", encoding="utf-8")
+        missing = self.t(
+            "S0",
+            exit_checklist=ExitChecklist("S13 Complete", ["a.py"], ["收尾清单已核对"]),
+        )
+        self.assertEqual(missing.code, "EXIT_CHECKLIST_INCOMPLETE")
+        self.assertIn("回写", missing.message)
+        ok = self.t(
+            "S0",
+            exit_checklist=ExitChecklist(
+                "S13 Complete", ["a.py"], ["📌 访问计数回写：rule:x"]
+            ),
+        )
+        self.assertTrue(ok.ok, ok.message)
 
     def test_vc_violation_escalates_to_s14(self) -> None:
         self.seed_code("S8", loop=1)

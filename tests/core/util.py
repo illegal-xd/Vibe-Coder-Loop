@@ -10,7 +10,7 @@ from typing import Any
 from runtime.core import WorkflowCore
 from runtime.core.checkpoint import STATE_SCHEMA_VERSION, now_to_minute
 from runtime.core.memory_store import CHECKPOINT_QUARANTINE_PREFIX
-from runtime.core.state_machine import STATE_LABELS
+from runtime.core.state_machine import STATE_LABELS, ExitChecklist
 
 
 class CoreTest(unittest.TestCase):
@@ -56,6 +56,18 @@ class CoreTest(unittest.TestCase):
 
     def t(self, to: str, **kwargs: Any):
         return self.core.transition(to, **kwargs)
+
+    def s13_checklist(
+        self, items: list[str] | None = None, *, project_root: Path | None = None
+    ) -> ExitChecklist:
+        """S13 出口清单（离开 S13 必填，含记忆回写项）。"""
+        root = project_root or self.root
+        (root / "done.txt").write_text("done\n", encoding="utf-8")
+        return ExitChecklist(
+            "S13 Complete",
+            ["path:done.txt"],
+            items or ["📌 访问计数回写：本轮 0 条"],
+        )
 
     # -- checkpoint state (delx-memory) ----------------------------------
     @property

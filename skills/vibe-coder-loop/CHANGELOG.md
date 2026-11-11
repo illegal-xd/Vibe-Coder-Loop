@@ -54,6 +54,19 @@
 
 **验证（E4）**：`test-runtime-core.sh` 7/7、`test-runtime-exec.sh` 7/7、`test-memory-layers.sh` 16/16、`node --test tests/plugins` 15/15、`backup/test_memory_tool.py` 65/65；新增回归覆盖：只读命令 exit 1 不判失败、单 Loop 3 次不升级 / 跨 Loop 升级、S4 缺 level 拒绝、任务内跨 Loop 反思聚合、单任务 3 实例生成草稿、正文冲突词不禁用草稿、`--renew-ttl` 重锚、git 授权通道、checklist 引用预检、S14 附带否定仍可确认、空计划契约标记。`core check-protocol` 83 项 0 漂移。
 
+> **同版本追加（记忆读写断点修复：注释规则不召回 + Quick Loop 不回写）**：起因是 jtkl-frontend-management `resource-group/list/components/nodeInstanceTable.vue` 注释违规且近期会话零记忆写入，定位到 6 处协议断点并逐条修复。
+> - `engine/complexity-gate.md`：Level 1 的 S2 由「仅 codegraph 定位」改为「最小召回 + 消费清单 + codegraph 定位」，与 `engine/transition.md` S2 出口（Level 0 同样适用）口径对齐；Level 1 典型路径同步。
+> - `learning/memory/retrieval.md`：编码/调试行补「注释/样式整改」判定特征；Level 0/1「清单首项」改为按任务形态选择（注释/样式 → `memory_list(prefix="rule:")` 中 comment/style 条目，其余 → `project:verify:<repo>`），避免注释规则永远排不进 L0/L1 召回。
+> - `learning/reflection.md` + `learning/memory/lifecycle.md`：用户主动纠正 Agent 升为 Quick Loop 强制写入项（S8/S10 出口即写，不等 S11）；写入时机表补行。
+> - `manifest.yaml`：delx-memory 缺失由「回写跳过」改为必须标注 `[MEMORY_DEGRADED]` 并列出未执行的读取/回写项。
+> - `runtime/core/state_machine.py`：新增 S13 机械门禁——离开 S13 时 `checked_items` 必须含「回写」项，不传清单同样拒绝（`EXIT_CHECKLIST_INCOMPLETE`）；`engine/transition.md` S13 出口与 `lifecycle.md` 回写契约同步声明。
+> - 测试：新增 `test_s13_exit_requires_memory_writeback_item`（缺失拒绝 + 合规通过）；`CoreTest.s13_checklist` helper 统一构造出口清单，6 处历史用例适配契约。
+> **验证（E4）**：`python3 -m unittest discover -s tests -t . -q` → 372 tests OK；`scripts/smoke-check.sh` rc=0 / 0 HARD 违规。
+
+> **同版本追加（沉淀自主授权）**：用户 2026-11-11 指令「调整记忆规则后续无需再让我确认，而是 agent ai 自行决断是否记忆沉淀」→ 写入 `preference:user:memory-autonomy` 常驻授权（覆盖 MCP `explicit_user_intent`，无需同轮用户指令），同步 3 处协议：`learning/memory/lifecycle.md` 授权段（删除「沉淀前询问」门控）、`learning/memory/promotion.md` S12 [2]、`engine/transition.md` S12（「待保存记忆清单」改为直接写入 + `🧠 已沉淀` 回执）。
+> **写入事故与恢复（如实记录）**：首次写该 key 未先 `memory_get`，覆盖了 2026-10-14 建立的旧值（`action=updated` 才暴露）。已从 `~/.delx-memory/backups/db.sqlite.bak-2026-10-22-095405-l0l7-backfill-v1` 取回原 JSON，与本次授权合并后全量回传 tags/metadata（2093 bytes，原 `duties` / `autonomous_with_mechanism_gates` / `still_requires_user` 完整）。教训重申：更新既有 key 前必须 `memory_get`（`pattern:memory-writeback-integrity`）。
+> **验证**：`memory_get` 读回一致；`scripts/smoke-check.sh` rc=0。
+
 ## v1.22.2 — 版本递增（1.22.1 收口）
 
 > 版本策略：**提交后才递增下一版本**。1.22.1 的第八–十一批已随三个 commit 落地，本版做版本号递增与归属声明；本版内后续改动按「同版本第 N 批」继续追加。

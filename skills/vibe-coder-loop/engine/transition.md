@@ -245,14 +245,14 @@ Hook 链路（审查 v3）：
 
 ## S12 Memory Evolution → S13 Complete
 
-**执行内容**：按 `learning/memory/promotion.md`「S12 收尾（2 步）」执行（唯一事实源，此处不重述）：[1] Tool 一条命令完成收尾回写（`touch` + `metrics`）→ [2] 有值得复用经验才输出「🧠 待保存记忆清单」（无则明文「本轮无沉淀」）。**Promotion / Dedup / Merge / Consolidation / 观察期 / Metrics 聚合由 Memory 系统（Tool / Runtime）承担，Agent 不在循环内逐项执行。**
+**执行内容**：按 `learning/memory/promotion.md`「S12 收尾（2 步）」执行（唯一事实源，此处不重述）：[1] Tool 一条命令完成收尾回写（`touch` + `metrics`）→ [2] 有值得复用经验就**直接写入并输出「🧠 已沉淀：<keys>」**（不列待确认清单，无则明文「本轮无沉淀」）。**沉淀与否由 Agent 过质量闸门后自行决断（常驻授权），不请求用户确认。** Promotion / Dedup / Merge / Consolidation / 观察期 / Metrics 聚合由 Memory 系统（Tool / Runtime）承担，Agent 不在循环内逐项执行。
 
 **转移**：`>>> 进入 Complete`
 
 ## S13 Complete → S0 Idle
 
 **出口条件**：
-- [ ] **消费回写残留检查已执行**（覆盖「读取了记忆但未走到回写出口」的反复故障模式，见 `lesson:memory-metadata-overwrite`）→ 命令、输出格式与降级一律见 `learning/memory/lifecycle.md`「回写契约」
+- [ ] **消费回写残留检查已执行**（覆盖「读取了记忆但未走到回写出口」的反复故障模式，见 `lesson:memory-metadata-overwrite`）→ 命令、输出格式与降级一律见 `learning/memory/lifecycle.md`「回写契约」；**机械门禁**：S13 出口的 `checked_items` 必须含「回写」项，否则 Runtime 返回 `EXIT_CHECKLIST_INCOMPLETE`
 - [ ] **系统仪表盘更新已执行**（**每轮必更，0 事件也执行**；命令、字段与降级一律见 `learning/skill-metrics.md`「系统状态仪表盘」）→ 输出 `📊 系统仪表盘：<简表>`
 - [ ] **Checkpoint 收尾已执行**：`.state.md` → `status: complete` + `resume` 写下一步（协议见 `engine/state-machine.md`「Workflow Checkpoint」）
 - [ ] **技能/文档维护类任务：残留验证已执行（强制）**：本轮若改过技能文件（`vibe-coder-loop/*`、Vibe Coder Kernel、`kernel/` 文档）或 `skill:`/`rule:` 条目 → 执行 ① 日期/版本残留 grep + ② 死指针候选词 grep（**验证模式、合法例外与回退要求见 `rule:skill-iteration-manifest`**）；残留 > 0 → 回退修复后再收尾（教训 `lesson:skill-edit-date-residue`）

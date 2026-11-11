@@ -57,7 +57,7 @@ value: {
 
 ## 记忆写入（自主执行，无逐次确认）
 
-**授权**：记忆的增 / 删 / 改 / 查由 Agent **自主执行**——用户常驻授权，授权模型唯一事实源 = `delx-memory-protocol` 协议 §记忆操作授权模型。**工具门禁优先**：MCP 要求“当前用户消息显式要求”时按其门禁执行（必要时请求一次会话授权）；项目内受控写入路径（`memory_tool.py` / `memops.py`）按常驻授权执行。**「建议块等用户回复保存」与「S12 批量确认清单」两类门控已废除**。
+**授权**：记忆的增 / 删 / 改 / 查，**以及是否沉淀的决断**，由 Agent **自主执行**——用户常驻授权（`preference:user:memory-autonomy`，覆盖 MCP `explicit_user_intent` 门禁，无需同轮用户指令），授权模型唯一事实源 = `delx-memory-protocol` 协议 §记忆操作授权模型。**调用 MCP 时 `explicit_user_intent=true` 由本常驻授权满足**；`memory_tool.py` / `memops.py` 等受控写入路径同样按常驻授权执行。**「建议块等用户回复保存」「S12 批量确认清单」「沉淀前询问」三类门控已废除**——沉淀与否由 Agent 过质量闸门后自行判断，出口只输出回执。
 
 **写入前检查（工具化，不靠记忆）**：
 
@@ -73,6 +73,7 @@ value: {
 | 触发 | 动作 |
 |---|---|
 | 用户明确说"记住这个 / 保存到记忆" | 立即 `memory_set` |
+| 用户主动纠正 Agent（任意 Level，含 Quick Loop） | 即写 reflection / lesson（不等 S11） |
 | Agent 识别到值得保存的内容（条件见下） | **本轮内直接写入**，出口输出回执 |
 | Test 失败 / Reflection 触发 / 项目约束变更 | 即写（见「Test→Lesson 学习闭环」、`../reflection.md`） |
 
@@ -124,7 +125,7 @@ value: {
 #### 回写契约（三条，其余为 Tool 内部实现）
 
 1. **消费即回写 = 主路径**——`memory_get` 即视为消费（**不做"先读后定"延迟判定**，宁可略高估不遗漏）；主 agent **同一 turn 内**执行 `memory_tool.py touch <key> [--hit] [--renew-ttl]`（`--hit` = 内容经 E2+ 验证与事实一致；`--renew-ttl` = 按原始 TTL 时长重锚，用于 lesson/pattern 等**要靠累计次数达阈值**的条目，缺省不续期），并维护会话级「已回写 key」集合（同轮同 key 只一次，跨轮重置）。数据完整性不变量由 Tool 保证（见 `backup/README.md`），**Agent 不手写任何字段**。任务在回写后中断 → 计数已落库不丢失（解决上下文压缩/会话中断导致清单内存态丢失的缺口）。「轮」= 一次主 agent 任务循环（S0→S13）
-2. **出口兜底 = 仅对未回写残留**——回写义务**不依赖是否走到出口**：Quick Loop 在 S8 出口（Level 0）/ S10 出口（Level 1）；S12 [1]；**S13 Complete（含"停止循环"/"接受当前代码"直达）必须检查 S2 消费残留**。欠账队列只覆盖"回写执行失败"，**不覆盖"从未执行回写"**（后者由 S13 兜底——反复事故：读取了记忆但 access_count 全为 0，见 `lesson:memory-metadata-overwrite`）
+2. **出口兜底 = 仅对未回写残留**——回写义务**不依赖是否走到出口**：Quick Loop 在 S8 出口（Level 0）/ S10 出口（Level 1）；S12 [1]；**S13 Complete（含"停止循环"/"接受当前代码"直达）必须检查 S2 消费残留**。欠账队列只覆盖"回写执行失败"，**不覆盖"从未执行回写"**（后者由 S13 兜底——反复事故：读取了记忆但 access_count 全为 0，见 `lesson:memory-metadata-overwrite`）。**机械门禁**：离开 S13 时 Runtime 要求 `checked_items` 含「回写」项，缺失返回 `EXIT_CHECKLIST_INCOMPLETE`（不传清单同样拒绝）
 3. **报告 + 降级**——每次回写**必须输出报告**（不可观测 = 未执行）：`📌 访问计数回写（<出口>）：<keys>`；失败 → `📌 计数回写欠账：<keys>` 随下轮补写。**Tool 不可用** → 手工 `memory_get` 取完整值 → 叠加 → `memory_set`（约束见下节）；**授权恒成立**（常驻授权，见上「记忆写入」）→ 直接执行，**无"待确认"分支**。
 
 #### 记忆效用反馈（P1-2，任务收尾）
@@ -193,7 +194,7 @@ Test subagent 报告失败时，主 agent 在回退 Code[N+1] 前执行：
 
 1. **消费清单回写 + 效用反馈**（回写见上「回写契约」；反馈见上「记忆效用反馈」）
 2. **去重 / Merge 归系统**：Dedup / Merge 由 Memory 系统承担（协议见 `promotion.md`），**Agent 不显式执行**；本轮若产生 lesson/reflection 候选，直接进入下步即时写入
-3. **即时写入 + 回执**：识别到值得保存的内容（Test 失败 lesson / Reflection 触发 / 新 pattern 候选）→ 过质量闸门后**直接写入**，出口输出 `🧠 已沉淀：<keys>`；无 → `本轮无沉淀`
+3. **即时写入 + 回执**：识别到值得保存的内容（Test 失败 lesson / **用户纠正 Agent（强制，Quick Loop 不等 S11）** / 新 pattern 候选）→ 过质量闸门后**直接写入**，出口输出 `🧠 已沉淀：<keys>`；无 → `本轮无沉淀`
 4. **仪表盘更新**（已有协议，每轮必更，见 `skill-metrics.md`「系统状态仪表盘」节）
 
 **与 S12 的分工**：Quick Loop 闭环覆盖"即时写入 + 仪表盘"；周期治理（Consolidation / 提升 / 评分 / 淘汰）由 Memory 系统承担（协议见 `promotion.md`）。
