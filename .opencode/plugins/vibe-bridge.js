@@ -649,24 +649,24 @@ export const VibeBridgePlugin = async (input) => {
             checked_items: args.checked_items,
           });
           if (!checklist) {
-            return {
+            return JSON.stringify({
               ok: false,
               code: "CHECKLIST_INVALID",
               next: "exit_checklist 需 stage 码 + 非空 checked_items + 非空 referenced_outputs（至少一项可机械验证的引用）；补齐后再调",
-            };
+            });
           }
           argv.push("--checklist", JSON.stringify(checklist));
           if (args.force) argv.push("--force");
           if (args.reason) argv.push("--reason", args.reason);
           const rec = await core(argv);
           if (!rec) {
-            return {
+            return JSON.stringify({
               ok: false,
               code: "BRIDGE_CLI_UNAVAILABLE",
               next: "检查 python3 与 VIBE_KERNEL_HOME；本请求按 Phase 0（LLM 手动驱动）继续",
-            };
+            });
           }
-          return rec;
+          return JSON.stringify(rec);
         },
       }),
       vc_state: tool({
@@ -675,9 +675,9 @@ export const VibeBridgePlugin = async (input) => {
         async execute(_args, _ctx) {
           const rec = await core(["get-state", "--cwd", cwd]);
           if (!rec) {
-            return { ok: false, code: "BRIDGE_CLI_UNAVAILABLE", next: "检查 python3 / VIBE_KERNEL_HOME" };
+            return JSON.stringify({ ok: false, code: "BRIDGE_CLI_UNAVAILABLE", next: "检查 python3 / VIBE_KERNEL_HOME" });
           }
-          return rec;
+          return JSON.stringify(rec);
         },
       }),
     },

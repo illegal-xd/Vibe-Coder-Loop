@@ -118,7 +118,7 @@ class ToolCase(unittest.TestCase):
     def run_tool(self, *args):
         p = subprocess.run(
             [sys.executable, str(self.tool), "--db", str(self.db)] + [str(a) for a in args],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         return p.returncode, (p.stdout + p.stderr)
 
@@ -418,7 +418,7 @@ class ToolCase(unittest.TestCase):
             subprocess.Popen(
                 [sys.executable, str(self.tool), "--db", str(self.db),
                  "metrics", "--conflict", "1"],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
             )
             for _ in range(6)
         ]
@@ -665,7 +665,7 @@ class PreflightAndArtifactCase(unittest.TestCase):
             e.update(env)
         p = subprocess.run(
             [sys.executable, str(self.tool), "--db", str(self.db)] + [str(a) for a in args],
-            capture_output=True, text=True, env=e,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=e,
         )
         return p.returncode, (p.stdout + p.stderr)
 
@@ -1315,7 +1315,7 @@ class SearchCase(unittest.TestCase):
     def run_tool(self, *args):
         p = subprocess.run(
             [sys.executable, str(self.tool), "--db", str(self.db)] + [str(a) for a in args],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         return p.returncode, (p.stdout + p.stderr)
 

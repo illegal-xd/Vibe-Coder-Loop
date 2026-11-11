@@ -283,7 +283,7 @@ if [ -n "${LOAD_PLAN_FILE:-}" ]; then
           plan_undoc=$((plan_undoc+1))
         fi
       fi
-    done < <(python3 - "$LOAD_PLAN_FILE" <<'PY'
+    done < <(python3 - "$LOAD_PLAN_FILE" <<'PY' | tr -d '\r'
 import json, sys
 d = json.load(open(sys.argv[1], encoding='utf-8'))
 out = []

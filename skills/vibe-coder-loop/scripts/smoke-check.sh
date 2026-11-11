@@ -19,6 +19,23 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Windows: `python3` may resolve to the Microsoft Store alias stub
+# (exits 9009 / non-zero without running Python). Detect and install a PATH
+# shim that forwards `python3` → `python`, so every python3 call in this
+# wrapper AND in the sourced core script uses the real interpreter.
+# Unix / real-python3 installs: no-op (python3 -c "pass" succeeds → skip).
+# Cleanup via EXIT trap; the shim dir lives in TMPDIR and is removed on exit.
+if ! python3 -c "pass" >/dev/null 2>&1; then
+  if command -v python >/dev/null 2>&1 && python -c "pass" >/dev/null 2>&1; then
+    _SHIM_DIR="$(mktemp -d 2>/dev/null || echo "$TMPDIR/vc-shim-$$")"
+    mkdir -p "$_SHIM_DIR"
+    printf '#!/usr/bin/env bash\nexport PYTHONUTF8=1\nexport PYTHONIOENCODING=utf-8\nexec python "$@"\n' > "$_SHIM_DIR/python3"
+    chmod +x "$_SHIM_DIR/python3" 2>/dev/null || true
+    export PATH="$_SHIM_DIR:$PATH"
+    trap 'rm -rf "$_SHIM_DIR" 2>/dev/null' EXIT
+  fi
+fi
+
 # ============ 配置区 ============
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SMOKE_NAME="vibe-coder-loop"
