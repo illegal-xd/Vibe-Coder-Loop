@@ -405,6 +405,33 @@ function normalizeChecklist(raw) {
   return { stage, referenced_outputs: refs, checked_items: checks };
 }
 
+/**
+ * Host tool contract (`@opencode-ai/plugin`): `string | { title?, output:
+ * string, metadata? }`. Returning a bare record leaves `output` undefined and
+ * the host crashes rendering it (`undefined.split(...)`), so every custom tool
+ * result is wrapped here. The record itself stays available as `metadata`.
+ */
+function toolResult(record) {
+  const rec =
+    record && typeof record === "object" && !Array.isArray(record)
+      ? record
+      : { ok: false, code: "BRIDGE_CLI_UNAVAILABLE" };
+  return {
+    title: toolTitle(rec),
+    output: JSON.stringify(rec, null, 2),
+    metadata: rec,
+  };
+}
+
+function toolTitle(rec) {
+  if (typeof rec.from === "string" && typeof rec.to === "string") {
+    return `vibe ${rec.from}→${rec.to}`;
+  }
+  if (typeof rec.phase === "string") return `vibe ${rec.phase}`;
+  if (typeof rec.code === "string") return `vibe ${rec.code}`;
+  return "vibe state";
+}
+
 export const VibeBridgePlugin = async (input) => {
   emitBootDiagnostic();
   const directory = input?.directory || process.cwd();
@@ -592,24 +619,24 @@ export const VibeBridgePlugin = async (input) => {
             checked_items: args.checked_items,
           });
           if (!checklist) {
-            return {
+            return toolResult({
               ok: false,
               code: "CHECKLIST_INVALID",
               next: "exit_checklist 需 stage 码 + 非空 checked_items + 非空 referenced_outputs（至少一项可机械验证的引用）；补齐后再调",
-            };
+            });
           }
           argv.push("--checklist", JSON.stringify(checklist));
           if (args.force) argv.push("--force");
           if (args.reason) argv.push("--reason", args.reason);
           const rec = await core(argv);
           if (!rec) {
-            return {
+            return toolResult({
               ok: false,
               code: "BRIDGE_CLI_UNAVAILABLE",
               next: "检查 python3 与 VIBE_KERNEL_HOME；本请求按 Phase 0（LLM 手动驱动）继续",
-            };
+            });
           }
-          return rec;
+          return toolResult(rec);
         },
       }),
       vc_state: tool({
@@ -618,9 +645,13 @@ export const VibeBridgePlugin = async (input) => {
         async execute(_args, _ctx) {
           const rec = await core(["get-state", "--cwd", cwd]);
           if (!rec) {
-            return { ok: false, code: "BRIDGE_CLI_UNAVAILABLE", next: "检查 python3 / VIBE_KERNEL_HOME" };
+            return toolResult({
+              ok: false,
+              code: "BRIDGE_CLI_UNAVAILABLE",
+              next: "检查 python3 / VIBE_KERNEL_HOME",
+            });
           }
-          return rec;
+          return toolResult(rec);
         },
       }),
     },

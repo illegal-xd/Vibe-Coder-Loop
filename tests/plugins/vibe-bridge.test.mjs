@@ -79,6 +79,13 @@ async function readJsonLines(file) {
     .map((l) => JSON.parse(l));
 }
 
+/** Tool contract: `{ title?, output: string, metadata? }` — never a bare record. */
+function parseToolResult(res) {
+  assert.equal(typeof res, "object");
+  assert.equal(typeof res.output, "string", "host renders `output`, so it must be a string");
+  return JSON.parse(res.output);
+}
+
 before(async () => {
   tmp = await mkdtemp(path.join(os.tmpdir(), "vb-bridge-"));
   await mkdir(path.join(tmp, "runtime"));
@@ -274,8 +281,9 @@ test("vc_transition rejects empty referenced_outputs without spawning", async ()
     },
     {}
   );
-  assert.equal(res.ok, false);
-  assert.equal(res.code, "CHECKLIST_INVALID");
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, false);
+  assert.equal(rec.code, "CHECKLIST_INVALID");
   const callsAfter = await readJsonLines(callsFile);
   assert.equal(callsAfter.length, callsBefore, "no CLI spawn when checklist invalid");
 });
@@ -295,7 +303,9 @@ test("vc_transition forwards --level and a valid checklist", async () => {
     },
     {}
   );
-  assert.equal(res.ok, true);
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, true);
+  assert.match(res.title, /vibe S1/);
   const calls = await readJsonLines(callsFile);
   const t = calls.find((c) => c.kind === "transition");
   assert.ok(t, "transition call logged");
@@ -315,8 +325,9 @@ test("vc_transition rejects unverifiable references without spawning", async () 
     },
     {}
   );
-  assert.equal(res.ok, false);
-  assert.equal(res.code, "CHECKLIST_INVALID");
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, false);
+  assert.equal(rec.code, "CHECKLIST_INVALID");
   const after = await readJsonLines(callsFile);
   assert.equal(after.length, before.length, "no CLI spawn when refs are unverifiable");
 });
@@ -352,4 +363,33 @@ test("deny list blocks the tool before execute", async () => {
     /SCOPE_DENIED/
   );
   delete process.env.VIBE_BRIDGE_DENY_TOOLS;
+});
+
+test("vc_state satisfies the host tool contract (string output, not a bare record)", async () => {
+  const p = await newPlugin();
+  const res = await p.tool.vc_state.execute({}, {});
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, true);
+  assert.equal(rec.phase, "S0");
+  assert.equal(rec.rev, 0);
+  // The raw record stays available for machine consumers.
+  assert.equal(res.metadata.phase, "S0");
+  assert.match(res.title, /vibe S0/);
+});
+
+test("vc_state degrades to a structured error when the CLI is unavailable", async () => {
+  const previous = process.env.VIBE_KERNEL_PYTHON;
+  // A missing interpreter makes the spawn fail, which is the real degraded path.
+  process.env.VIBE_KERNEL_PYTHON = path.join(tmp, "no-such-python");
+  try {
+    const p = await newPlugin();
+    const res = await p.tool.vc_state.execute({}, {});
+    const rec = parseToolResult(res);
+    assert.equal(rec.ok, false);
+    assert.equal(rec.code, "BRIDGE_CLI_UNAVAILABLE");
+    assert.match(res.title, /BRIDGE_CLI_UNAVAILABLE/);
+  } finally {
+    if (previous === undefined) delete process.env.VIBE_KERNEL_PYTHON;
+    else process.env.VIBE_KERNEL_PYTHON = previous;
+  }
 });
