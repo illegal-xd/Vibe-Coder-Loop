@@ -85,6 +85,17 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 
 > **为什么不再有“中间工具屏障”（v2）**：进入同一组的记录输出**逐字节相同**，说明可观察结果没有变化；中间调用（`todowrite`、`bash`、`edit` 等）不可能让更早的副本重新变得有信息量。旧 callID 被引用的情况由上面的引用守卫单独覆盖。v1 的 `barrierOnNonWhitelistedTools` 因此移除；实测它拦掉了 64 对完全重复输出（约 40 万字符）且不提供额外安全性。
 
+### 3.2 同文件窗口化读取的区间归并（`collapseReadWindows`）
+
+OpenCode 的 `read` 在长文件上会带 `offset`/`limit`，同一文件被分多次读取时签名不同，逐字节规则无法命中（只记 `same_target_args_changed`）。新增一条保守规则：
+
+1. 仅 `read`，且能确定目标文件与行区间；无 `limit` 时只接受运行时自带的 `(End of file - total N lines)` 作为“读到末尾”的证据，否则不参与；
+2. 后一次读取的区间**严格覆盖**前一次（起点不更晚、终点不更早，且区间不完全相同）；
+3. 两次读取之间没有非只读工具（`read`/`grep`/`glob` 之外）执行——文件可能已变，不做跨版本归并；
+4. 估算被裁输出 token 大于占位符。
+
+命中后裁剪较早的分片、保留覆盖更大的后一次；`skippedReasons.read_window_subsumed` 与 `readWindowCollapseCount` 观测命中，重复目标聚合到 `repeatedTargets`（Top 5）。
+
 ## 四、Error Purge 规则
 
 ### 4.1 确认错误
@@ -126,7 +137,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 一个确认错误被裁剪，必须同时满足：
 
 1. 存在**更晚**的同一签名记录，且 `status === "completed"`、无结构化失败 metadata、不是 `unverified_shell`（见 4.8）；
-2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留（重复相同失败规则见 4.4，不受此限制）；
+2. 允许**跨 user turn**（默认）；设 `preserveAcrossUserTurns: true` 恢复“同一 user turn（`userSegment` 相同）才裁剪”的严格限制（重复相同失败规则见 4.4，不受此限制）；
 3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障（含 exit 状态不可证的 `ambiguous` / `unverified_shell` 记录，它们只作屏障候选、不参与减法以外的任何判定）；
 4. 错误 callID 在后续上下文中**未被引用**；
 5. error 文本或失败调用的输入载荷至少有一项带来正收益（error 文本小于占位符时保留原文，只裁剪输入）；
@@ -339,7 +350,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   "protectedFilePatterns": [],
   "deduplication": {
     "enabled": true,
-    "tools": ["read", "grep", "glob", "bash"]
+    "tools": ["read", "grep", "glob", "bash"],
+    "collapseReadWindows": true
   },
   "errorPurge": {
     "enabled": true,
@@ -350,7 +362,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "staleInputPlaceholder": "[vibe-context-dedup] Failed call input omitted: the failure is older than the retention window. The failure status and error message are retained.",
     "redactInputPayload": true,
     "staleInputAfterTurns": 4,
-    "preserveAcrossUserTurns": true,
+    "preserveAcrossUserTurns": false,
     "preserveRepeatedFailuresAcrossUserTurns": false,
     "preserveOnStateChanges": true,
     "pruneRepeatedFailures": true,
@@ -365,6 +377,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "placeholder": "[vibe-context-dedup] Write context omitted: a later full read of the same file superseded it. The write's success status and file path are retained.",
     "writeTools": ["write", "edit", "multiedit", "patch", "apply_patch"],
     "readTools": ["read"],
+    "barrierExemptTools": ["todowrite", "question", "webfetch", "websearch", "list"],
+    "barrierExemptShellCommands": true,
     "preserveAcrossUserTurns": false,
     "barrierOnBroadMutations": true,
     "protectReferences": true,
@@ -398,6 +412,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `tools` | 只读工具集合，供 Error Purge / Supersede 判定“非变更工具” | `["read","grep","glob"]` |
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
 | `deduplication.tools` | Dedup 白名单（含 `bash`；失败 shell 自动排除） | `["read","grep","glob","bash"]` |
+| `deduplication.collapseReadWindows` | 同一文件的窗口化读取：后一次读取的行区间**严格覆盖**前一次、且其间无写操作时，裁剪前一次（见 3.2） | `true` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
 | `referenceProtection` | 引用守卫强度：`any` 保留任何后续提及（含散文、日志回显）；`strong` 只保留结构化引用（机器字段中的精确 id 值），散文提及仅计数不拦截。索引按 id 长度**降序**匹配，避免 `call_1` 吞掉 `call_10` 的引用 | `any` |
 | `mutationTools` | Error Purge 视为状态变更的工具集合 | 见上 |
@@ -412,7 +427,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.staleInputPlaceholder` | 年龄规则命中时失败调用输入的占位文本（错误原文保留） | 见上 |
 | `errorPurge.redactInputPayload` | 命中规则时是否同时裁剪失败调用的大体积输入字符串 | `true` |
 | `errorPurge.staleInputAfterTurns` | 确认错误超过 N 个 assistant step 后只裁剪其输入（error 原文保留）；`null` 关闭；旧键 `staleInputAfterUserTurns` 仍作为别名接受 | `4` |
-| `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误（仅作用于“后续成功取代失败”规则） | `true` |
+| `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误（仅作用于“后续成功取代失败”规则）。默认 `false`：跨轮“失败→修复→成功”是最常见路径，旧默认会让它永不修剪；置 `true` 恢复同轮严格限制 | `false` |
 | `errorPurge.preserveRepeatedFailuresAcrossUserTurns` | 重复相同失败的裁剪是否也受 user turn 限制；默认 `false`，因为保留的最新失败仍带相同正文与参数 | `false` |
 | `errorPurge.preserveOnStateChanges` | 失败与成功之间存在状态变更工具时保留 | `true` |
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
@@ -425,6 +440,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `supersedeWrites.placeholder` | 写上下文被覆盖时的占位文本 | 见上 |
 | `supersedeWrites.writeTools` | 允许进入待覆盖状态的写工具 | `["write","edit","multiedit","patch","apply_patch"]` |
 | `supersedeWrites.readTools` | 能触发覆盖的完整读取工具 | `["read"]` |
+| `supersedeWrites.barrierExemptTools` | 确定不修改文件的工具，作为“写→读”之间的屏障豁免（`task`/`skill` 故意不在其中：子 agent 可能写文件）；传 `[]` 关闭豁免 | `["todowrite","question","webfetch","websearch","list"]` |
+| `supersedeWrites.barrierExemptShellCommands` | 纯查看型 shell 链（`cat`/`ls`/`git status`/`grep`…，含 `cd`/`echo`，无文件重定向）不算屏障 | `true` |
 | `supersedeWrites.preserveAcrossUserTurns` | 跨 user turn 时保留旧写上下文 | `false` |
 | `supersedeWrites.barrierOnBroadMutations` | 写与读之间出现任何非只读/非确认成功写入的记录时保留 | `true` |
 | `supersedeWrites.protectReferences` | 写 callID 被后续引用时保留 | `true` |
@@ -919,6 +936,36 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 多步工具循环中 transform 与终态 message 的配对依赖 sessionID + 消费一次语义。
 - 重试 attempt：依赖 `session.retry.scheduled` 事件携带的 `assistantMessageID` / `attempt`。若 Runtime 未来改变该事件 shape，`attempt` 可能退回 1，导致同一 message id 的多次 attempt 被去重；已用单测覆盖当前 shape。
 
+## 十一·五、可触发性修订（2026-11-12）
+
+一次全量审查（`plan*` 直接调用探针 + 代码走查）发现多处“策略声明了但永不触发”的判定，本文档记录修复与保留理由。
+
+### 修复
+
+| # | 位置 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | `error-purge.js` 候选构造 | `shellFailureDetection: "error"` 命中的失败没有 `state.error`，候选却去读 `error` 字段 → 永远 `empty_output`，16 条 `DEFAULT_SHELL_FAILURE_PATTERNS` 全部失效 | 输出型失败（结构化非零 exit 或文本模式命中）统一读 `output` |
+| 2 | `supersede-writes.js` 屏障 | 任何非 read/write 工具（含 `todowrite`、`cat`）都阻断覆盖 | 新增 `barrierExemptTools` + 只读 shell 链判定 |
+| 3 | `error-purge.js` 屏障 | 默认 `barrierWriteTools: true` 让 `read 失败 → write 创建 → read 成功` 永不修剪 | 只读类候选（read/grep/glob）把确认成功的写视为“修复动作”，不计屏障 |
+| 4 | `core.js` Dedup | 窗口化读取（`offset`/`limit` 不同）签名不同，永不命中 | 新增区间包含归并（见 3.2） |
+| 7 | `opencode.js` 记录提取 | `turn` 只按 `step-start` 递增；宿主无该 part 时恒为 0，年龄规则静默失效 | 无 `step-start` 时回退到 user turn，并记 `turn_fallback_user_segment` |
+| 13 | `plugins/vibe-bridge.js` 判定 | 宿主给出 `exit: 0` 时，输出里出现 `error:` 等标记仍判失败，连续两次同指纹会误触 S14 SAFE MODE | 有宿主退出码时以退出码为准，文本标记仅计数 |
+
+### 默认值变更
+
+- `errorPurge.preserveAcrossUserTurns`：`true` → `false`（跨轮“失败→修复→成功”可修剪）。
+- `referenceProtection`：**保持 `any`**。评估过改为 `strong`，但 prose 提及常是用户明确要求继续使用某次结果（“use call_x”），改为 strong 会丢失用户仍需要的内容；先用 `referenced_later_text` 计数衡量损失，再决定是否切换。
+- `supersedeWrites.barrierExemptTools` / `barrierExemptShellCommands`：新增，默认开启。
+
+### 不修（记录理由）
+
+- **`inspectRead` 的 EOF 严格相等**（`linesRead !== totalLines` 即 `read_unverified`）：放宽容差会引入伪造面——文件内容本身可以以一行仿冒的 EOF 提示结尾。已有 `metadata.truncated === false` 与 `metadata.display` 两条结构化证据作为主路径，保持严格相等。
+- **`allowOrderFallback` 默认 `false`**：仅凭发射顺序无法排除并发调用，放开会用更弱证据换命中率。改为输出 `orderFallbackAvailableCount` 诊断，宿主缺时间戳时可据此显式开启。
+
+### 新增诊断字段
+
+`readWindowCandidateCount`、`readWindowCollapseCount`、`repeatedTargets`（Top 5 重复目标）、`orderFallbackAvailableCount`、`skippedReasons.turn_fallback_user_segment`。
+
 ## 十二、已知限制与未验证行为
 
 **已限制/明确不做：**
@@ -927,11 +974,12 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - `completed` + 结构化失败 metadata 视为歧义并保留，不以它作为 superseder；不尝试解析未知 metadata 语义。
 - 操作等价只做精确签名（工具 + 规范化参数 + cwd/root），不做语义命令归一化。
 - 默认保留“失败 → 修改代码/状态变更 → 成功”的旧错误；需要更激进时设 `preserveOnStateChanges: false`。
-- 默认保留跨 user turn 的旧错误（仅“后续成功取代失败”规则）；需要时设 `preserveAcrossUserTurns: false`。重复相同失败的裁剪默认跨轮次，需要严格同轮次守卫时设 `preserveRepeatedFailuresAcrossUserTurns: true`。
+- 跨 user turn 的“失败 → 修复 → 成功”默认**可以**裁剪（`preserveAcrossUserTurns: false`）；需要严格同轮次守卫时设 `true`。重复相同失败的裁剪默认跨轮次，需要严格同轮次守卫时设 `preserveRepeatedFailuresAcrossUserTurns: true`。
 - 单个后续成功默认足以 supersede；无法可靠识别 intermittent/flaky failure。需要更严格时设 `minSuccesses: 2`。
 - 无法可靠识别自然语言引用；使用 callID 引用扫描、user-turn 屏障、状态变更屏障作为保守代理。
 - 执行环境只建模 `cwd` / `root` / 参数内显式 `cwd`；不建模环境变量、`.gitignore`、网络状态。
-- Error Purge 只替换 `state.error` 与失败调用输入中的大体积顶层字符串；不清理 `state.metadata` 中可能存在的堆栈/诊断字段，也不重写数组/对象型输入（如 `multiedit.edits`）。
+- Error Purge 替换 `state.error`（结构化错误）或 `state.output`（shell 结构化非零 exit / 文本模式命中的失败）以及失败调用输入中的大体积顶层字符串；不清理 `state.metadata` 中可能存在的堆栈/诊断字段，也不重写数组/对象型输入（如 `multiedit.edits`）。
+- 工具名别名（`Read` / `Bash` / `shell` / `read_file`…）目前只在 Slim Edit 的三个 hook 内归一（`canonicalToolID`）；Dedup / Error Purge / Supersede 仍按宿主**原始**工具名匹配，非标准命名的宿主需显式配置 `tools`、`deduplication.tools`、`shellTools`。
 - 受保护规则按工具名与文件路径匹配；无法从参数中解析出路径的工具不会被 `protectedFilePatterns` 命中。`bash.command` 中的路径**不会**被解析（例如 `cat .env`），需要保护时改用 `protectedTools: ["bash"]`。
 - Supersede Writes 只脱敏写工具输入中的已知内容字段（`content` / `oldString` / `newString` / `edits` / `patch` / `diff` / `input` 等）与 `state.output`；未知形状的写工具输入即使成功也不会被覆盖。
 - 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`），并可用输出末尾的 `(End of file - total N lines)` 作为补充证明（要求正文行数与 `N` 严格相等且 `limit >= N`）。EOF 文本是弱证据：构造得足够巧的文件内容仍可能同时满足行数与 `N`；需要严格保证时以 `metadata.truncated === false` 为准。若宿主同时不提供这些信号，只按“无 offset/limit 且输出非空”判定；可通过 `requireFullRead` 保持默认保守策略。

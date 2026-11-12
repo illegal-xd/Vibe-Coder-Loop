@@ -180,12 +180,22 @@ test("different command, workspace, or user turn is preserved", () => {
   );
   assert.equal(differentWorkspace.changed, false);
 
+  // Default: a later equivalent success in a *later* user turn still proves the
+  // failure is dead. The old turn-local guard made the standard "fail, fix in
+  // the next turn" recovery unprunable.
   const acrossUserTurn = transformMessages(
     errorConversation({ userBetween: true }),
     CONFIG,
   );
-  assert.equal(acrossUserTurn.changed, false);
-  assert.equal(acrossUserTurn.stats.errorPurge.skippedReasons.across_user_turn, 1);
+  assert.equal(acrossUserTurn.stats.errorPurge.prunedCount, 1);
+
+  // The strict same-turn guard remains available as an explicit opt-in.
+  const strictAcrossTurn = transformMessages(
+    errorConversation({ userBetween: true }),
+    resolveConfig({ errorPurge: { shellExitReliable: true, preserveAcrossUserTurns: true } }, {}),
+  );
+  assert.equal(strictAcrossTurn.changed, false);
+  assert.equal(strictAcrossTurn.stats.errorPurge.skippedReasons.across_user_turn, 1);
 });
 
 test("a state-changing edit between failure and success preserves the error", () => {

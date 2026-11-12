@@ -80,6 +80,13 @@ export const DEFAULT_WRITE_TOOLS = Object.freeze([
 
 export const TOKEN_COUNTING = "estimate_heuristic_v1";
 
+/**
+ * Rules revision stamped into every JSONL record. It makes "is the running
+ * plugin the code I just edited?" answerable from the log alone, instead of
+ * inferring it from an all-zero counter.
+ */
+export const DEDUP_RULES_REVISION = "2026-11-12.3";
+
 const PATH_KEYS = new Set(["filePath", "path", "cwd", "directory", "dir", "root", "worktree"]);
 
 /**
@@ -160,6 +167,13 @@ export function createStats() {
     uniqueSignatureCount: 0,
     sameSignatureDifferentOutputCount: 0,
     sameSignatureDifferentOutputGroups: 0,
+    // Windowed reads of one file: a later read whose line range strictly covers
+    // an earlier one makes the earlier result redundant (same file, no
+    // intervening mutation).
+    readWindowCandidateCount: 0,
+    readWindowCollapseCount: 0,
+    /** Top repeated targets (bounded): drives the next optimization decision. */
+    repeatedTargets: [],
     markedCount: 0,
     plannedPruneCount: 0,
     wouldPruneCount: 0,
@@ -570,6 +584,12 @@ function normalizeOptions(config = {}) {
   const normalizeRead =
     config.normalizeReadOutput === true ||
     config.deduplication?.normalizeReadOutput === true;
+  const collapseReadWindows =
+    config.collapseReadWindows === undefined &&
+    config.deduplication?.collapseReadWindows === undefined
+      ? true
+      : config.collapseReadWindows === true ||
+        config.deduplication?.collapseReadWindows === true;
   return {
     enabled,
     toolSet,
@@ -578,7 +598,161 @@ function normalizeOptions(config = {}) {
     protectedTools,
     protectedFilePatterns,
     normalizeReadOutput: normalizeRead,
+    collapseReadWindows,
   };
+}
+
+
+/** The runtime's own end-of-file notice, emitted only when the read reached EOF. */
+const EOF_TOTAL_RE = /\(End of file - total (\d+) lines\)\s*$/;
+
+function eofTotalLines(output) {
+  if (typeof output !== "string") return null;
+  const match = output.trimEnd().match(EOF_TOTAL_RE);
+  if (!match) return null;
+  const total = Number(match[1]);
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+/**
+ * Highest line number present in the runtime's rendered read output. OpenCode
+ * renders `N: <line>`, which is authoritative: it reflects what was actually
+ * returned, so a capped read cannot claim lines it never showed. Scanning the
+ * tail keeps this O(1) for large files.
+ */
+function maxLineNumberInOutput(output) {
+  if (typeof output !== "string" || output.length === 0) return null;
+  const tail = output.length > 200_000 ? output.slice(-200_000) : output;
+  const re = /^[ \t]*(\d+): /gm;
+  let max = null;
+  let match;
+  while ((match = re.exec(tail)) !== null) {
+    const numeric = Number(match[1]);
+    if (Number.isFinite(numeric) && (max === null || numeric > max)) max = numeric;
+  }
+  return max;
+}
+
+/** Does the host claim this read returned less than its window implies? */
+function claimsPartialRead(record) {
+  const metadata = isPlainObject(record.metadata) ? record.metadata : {};
+  if (metadata.partial === true) return true;
+  if (metadata.complete === false) return true;
+  if (metadata.truncated === true) return true;
+  return isPlainObject(metadata.display) && metadata.display.truncated === true;
+}
+
+/**
+ * Line window covered by a `read` call, or null when it cannot be determined.
+ */
+function readWindowOf(record) {
+  const args = record && isPlainObject(record.args) ? record.args : null;
+  if (!args) return null;
+  const rawStart = args.offset ?? args.line ?? args.startLine ?? args.from;
+  let start = 1;
+  if (rawStart !== undefined && rawStart !== null) {
+    const numeric = Number(rawStart);
+    if (!Number.isFinite(numeric) || numeric < 0) return null;
+    start = numeric <= 1 ? 1 : numeric;
+  }
+  const rawLimit = args.limit ?? args.lines ?? args.count ?? args.maxLines;
+  // Lines the runtime actually rendered, independent of the requested window.
+  const actualEnd = maxLineNumberInOutput(record.output);
+  let end;
+  if (rawLimit !== undefined && rawLimit !== null) {
+    const numeric = Number(rawLimit);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    end = start + numeric - 1;
+  } else {
+    // No explicit limit: the END-OF-FILE notice or the rendered line numbers
+    // prove how far the read reached.
+    end = eofTotalLines(record.output) ?? actualEnd;
+    if (end === null) return null;
+  }
+  if (actualEnd !== null) {
+    // The rendered range wins: a capped read must not claim lines it never
+    // showed, and this keeps the collapse rule safe without trusting a host
+    // flag whose meaning differs between hosts.
+    end = Math.min(end, actualEnd);
+  } else if (claimsPartialRead(record)) {
+    // No line numbers and the host says the read is incomplete: the window is
+    // unknown, so do not participate.
+    return null;
+  }
+  if (end < start) return null;
+  return { start, end };
+}
+
+/** Does `later` cover a strictly larger window than `earlier`? */
+function windowStrictlyCovers(later, earlier) {
+  if (!later || !earlier) return false;
+  if (later.start > earlier.start) return false;
+  if (later.end < earlier.end) return false;
+  // An identical window is handled by byte-identical deduplication; a differing
+  // body means the file changed outside the conversation, so keep both.
+  return !(later.start === earlier.start && later.end === earlier.end);
+}
+
+/**
+ * Collapse windowed reads of the same file: when a later read covers a
+ * strictly larger line range and nothing mutated in between, the earlier
+ * window's content is fully contained in the later one.
+ */
+function collapseCoveredReads(records, eligible, options, stats, decisions, placeholderTokens) {
+  const collapsedIds = new Set();
+  const groups = new Map();
+  for (const entry of eligible) {
+    if (entry.record.tool !== "read") continue;
+    const window = readWindowOf(entry.record);
+    if (!window) continue;
+    const key = targetKeyOf(entry.record);
+    if (!key) continue;
+    stats.readWindowCandidateCount += 1;
+    const list = groups.get(key);
+    if (list) list.push({ entry, window });
+    else groups.set(key, [{ entry, window }]);
+  }
+  if (groups.size === 0) return collapsedIds;
+
+  // Reads and other read-only tools cannot change the file; anything else can.
+  const mutationOrders = [];
+  for (const record of records) {
+    if (!record || !Number.isFinite(record.order)) continue;
+    if (typeof record.tool !== "string") continue;
+    if (DEFAULT_READ_ONLY_TOOLS.includes(record.tool)) continue;
+    mutationOrders.push(record.order);
+  }
+  mutationOrders.sort((left, right) => left - right);
+
+  const decided = new Set(decisions.map((decision) => decision.id));
+  for (const group of groups.values()) {
+    group.sort((left, right) => left.entry.order - right.entry.order);
+    for (let index = 0; index < group.length; index += 1) {
+      const earlier = group[index];
+      if (decided.has(earlier.entry.record.id)) continue;
+      for (let next = index + 1; next < group.length; next += 1) {
+        const later = group[next];
+        if (!windowStrictlyCovers(later.window, earlier.window)) continue;
+        if (hasOrderInRange(mutationOrders, earlier.entry.order, later.entry.order)) continue;
+        const estimatedTokensSaved = keeperTokens(earlier.entry) - placeholderTokens;
+        if (estimatedTokensSaved <= 0) break;
+        decisions.push({
+          id: earlier.entry.record.id,
+          keeperId: later.entry.record.id,
+          tool: earlier.entry.record.tool,
+          order: earlier.entry.order,
+          keeperOrder: later.entry.order,
+          kind: "read_window_subsumed",
+          estimatedTokensSaved,
+        });
+        decided.add(earlier.entry.record.id);
+        collapsedIds.add(earlier.entry.record.id);
+        stats.readWindowCollapseCount += 1;
+        break;
+      }
+    }
+  }
+  return collapsedIds;
 }
 
 function keeperTokens(entry) {
@@ -736,6 +910,10 @@ export function planDeduplication(records, config = {}) {
 
   const decisions = [];
   const uniqueEntries = [];
+  // Targets that were read several times with a changed body (file edited in
+  // between). They never reach `uniqueEntries`, yet they are the most valuable
+  // optimization signal, so they are aggregated below.
+  const sameSignatureTargets = [];
   const placeholderTokens = estimateTokens(options.placeholder);
   const outputKey = (entry) => {
     if (options.normalizeReadOutput && entry.record?.tool === "read") {
@@ -769,6 +947,9 @@ export function planDeduplication(records, config = {}) {
       if (outputGroup.length < 2) {
         stats.sameSignatureDifferentOutputCount += outputGroup.length;
         increment(stats.skippedReasons, "same_signature_different_output", outputGroup.length);
+        if (outputGroup.length > 0) {
+          sameSignatureTargets.push({ entry: outputGroup[0], count: outputGroup.length });
+        }
         continue;
       }
       stats.duplicateGroupCount += 1;
@@ -797,6 +978,18 @@ export function planDeduplication(records, config = {}) {
     }
   }
 
+  const collapsedReadIds =
+    options.collapseReadWindows && options.enabled
+      ? collapseCoveredReads(
+          records,
+          eligible,
+          options,
+          stats,
+          decisions,
+          placeholderTokens,
+        )
+      : new Set();
+
   decisions.sort((left, right) => left.order - right.order);
   stats.markedCount = decisions.length;
 
@@ -805,9 +998,14 @@ export function planDeduplication(records, config = {}) {
   // arguments. This is the common "read the same file four times" case, where
   // a windowed `offset`/`limit` changes the signature and byte equality can
   // never hold.
+  const repeatedEntries = [];
   if (uniqueEntries.length > 0) {
     const byTarget = new Map();
     for (const entry of uniqueEntries) {
+      if (collapsedReadIds.has(entry.record.id)) {
+        increment(stats.skippedReasons, "read_window_subsumed");
+        continue;
+      }
       const key = targetKeyOf(entry.record);
       if (!key) {
         increment(stats.skippedReasons, "unique_signature");
@@ -817,16 +1015,58 @@ export function planDeduplication(records, config = {}) {
       if (group) group.push(entry);
       else byTarget.set(key, [entry]);
     }
-    for (const group of byTarget.values()) {
+    for (const [key, group] of byTarget.entries()) {
       increment(
         stats.skippedReasons,
         group.length > 1 ? "same_target_args_changed" : "unique_signature",
         group.length,
       );
+      if (group.length > 1) {
+        repeatedEntries.push({
+          key,
+          count: group.length,
+          cwd: group[0]?.record?.env?.cwd ?? "",
+        });
+      }
     }
   }
+  // Same arguments, different body: the file was edited between two reads. This
+  // is the strongest "read the same file repeatedly" signal, and it never
+  // reaches `uniqueEntries`.
+  for (const item of sameSignatureTargets) {
+    const key = targetKeyOf(item.entry.record);
+    if (!key) continue;
+    repeatedEntries.push({
+      key,
+      count: item.count,
+      cwd: item.entry.record?.env?.cwd ?? "",
+    });
+  }
+  if (repeatedEntries.length > 0) {
+    const merged = new Map();
+    for (const item of repeatedEntries) {
+      const previous = merged.get(item.key);
+      if (previous) previous.count += item.count;
+      else merged.set(item.key, { count: item.count, cwd: item.cwd });
+    }
+    const repeated = [];
+    for (const [key, info] of merged.entries()) {
+      let target = key.split("\u0000").slice(1).join("\u0000");
+      // Report project-relative paths: the log is a local diagnostic and the
+      // absolute form would embed the user's home directory.
+      const prefix = info.cwd ? `${info.cwd.replace(/\/+$/, "")}/` : "";
+      if (prefix && target.startsWith(prefix)) {
+        target = target.slice(prefix.length);
+      } else if (target.startsWith("/")) {
+        target = `<external>/${target.split("/").pop() || target}`;
+      }
+      repeated.push({ target, count: info.count });
+    }
+    repeated.sort((left, right) => right.count - left.count);
+    stats.repeatedTargets = repeated.slice(0, 5);
+  }
 
-  stats.prunableCount = stats.duplicateCandidateCount;
+  stats.prunableCount = stats.duplicateCandidateCount + collapsedReadIds.size;
   stats.plannedPruneCount = decisions.length;
   stats.tokenSavingsEstimated = decisions.reduce(
     (total, decision) => total + decision.estimatedTokensSaved,

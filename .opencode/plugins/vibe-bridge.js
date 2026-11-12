@@ -363,7 +363,15 @@ function buildExecResult(hookInput, hookOutput) {
   const exitCode =
     metaExit ?? (inspection ? null : extractExitCode(output)) ?? 0;
   const errors = inspection ? [] : extractErrors(output);
-  const failed = (exitCode !== 0 && !inspection) || errors.length > 0;
+  // When the host reports a real exit status it is authoritative: an exit 0
+  // means the command succeeded even if its output echoes failure-looking text
+  // (`error:` log lines, "Failed to ... using default"). Letting the text veto
+  // a clean exit produced false failure fingerprints, and two identical ones
+  // pushed the session into S14 Safe Mode.
+  const exitFromHost = metaExit !== null;
+  const failed = exitFromHost
+    ? exitCode !== 0 && !inspection
+    : (exitCode !== 0 && !inspection) || errors.length > 0;
   return {
     exec_id: `hook:${hookInput?.callID || Date.now()}`,
     ok: !failed,

@@ -456,7 +456,7 @@ test("barrierOnBroadMutations:false still collects writes and skips the barrier"
       id: "b1",
       order: 2,
       tool: "bash",
-      args: { command: "echo hi" },
+      args: { command: "npm install" },
       output: "ok",
     }),
     readRec({ id: "r1", order: 3 }),

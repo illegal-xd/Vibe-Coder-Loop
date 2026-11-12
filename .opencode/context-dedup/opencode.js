@@ -129,8 +129,16 @@ export function extractToolRecords(messages) {
   // Assistant step counter (reference parity: `purgeErrors.turns` counts
   // `step-start` parts, not user messages). A long autonomous run is one user
   // segment but many steps, so step age is the useful "how old is this?"
-  // measure for stale-input pruning.
+  // measure for stale-input pruning. Hosts that emit no `step-start` part would
+  // leave every record at turn 0 and silently disable stale-input pruning, so
+  // the user-turn counter is used as the fallback age measure.
   let turn = 0;
+  const hasStepStart = Array.isArray(messages) && messages.some(
+    (message) =>
+      message &&
+      Array.isArray(message.parts) &&
+      message.parts.some((part) => part && part.type === "step-start"),
+  );
 
   if (!Array.isArray(messages)) {
     return {
@@ -213,7 +221,7 @@ export function extractToolRecords(messages) {
         metadata,
         time,
         userSegment,
-        turn,
+        turn: hasStepStart ? turn : userSegment,
       };
       // A repeated call id makes that one part unaddressable, not the request:
       // treating it as a structural failure would disable every strategy for
@@ -247,6 +255,7 @@ export function extractToolRecords(messages) {
     skippedReasons,
     structuralFailure,
     unaddressableOrders,
+    turnFallback: !hasStepStart,
   };
 }
 
@@ -1288,6 +1297,9 @@ export function transformMessages(messages, config = {}) {
 
   const extraction = extractToolRecords(messages);
   mergeReasons(stats.skippedReasons, extraction.skippedReasons);
+  // Diagnostic flag (not a skip reason): stale-input pruning ages records by
+  // user turn here, because the host emits no `step-start` part.
+  stats.turnFallback = extraction.turnFallback === true;
   if (extraction.structuralFailure) {
     stats.error = extraction.structuralFailure;
     stats.errorPurge.error = extraction.structuralFailure;
@@ -1347,6 +1359,11 @@ export function transformMessages(messages, config = {}) {
   stats.sameSignatureDifferentOutputCount = dedupPlan.stats.sameSignatureDifferentOutputCount;
   stats.sameSignatureDifferentOutputGroups = dedupPlan.stats.sameSignatureDifferentOutputGroups;
   stats.plannedPruneCount = dedupPlan.stats.plannedPruneCount;
+  // Dedup stats are copied field by field; the window-collapse funnel and the
+  // repeated-target aggregate must be copied too, or they read as 0/[] in logs.
+  stats.readWindowCandidateCount = dedupPlan.stats.readWindowCandidateCount;
+  stats.readWindowCollapseCount = dedupPlan.stats.readWindowCollapseCount;
+  stats.repeatedTargets = dedupPlan.stats.repeatedTargets;
   mergeReasons(stats.skippedReasons, dedupPlan.stats.skippedReasons);
 
   const protectCallIds = config.protectCallIdReferences !== false;

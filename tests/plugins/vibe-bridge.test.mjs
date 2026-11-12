@@ -245,6 +245,20 @@ test("inspection command with host exit metadata still does not extract error ma
   assert.deepEqual(last.errors, []);
 });
 
+test("host exit 0 wins over failure-looking output lines", async () => {
+  const p = await newPlugin();
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "x0", args: { command: "node app.js" } },
+    {
+      output: "server ready\nerror: optional plugin missing\nFailed to parse optional field, using default",
+      metadata: { exit: 0 },
+    }
+  );
+  const feeds = await readJsonLines(feedsFile);
+  const last = feeds[feeds.length - 1];
+  assert.equal(last.ok, true, "a clean host exit must not be vetoed by log text");
+});
+
 test("green test summary '0 failed' is not a failure", async () => {
   const p = await newPlugin();
   await p["tool.execute.after"](

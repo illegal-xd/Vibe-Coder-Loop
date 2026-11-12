@@ -22,6 +22,7 @@ import {
   SHELL_FAILURE_DETECTION_MODES,
 } from "./error-purge.js";
 import {
+  DEFAULT_BARRIER_EXEMPT_TOOLS,
   DEFAULT_SUPERSEDE_PLACEHOLDER,
   DEFAULT_SUPERSEDE_READ_TOOLS,
   DEFAULT_WRITE_TOOLS,
@@ -43,15 +44,21 @@ export const DEFAULT_CONFIG = Object.freeze({
   protectedFilePatterns: Object.freeze([]),
   /**
    * Which later references to a call id block pruning:
-   * - "any"    — any mention (structured field or prose) blocks (default);
+   * - "any"    — any mention (structured field or prose) blocks;
    * - "strong" — only structured mentions (exact id value in a machine field)
    *              block; prose mentions are counted but do not block.
-   * The default preserves the previous fail-safe behavior.
+   * Default stays "any": a prose mention is often the user explicitly asking
+   * to keep using an earlier result ("use call_x"), and pruning it would drop
+   * content the user still needs. Set "strong" to ignore prose mentions (the
+   * saving is usually small; `referenced_later_text` counts how often it
+   * blocks, so the trade-off can be measured before switching).
    */
   referenceProtection: "any",
   deduplication: Object.freeze({
     enabled: true,
     tools: Object.freeze([...DEFAULT_DEDUP_TOOLS]),
+    /** Collapse a windowed read that a later read covers (see core.js). */
+    collapseReadWindows: true,
   }),
   errorPurge: Object.freeze({
     enabled: true,
@@ -62,7 +69,14 @@ export const DEFAULT_CONFIG = Object.freeze({
     staleInputPlaceholder: DEFAULT_STALE_INPUT_PLACEHOLDER,
     redactInputPayload: true,
     staleInputAfterTurns: 4,
-    preserveAcrossUserTurns: true,
+    /**
+     * Rule 1 (a later success supersedes an earlier failure) may cross user
+     * turns. The turn-local guard made the most common recovery — fail in one
+     * user turn, fix and succeed in the next — permanently unprunable, which
+     * accumulated solved errors in long sessions. Set true to restore the
+     * strict same-turn behavior.
+     */
+    preserveAcrossUserTurns: false,
     preserveRepeatedFailuresAcrossUserTurns: false,
     preserveOnStateChanges: true,
     barrierWriteTools: true,
@@ -83,6 +97,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     placeholder: DEFAULT_SUPERSEDE_PLACEHOLDER,
     writeTools: Object.freeze([...DEFAULT_WRITE_TOOLS]),
     readTools: Object.freeze([...DEFAULT_SUPERSEDE_READ_TOOLS]),
+    /** Tools that cannot modify files; they never block a supersession. */
+    barrierExemptTools: Object.freeze([...DEFAULT_BARRIER_EXEMPT_TOOLS]),
+    /** Inspection-only shell chains (`cat`, `git status`, ...) are not barriers. */
+    barrierExemptShellCommands: true,
     preserveAcrossUserTurns: false,
     barrierOnBroadMutations: true,
     protectReferences: true,
@@ -223,6 +241,12 @@ function resolveDeduplication(raw) {
       DEFAULT_CONFIG.deduplication.tools,
     ),
   };
+  if (raw.collapseReadWindows !== undefined) {
+    result.collapseReadWindows = assertBoolean(
+      raw.collapseReadWindows,
+      "deduplication.collapseReadWindows",
+    );
+  }
   if (raw.normalizeReadOutput !== undefined) {
     result.normalizeReadOutput = assertBoolean(
       raw.normalizeReadOutput,
@@ -439,6 +463,18 @@ function resolveSupersedeWrites(raw, env, globalPreview) {
       "supersedeWrites.readTools",
       DEFAULT_CONFIG.supersedeWrites.readTools,
     ),
+    barrierExemptTools: optionalStringList(
+      raw.barrierExemptTools,
+      "supersedeWrites.barrierExemptTools",
+      DEFAULT_CONFIG.supersedeWrites.barrierExemptTools,
+    ),
+    barrierExemptShellCommands:
+      raw.barrierExemptShellCommands === undefined
+        ? DEFAULT_CONFIG.supersedeWrites.barrierExemptShellCommands
+        : assertBoolean(
+            raw.barrierExemptShellCommands,
+            "supersedeWrites.barrierExemptShellCommands",
+          ),
     preserveAcrossUserTurns:
       raw.preserveAcrossUserTurns === undefined
         ? DEFAULT_CONFIG.supersedeWrites.preserveAcrossUserTurns

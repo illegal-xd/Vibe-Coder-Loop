@@ -17,10 +17,11 @@ test("defaults are safe and explicit", () => {
   assert.deepEqual(config.deduplication, {
     enabled: true,
     tools: ["read", "grep", "glob", "bash"],
+    collapseReadWindows: true,
   });
   assert.equal(config.errorPurge.enabled, true);
   assert.equal(config.errorPurge.preview, false);
-  assert.equal(config.errorPurge.preserveAcrossUserTurns, true);
+  assert.equal(config.errorPurge.preserveAcrossUserTurns, false);
   assert.equal(config.errorPurge.preserveRepeatedFailuresAcrossUserTurns, false);
   assert.equal(config.errorPurge.preserveOnStateChanges, true);
   assert.equal(config.errorPurge.pruneRepeatedFailures, true);
@@ -30,6 +31,16 @@ test("defaults are safe and explicit", () => {
   // success/failure evidence instead of being ignored.
   assert.equal(config.errorPurge.shellExitReliable, true);
   assert.equal(config.errorPurge.shellFailureDetection, "ambiguous");
+  // Supersede Writes: non-mutating tools and inspection-only shell chains are
+  // not barriers by default; both can be turned off explicitly.
+  assert.deepEqual(config.supersedeWrites.barrierExemptTools, [
+    "todowrite",
+    "question",
+    "webfetch",
+    "websearch",
+    "list",
+  ]);
+  assert.equal(config.supersedeWrites.barrierExemptShellCommands, true);
   assert.deepEqual(config.log, DEFAULT_CONFIG.log);
 });
 

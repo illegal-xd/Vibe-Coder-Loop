@@ -67,6 +67,114 @@ export { DEFAULT_WRITE_TOOLS };
 export const DEFAULT_SUPERSEDE_READ_TOOLS = Object.freeze(["read"]);
 
 /**
+ * Tools that never modify the workspace, so a call to one of them between a
+ * write and a read cannot invalidate that read. Without this list, one
+ * `todowrite` between a write and its verification read was enough to keep the
+ * write's payload forever (`intervening_broad_mutation`).
+ *
+ * `task` / `skill` are deliberately absent: a sub-agent or skill can write
+ * files. Pass `barrierExemptTools: []` to disable the exemption entirely.
+ */
+export const DEFAULT_BARRIER_EXEMPT_TOOLS = Object.freeze([
+  "todowrite",
+  "question",
+  "webfetch",
+  "websearch",
+  "list",
+]);
+
+/** Shell heads that only print data. `cd`/`echo`/`test` never write files. */
+const READ_ONLY_SHELL_HEADS = new Set([
+  "cat", "bat", "head", "tail", "less", "more", "grep", "rg", "ag", "ls", "find",
+  "tree", "wc", "stat", "file", "jq", "diff", "sort", "uniq", "cut", "du", "df",
+  "pwd", "which", "type", "echo", "printf", "cd", "true", "test", "[",
+]);
+
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "log", "show", "diff", "status", "blame", "rev-parse", "ls-files",
+  "describe", "grep", "cat-file",
+]);
+
+/** Flags that turn an otherwise read-only head into a writer. */
+const WRITE_FLAGS_BY_HEAD = Object.freeze({
+  find: ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"],
+  sort: ["-o", "--output"],
+  tree: ["-o", "--output"],
+  file: ["-C", "--compile"],
+});
+
+/** Command/process substitution and background jobs can hide any command. */
+const SHELL_INJECTION_RE = /\$\(|`|<(?=\()|>(?=\()|\s&\s|&$/;
+
+const SHELL_SEGMENT_RE = /\|\||&&|[;&|\n]/;
+
+function hasWriteFlag(head, tokens, startIndex) {
+  const flags = WRITE_FLAGS_BY_HEAD[head];
+  if (!flags) return false;
+  for (let index = startIndex; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    for (const flag of flags) {
+      if (token === flag) return true;
+      if (token.startsWith(`${flag}=`)) return true;
+      // Short flags may be clustered (`-oFILE`, `-roFILE`).
+      if (flag.length === 2 && token.startsWith(flag) && token.length > flag.length) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True only when the whole command is a chain of inspection calls with no file
+ * redirection. A single unknown segment (or a `>` write) keeps the call a
+ * barrier, so this can only make the rule less strict for provably read-only
+ * commands.
+ */
+export function isReadOnlyShellCommand(command) {
+  if (typeof command !== "string" || command.trim().length === 0) return false;
+  // Command substitution, process substitution and background jobs can run any
+  // command anywhere in the line, so bail out before splitting.
+  if (SHELL_INJECTION_RE.test(command)) return false;
+  // fd duplication (2>&1) and discarding to /dev/null are not file writes.
+  const normalized = command
+    .replace(/\d?>&\d/g, " ")
+    .replace(/\d?>\s*\/dev\/null/g, " ");
+  const segments = normalized.split(SHELL_SEGMENT_RE);
+  let sawCommand = false;
+  for (const rawSegment of segments) {
+    const segment = rawSegment.trim();
+    if (!segment) continue;
+    if (segment.includes(">")) return false;
+    const tokens = segment.split(/\s+/);
+    let index = 0;
+    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) {
+      index += 1;
+    }
+    let head = tokens[index] || "";
+    if (head.includes("/")) head = head.slice(head.lastIndexOf("/") + 1);
+    if (head.length === 0) return false;
+    // A write flag anywhere in the segment disqualifies the whole command.
+    if (hasWriteFlag(head, tokens, index + 1)) return false;
+    if (tokens.some((token) => token.startsWith("--output"))) return false;
+    if (head === "git") {
+      const sub = tokens[index + 1] || "";
+      if (!READ_ONLY_GIT_SUBCOMMANDS.has(sub)) return false;
+      sawCommand = true;
+      continue;
+    }
+    if (head === "uniq") {
+      // `uniq in out` writes `out`; two positional arguments are a write.
+      const positional = tokens.slice(index + 1).filter((token) => !token.startsWith("-"));
+      if (positional.length >= 2) return false;
+    }
+    if (!READ_ONLY_SHELL_HEADS.has(head)) return false;
+    sawCommand = true;
+  }
+  return sawCommand;
+}
+
+/**
  * Argument keys that carry the bulk write payload. These are the fields that
  * get redacted; path keys and unrelated fields are preserved.
  */
@@ -158,6 +266,9 @@ function normalizeOptions(config = {}) {
   const writeTools = asStringSet(config.writeTools ?? DEFAULT_WRITE_TOOLS);
   const readTools = asStringSet(config.readTools ?? DEFAULT_SUPERSEDE_READ_TOOLS);
   const readOnlyTools = asStringSet(config.readOnlyTools ?? DEFAULT_READ_ONLY_TOOLS);
+  const barrierExemptTools = asStringSet(
+    config.barrierExemptTools ?? DEFAULT_BARRIER_EXEMPT_TOOLS,
+  );
   // Parts the adapter could not address (repeated call id) still count as
   // potential mutations, unless they are a configured read-only tool.
   const extraBarrierOrders = Array.isArray(config.extraBarrierOrders)
@@ -185,6 +296,8 @@ function normalizeOptions(config = {}) {
     writeTools,
     readTools,
     readOnlyTools,
+    barrierExemptTools,
+    barrierExemptShellCommands: config.barrierExemptShellCommands !== false,
     preserveAcrossUserTurns: config.preserveAcrossUserTurns === true,
     barrierOnBroadMutations: config.barrierOnBroadMutations !== false,
     protectReferences: config.protectReferences !== false,
@@ -220,6 +333,14 @@ export function createSupersedeWritesStats() {
     missingReadStartCount: 0,
     readMissingEofProofCount: 0,
     orderFallbackCount: 0,
+    // `allowOrderFallback` is off but the records had everything needed for it.
+    // A non-zero value with `missingWriteEndCount`/`missingReadStartCount` > 0
+    // means the host omits timestamps and enabling the fallback is the only way
+    // to make this strategy reachable on that host.
+    orderFallbackAvailableCount: 0,
+    // Internal: writes already counted, so one write paired with several reads
+    // is not double counted.
+    _orderFallbackSeen: null,
     eligibleCount: 0,
     candidateCount: 0,
     fileMatchCount: 0,
@@ -534,6 +655,18 @@ function buildBarrierTimeline(records, options) {
       else if (collectBarriers) barrierOrders.push(record.order);
       continue;
     }
+    // Inspection-only calls cannot change the file the read is about. Without
+    // this, a single `todowrite` or `cat` between the write and its verifying
+    // read disabled the whole strategy for that file. Applied after the write
+    // branch so a misconfigured exemption can never hide a real write.
+    if (options.barrierExemptTools.has(record.tool)) continue;
+    if (
+      options.barrierExemptShellCommands &&
+      record.tool === "bash" &&
+      isReadOnlyShellCommand(record.args?.command)
+    ) {
+      continue;
+    }
     // Any other tool may modify the file; fail safe.
     if (collectBarriers) barrierOrders.push(record.order);
   }
@@ -804,6 +937,24 @@ export function planSupersedeWrites(records, config = {}) {
             (timeEnd(candidate.record) === null || timeStart(read.record) === null);
           if (!readCoversWrite(candidate.record, read.record, options)) {
             if (!candidate.blockedReason) candidate.blockedReason = "read_not_after_write";
+            // Diagnostic only: the missing evidence is a timestamp, and the
+            // emission order would still prove happens-before.
+            if (
+              !options.allowOrderFallback &&
+              (timeEnd(candidate.record) === null || timeStart(read.record) === null) &&
+              Number.isFinite(candidate.order) &&
+              Number.isFinite(read.order) &&
+              read.order > candidate.order
+            ) {
+              // One write may pair with several reads; count the write once.
+              if (!(stats._orderFallbackSeen instanceof Set)) {
+                stats._orderFallbackSeen = new Set();
+              }
+              if (!stats._orderFallbackSeen.has(candidate.record.id)) {
+                stats._orderFallbackSeen.add(candidate.record.id);
+                stats.orderFallbackAvailableCount += 1;
+              }
+            }
             continue;
           }
           if (usedOrderFallback) stats.orderFallbackCount += 1;

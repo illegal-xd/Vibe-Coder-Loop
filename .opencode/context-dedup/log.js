@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { isTruthy } from "./config.js";
+import { DEDUP_RULES_REVISION } from "./core.js";
 
 function expandHome(value) {
   if (typeof value !== "string") return value;
@@ -103,12 +104,14 @@ function sanitizeSupersedeWritesStats(stats) {
     fileMatchCount: Number(stats.fileMatchCount) || 0,
     versionVerifiedCount: Number(stats.versionVerifiedCount) || 0,
     readRejectedReasons: compactReasons(stats.readRejectedReasons),
+    orderFallbackAvailableCount: Number(stats.orderFallbackAvailableCount) || 0,
   };
 }
 
 function sanitizeStats(stats) {
   return {
     event: "transform",
+    rulesRevision: DEDUP_RULES_REVISION,
     enabled: stats.enabled === true,
     deduplicationEnabled: stats.deduplicationEnabled === true,
     preview: stats.preview === true,
@@ -123,6 +126,17 @@ function sanitizeStats(stats) {
       Number(stats.sameSignatureDifferentOutputCount) || 0,
     sameSignatureDifferentOutputGroups:
       Number(stats.sameSignatureDifferentOutputGroups) || 0,
+    turnFallback: stats.turnFallback === true,
+    readWindowCandidateCount: Number(stats.readWindowCandidateCount) || 0,
+    readWindowCollapseCount: Number(stats.readWindowCollapseCount) || 0,
+    repeatedTargets: Array.isArray(stats.repeatedTargets)
+      ? stats.repeatedTargets
+          .slice(0, 5)
+          .map((item) => ({
+            target: typeof item?.target === "string" ? item.target.slice(0, 240) : "",
+            count: Number(item?.count) || 0,
+          }))
+      : [],
     markedCount: Number(stats.markedCount) || 0,
     changedCount: Number(stats.changedCount) || 0,
     plannedPruneCount: Number(stats.plannedPruneCount) || 0,

@@ -15,7 +15,8 @@
  * An earlier confirmed error is pruned only when:
  * - a later equivalent operation (same tool, canonical args, cwd/root)
  *   completed successfully; and
- * - the later success is in the same user turn (default); and
+ * - no user-turn boundary blocks it (default: cross-turn is allowed; set
+ *   `preserveAcrossUserTurns: true` for the old same-turn-only guard); and
  * - no state-changing tool ran between them (default); and
  * - the estimated error text is larger than the replacement placeholder.
  *
@@ -249,9 +250,10 @@ function normalizeOptions(config = {}) {
     Number.isInteger(config.staleInputAfterTurns) && config.staleInputAfterTurns > 0
       ? config.staleInputAfterTurns
       : 0;
-  // Host-neutral default is "trusted" for backward compatibility. The
-  // OpenCode adapter resolves `shellExitReliable: false` because that runtime
-  // reports exit 0 even for failed commands.
+  // Host-neutral default is "trusted": hosts report a real exit status. On
+  // OpenCode this was measured (docs/context-dedup.md §4.8: 1,633 bash records,
+  // 95 with a non-zero exit), so the adapter passes no override. Set false only
+  // for a host that masks failures as exit 0.
   const shellExitReliable = config.shellExitReliable !== false;
   const shellFailureDetection = SHELL_FAILURE_DETECTION_MODES.includes(
     config.shellFailureDetection,
@@ -405,6 +407,7 @@ function countBetween(sortedOrders, lowerExclusive, upperExclusive) {
  */
 function buildBarrierTimeline(records, options) {
   const stateChangeOrders = [];
+  const writeSuccessOrders = [];
   const ordersBySignature = new Map();
   let invalidRecord = false;
   for (const record of records) {
@@ -418,21 +421,22 @@ function buildBarrierTimeline(records, options) {
       continue;
     }
     if (options.readOnlyTools.has(record.tool)) continue;
-    if (
-      !options.barrierWriteTools &&
-      options.writeTools.has(record.tool) &&
-      isConfirmedSuccess(record)
-    ) {
-      continue;
+    if (options.writeTools.has(record.tool) && isConfirmedSuccess(record)) {
+      // Kept separately as well: for a read-only candidate a recorded write is
+      // the repair action itself (see `barrierReason`), even though it still
+      // blocks candidates whose own state depends on the file content.
+      writeSuccessOrders.push(record.order);
+      if (!options.barrierWriteTools) continue;
     }
     stateChangeOrders.push(record.order);
   }
   stateChangeOrders.sort((left, right) => left - right);
+  writeSuccessOrders.sort((left, right) => left - right);
   for (const order of options.extraBarrierOrders ?? []) {
     stateChangeOrders.push(order);
   }
   stateChangeOrders.sort((left, right) => left - right);
-  return { stateChangeOrders, ordersBySignature, invalidRecord };
+  return { stateChangeOrders, writeSuccessOrders, ordersBySignature, invalidRecord };
 }
 
 function barrierReason(candidate, newer, options, timeline) {
@@ -441,7 +445,15 @@ function barrierReason(candidate, newer, options, timeline) {
   const all = countBetween(timeline.stateChangeOrders, candidate.order, newer.order);
   if (all === 0) return "";
   const retries = timeline.ordersBySignature.get(candidate.signature) ?? [];
-  const sameOperation = countBetween(retries, candidate.order, newer.order);
+  let sameOperation = countBetween(retries, candidate.order, newer.order);
+  // A read-only candidate failed because the target was not readable yet. A
+  // confirmed write in between is the repair itself (create/fix the file), and
+  // the later success proves the repair worked. Treating it as a barrier made
+  // the most common recovery path (read fails -> write -> read succeeds)
+  // impossible to prune.
+  if (options.readOnlyTools.has(candidate.record?.tool)) {
+    sameOperation += countBetween(timeline.writeSuccessOrders, candidate.order, newer.order);
+  }
   return all > sameOperation ? "intervening_state_change" : "";
 }
 
@@ -692,7 +704,14 @@ export function planErrorPurge(records, config = {}) {
     const signature = registerSignature(record);
 
     if (kind === "error") {
-      const source = isShellExitError(record) ? { field: "output" } : undefined;
+      // A shell failure whose evidence lives in the output (structured non-zero
+      // exit, or a text marker promoted by `shellFailureDetection: "error"`)
+      // carries no `state.error`, so the candidate must read `output`. Reading
+      // `error` would always be empty and silently disable the text mode.
+      const source =
+        isShellExitError(record) || detectShellFailure(record)
+          ? { field: "output" }
+          : undefined;
       const candidate = candidateError(record, stats, signature, options, source);
       if (candidate) candidates.push(candidate);
       continue;

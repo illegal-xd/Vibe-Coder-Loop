@@ -39,6 +39,38 @@ export const DEFAULT_SLIM_TOOL_DESCRIPTIONS = Object.freeze({
   webfetch: "Fetch URL.",
 });
 
+/**
+ * Hosts and forks name the same built-in differently (`shell` vs `bash`,
+ * Claude-style `Read`/`Write`). Without this map every hook silently reports
+ * `unsupported_tool` and the strategy looks "implemented but never fires".
+ */
+export const TOOL_ALIASES = Object.freeze({
+  read_file: "read",
+  readFile: "read",
+  Read: "read",
+  write_file: "write",
+  writeFile: "write",
+  Write: "write",
+  edit_file: "edit",
+  editFile: "edit",
+  Edit: "edit",
+  shell: "bash",
+  Bash: "bash",
+  run_command: "bash",
+  search_files: "grep",
+  Grep: "grep",
+  find_files: "glob",
+  Glob: "glob",
+});
+
+/** Map a host tool name onto the canonical built-in name. */
+export function canonicalToolID(toolID) {
+  if (typeof toolID !== "string" || toolID.length === 0) return "";
+  // Own-property check: `TOOL_ALIASES["constructor"]` would otherwise resolve
+  // through the prototype chain and return a function.
+  return Object.hasOwn(TOOL_ALIASES, toolID) ? TOOL_ALIASES[toolID] : toolID;
+}
+
 export const SLIM_EDIT_STRATEGIES = Object.freeze([
   "toolDescriptions",
   "compactRead",
@@ -209,13 +241,13 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
     skip(stats, "missing_description");
     return;
   }
-  const slim = DEFAULT_SLIM_TOOL_DESCRIPTIONS[input?.toolID];
+  const toolID = canonicalToolID(input?.toolID);
+  const slim = DEFAULT_SLIM_TOOL_DESCRIPTIONS[toolID];
   if (typeof slim !== "string") {
     skip(stats, "unsupported_tool");
     return;
   }
 
-  const toolID = input?.toolID;
   const seen = state.seenToolIDs;
   if (seen instanceof Set && seen.has(toolID)) {
     if (!config.preview) {
@@ -286,7 +318,7 @@ export function compactReadOutput(directory, input, output, state, config = DEFA
     skip(stats, "disabled");
     return;
   }
-  if (input?.tool !== "read") {
+  if (canonicalToolID(input?.tool) !== "read") {
     skip(stats, "unsupported_tool");
     return;
   }
@@ -325,7 +357,20 @@ export function compactReadOutput(directory, input, output, state, config = DEFA
     return;
   }
 
-  let text = before.replace(`<path>${rawPath}</path>`, () => `<path>${relative}</path>`);
+  // Rewrite every `<path>` occurrence. A multi-file read echoes one tag per
+  // file, and replacing only the first value left the other absolute paths in
+  // place (defeating the point of compaction).
+  let text = before.replace(/<path>([^<]*)<\/path>/g, (match, raw) => {
+    try {
+      const absolute = path.isAbsolute(raw)
+        ? path.normalize(raw)
+        : path.resolve(directory, raw);
+      const relativePath = path.relative(directory, absolute);
+      return relativePath ? `<path>${relativePath}</path>` : match;
+    } catch {
+      return match;
+    }
+  });
   text = text.replace("<type>file</type>\n", "");
   // The `(End of file - total N lines)` footer is deliberately kept: Supersede
   // Writes uses it as its end-of-file proof (`inspectRead`), so stripping it
