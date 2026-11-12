@@ -105,6 +105,8 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 - 取消/中止标记（`metadata.cancelled/canceled/aborted`），即使退出码非零；
 - `shellExitReliable: false`（可选回退）时的 shell 记录：`completed` + 空 `error` 不能证明成功，计入 `unverifiedShellCount`，不会被用作 superseder。
 
+**成功判定的两条证据强度**（`isConfirmedSuccess`）：硬失败信号（非零退出码、`failed:true`、超时、取消/中止、`metadata.status` 为 `error`/`failed`）永远优先；仅 `metadata.error` / `metadata.exception` 这类诊断文本时，若调用同时带显式成功标记（`ok:true` / `success:true`），该调用仍算成功——某些宿主会把 stderr 或警告文本挂在成功的调用上。只有诊断文本而无成功标记的记录保持歧义、不裁剪。
+
 其余无法归类的记录计入 `ambiguousResultCount`，不会被用作 superseder。
 
 ### 4.2 操作等价
@@ -234,7 +236,9 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
    - `metadata.display` 给出 `{ lineStart, lineEnd, totalLines }` 且 `lineStart <= 1` 且 `lineEnd >= totalLines`；或
    - **遗留形态**：既无 `offset` 也无 `limit`（无切片参数的读取）。
 
-> **运行时注意**：OpenCode 会把 `offset`（默认 1）与 `limit`（按剩余行数计算的上限）规范化进**每一次**读取的 `state.input`。因此**不能**仅凭 `state.input.limit` 出现就判定为片段读取——那会让全部读取被拒绝、Supersede Writes 贡献恒为 0。`limit` 只在缺少上述 EOF 证明时才作为保守拒绝依据（拒绝原因 `read_limited`）。被拒绝的读取原因记入 `stats.readRejectedReasons` 与 `skippedReasons`（`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` 等）。
+> **运行时注意**：OpenCode 会把 `offset`（默认 1）与 `limit`（按剩余行数计算的上限）规范化进**每一次**读取的 `state.input`。因此**不能**仅凭 `state.input.limit` 出现就判定为片段读取——那会让全部读取被拒绝、Supersede Writes 贡献恒为 0。`limit` 只在缺少上述 EOF 证明时才作为保守拒绝依据（拒绝原因 `read_limited`）。被拒绝的读取原因记入 `stats.readRejectedReasons` 与 `skippedReasons`（`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` 等）。**缺证明与确定片段分开计数**：只有 `read_limited` / `read_unverified`（缺 EOF 证明）才累加 `stats.readMissingEofProofCount`；`read_partial_offset` / `read_partial_range` / `read_truncated` 是确定片段。
+
+当 `fileMatchCount > 0` 但 `changed = 0` 时，先看四个证据缺口计数：`missingWriteEndCount`（写入缺完成时间）、`missingReadStartCount`（读取缺开始时间）、`readMissingEofProofCount`（读取缺 EOF 证明）、`orderFallbackCount`（靠消息顺序回退判定）。它们会以 `writes.missing_end_time` / `reads.missing_start_time` / `reads.missing_eof_proof` / `reads.order_fallback_used` 出现在 Token 用量记录中（仅在 > 0 时出现），避免宿主缺字段时被误读为"没有可优化内容"。
 
 行范围读取、分页、片段、截断、读取失败、仅元数据读取、来源不确定的读取**一律不触发**整文件覆盖。当前未实现区间级 Supersede，因此采用保守策略：部分读取不清理任何写上下文。
 
@@ -326,6 +330,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   "tools": ["read", "grep", "glob"],
   "placeholder": "[vibe-context-dedup] Duplicate tool result omitted; an identical newer result is retained later in the conversation.",
   "protectCallIdReferences": true,
+  "referenceProtection": "any",
   "mutationTools": ["bash", "edit", "write", "patch", "multiedit", "apply_patch", "task", "skill", "webfetch", "websearch", "todowrite", "question"],
   "protectedTools": [],
   "protectedFilePatterns": [],
@@ -360,7 +365,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "preserveAcrossUserTurns": false,
     "barrierOnBroadMutations": true,
     "protectReferences": true,
-    "requireFullRead": true
+    "requireFullRead": true,
+    "allowOrderFallback": false
   },
   "slimEdit": {
     "enabled": true,
@@ -390,6 +396,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
 | `deduplication.tools` | Dedup 白名单（含 `bash`；失败 shell 自动排除） | `["read","grep","glob","bash"]` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
+| `referenceProtection` | 引用守卫强度：`any` 保留任何后续提及（含散文、日志回显）；`strong` 只保留结构化引用（机器字段中的精确 id 值），散文提及仅计数不拦截 | `any` |
 | `mutationTools` | Error Purge 视为状态变更的工具集合 | 见上 |
 | `protectedTools` | 三条策略共用：工具名（支持 `*`/`?` glob）永不裁剪 | `[]` |
 | `protectedFilePatterns` | 三条策略共用：文件 glob 永不裁剪；匹配原始参数、cwd 绝对路径与项目相对路径 | `[]` |
@@ -419,6 +426,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `supersedeWrites.barrierOnBroadMutations` | 写与读之间出现任何非只读/非确认成功写入的记录时保留 | `true` |
 | `supersedeWrites.protectReferences` | 写 callID 被后续引用时保留 | `true` |
 | `supersedeWrites.requireFullRead` | 只允许完整读取触发覆盖（关闭后风险自负） | `true` |
+| `supersedeWrites.allowOrderFallback` | 运行时缺失 `write.time.end` / `read.time.start` 时改用消息顺序判断先后（证据更弱，命中数记入 `orderFallbackCount`） | `false` |
 | `slimEdit.enabled` | Slim Edit 总开关 | `true` |
 | `slimEdit.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `slimEdit.toolDescriptions` | 压缩内置工具描述 | `true` |
@@ -472,7 +480,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|---|
 | `record_scan` | 进入合格集之前的记录 | `unsupported_tool`、`not_completed`、`already_pruned`、`protected_tool` / `protected_path`、`missing_environment`、`missing_description` / `missing_args`、`duplicate_definition`、`directory`、`unparsed_output` |
 | `eligible` | 合格但未成为可裁剪候选 | Dedup：`unique_signature`、`same_signature_different_output`、`same_target_args_changed`；Error Purge：`no_success_for_signature`、`later_success_args_changed`、`success_only_before_error`；Supersede：`no_superseding_read`、`read_not_full`；Slim Edit：`already_slim`、`no_change`、`not_line_range`、`literal_match`、`range_out_of_bounds` |
-| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
+| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later_strong` / `referenced_later_text`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
 | `application` | 已标记但未能写回 | `apply_*`、`preview`、`output_read_only`、`args_read_only` |
 
 因此 `eligible - candidate` 由 `eligible` 原因解释，`candidate - changed` 由 `candidate` 原因 + 每组刻意保留的 keeper 解释；`preserved_items` 只统计后者（候选保留数），不包含候选之前的合格记录。
@@ -497,7 +505,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `uniqueSignatureCount` / `sameSignatureDifferentOutputCount` | 合格记录中“签名唯一”/“签名相同但输出不同”的数量（解释为何不可裁剪） |
 | `sameSignatureDifferentOutputGroups` | 同签名不同输出的签名组数 |
 | `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
-| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `shell_failure` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `shell_failure` / `protected_tool` / `protected_path` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省 |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的全部决策估算节省 |
 | `tokenCounting` | `estimate_heuristic_v1` |
@@ -520,7 +528,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `highConfidencePruneCount` / `mediumConfidencePruneCount` | 置信度决策数 |
 | `decisionKinds` | `superseded_by_success` / `duplicate_failure` / `stale_failure_input` 决策计数 |
 | `inputRedactedCount` | 决策中同时裁剪了失败调用输入载荷的数量 |
-| `skippedReasons` | `no_success_for_signature`（同工具无更晚成功）/ `later_success_args_changed`（同工具有更晚成功但参数不等价）/ `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
+| `skippedReasons` | `no_success_for_signature`（同工具无更晚成功）/ `later_success_args_changed`（同工具有更晚成功但参数不等价）/ `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -542,7 +550,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `preservedCount` | 保留的候选写上下文数 |
 | `highConfidencePruneCount` | 高置信度覆盖决策数 |
 | `decisionKinds` | `superseded_by_read` 决策计数 |
-| `skippedReasons` | `no_superseding_read`（该文件从未被读）/ `read_not_full`（只有部分读取）/ `read_before_write`（完整读取全部早于写入）/ `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `no_superseding_read`（该文件从未被读）/ `read_not_full`（只有部分读取）/ `read_before_write`（完整读取全部早于写入）/ `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -871,11 +879,11 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | `marked_items` | 标记决策数 | 通过全部守卫后产生的决策数；旧记录无此字段时回退为 `removed_items` |
 | `changed_items` / `removed_items` | 实际裁剪数 | 真正改动了请求副本的决策数（`removed_items` 为兼容别名，等于 `changed_items`） |
 | `preserved_items` | 保留候选数 | `candidate_items − changed_items` |
-| `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
-| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `candidate`（通过结构校验的读取）/ `full` / `rejected_reasons`（`read_truncated` 等） |
+| `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed`；证据缺口 `missing_end_time`（写入缺完成时间，仅在 >0 时出现） |
+| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `candidate`（通过结构校验的读取）/ `full` / `rejected_reasons`（`read_truncated` 等）；证据缺口 `missing_start_time`（读取缺开始时间）/ `missing_eof_proof`（缺 EOF 证明而非确定片段）/ `order_fallback_used`（靠顺序回退做出的判定），均仅在 >0 时出现 |
 | `skipped.record_scan` | 扫描记录数 | 未进入合格集的记录（`unsupported_tool` 计 bash/edit 等非白名单调用，`not_completed` / `already_pruned` / `protected_tool` / `protected_path` / `missing_environment` / `missing_description` / `missing_args` / `duplicate_definition` / `directory` 等结构缺失，**可合法大于 `candidate_items`**） |
 | `skipped.eligible` | 合格记录数 | 合格但未成为可裁剪候选（Dedup `unique_signature` / `same_signature_different_output` / `same_target_args_changed`；Error Purge `no_success_for_signature` / `later_success_args_changed` / `success_only_before_error`；Supersede `no_superseding_read` / `read_not_full`；Slim Edit `already_slim` / `no_change` / `not_line_range` / `literal_match` / `range_out_of_bounds` 等） |
-| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
+| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
 | `skipped.application` | 应用阶段决策数 | 已标记但未能写回（`apply_*`、`preview`、`output_read_only`、`args_read_only`） |
 | `scope` | — | 该策略节省所在的提示词区域：`messages` / `tool_schema` / `tool_result` / `model_output`；不同域的数字不可互相比较 |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |

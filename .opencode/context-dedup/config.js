@@ -41,6 +41,14 @@ export const DEFAULT_CONFIG = Object.freeze({
   protectedTools: Object.freeze([]),
   /** File globs whose tool records must never be pruned. */
   protectedFilePatterns: Object.freeze([]),
+  /**
+   * Which later references to a call id block pruning:
+   * - "any"    — any mention (structured field or prose) blocks (default);
+   * - "strong" — only structured mentions (exact id value in a machine field)
+   *              block; prose mentions are counted but do not block.
+   * The default preserves the previous fail-safe behavior.
+   */
+  referenceProtection: "any",
   deduplication: Object.freeze({
     enabled: true,
     tools: Object.freeze([...DEFAULT_DEDUP_TOOLS]),
@@ -79,6 +87,12 @@ export const DEFAULT_CONFIG = Object.freeze({
     barrierOnBroadMutations: true,
     protectReferences: true,
     requireFullRead: true,
+    /**
+     * When the runtime omits write/read timestamps, fall back to emission
+     * order. Off by default: order alone cannot prove the read observed the
+     * finished file, so enabling it trades certainty for coverage.
+     */
+    allowOrderFallback: false,
   }),
   /** OpenSlimedit-derived definition/output slimming (see slim-edit.js). */
   slimEdit: Object.freeze({ ...DEFAULT_SLIM_EDIT }),
@@ -125,6 +139,18 @@ function assertBoolean(value, field) {
     throw new ConfigError(`${field} must be a boolean`);
   }
   return value;
+}
+
+export const REFERENCE_PROTECTION_MODES = Object.freeze(["any", "strong"]);
+
+function resolveReferenceProtection(value) {
+  if (value === undefined) return DEFAULT_CONFIG.referenceProtection;
+  if (typeof value === "string" && REFERENCE_PROTECTION_MODES.includes(value.trim())) {
+    return value.trim();
+  }
+  throw new ConfigError(
+    `referenceProtection must be one of: ${REFERENCE_PROTECTION_MODES.join(", ")}`,
+  );
 }
 
 function stringList(value, field, fallback) {
@@ -432,6 +458,10 @@ function resolveSupersedeWrites(raw, env, globalPreview) {
       raw.requireFullRead === undefined
         ? DEFAULT_CONFIG.supersedeWrites.requireFullRead
         : assertBoolean(raw.requireFullRead, "supersedeWrites.requireFullRead"),
+    allowOrderFallback:
+      raw.allowOrderFallback === undefined
+        ? DEFAULT_CONFIG.supersedeWrites.allowOrderFallback
+        : assertBoolean(raw.allowOrderFallback, "supersedeWrites.allowOrderFallback"),
   };
 }
 
@@ -547,6 +577,8 @@ export function resolveConfig(raw = {}, env = process.env) {
     DEFAULT_CONFIG.protectedFilePatterns,
   );
 
+  const referenceProtection = resolveReferenceProtection(raw.referenceProtection);
+
   const placeholder = assertPlaceholder(
     raw.placeholder,
     "placeholder",
@@ -574,6 +606,7 @@ export function resolveConfig(raw = {}, env = process.env) {
     mutationTools,
     protectedTools,
     protectedFilePatterns,
+    referenceProtection,
     deduplication,
     errorPurge,
     supersedeWrites,

@@ -605,6 +605,17 @@ function strategySummary(stats, fallbackEnabled, scope = null) {
       full: intOrNull(stats.fullReadCount) ?? 0,
       rejected_reasons: sanitizeReasonMap(stats.readRejectedReasons),
     };
+    // Evidence gaps, present only when they occurred (absent = 0). A host that
+    // omits timestamps or EOF proof would otherwise look identical to a host
+    // with nothing to prune.
+    const missingWriteEnd = intOrNull(stats.missingWriteEndCount) ?? 0;
+    if (missingWriteEnd > 0) summary.writes.missing_end_time = missingWriteEnd;
+    const missingReadStart = intOrNull(stats.missingReadStartCount) ?? 0;
+    if (missingReadStart > 0) summary.reads.missing_start_time = missingReadStart;
+    const missingEofProof = intOrNull(stats.readMissingEofProofCount) ?? 0;
+    if (missingEofProof > 0) summary.reads.missing_eof_proof = missingEofProof;
+    const orderFallbackUsed = intOrNull(stats.orderFallbackCount) ?? 0;
+    if (orderFallbackUsed > 0) summary.reads.order_fallback_used = orderFallbackUsed;
   }
 
   return summary;

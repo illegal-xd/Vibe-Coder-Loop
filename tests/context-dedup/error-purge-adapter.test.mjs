@@ -200,7 +200,7 @@ test("an error actively referenced later is preserved", () => {
     CONFIG,
   );
   assert.equal(beforeSuccess.changed, false);
-  assert.equal(beforeSuccess.stats.errorPurge.skippedReasons.referenced_later, 1);
+  assert.equal(beforeSuccess.stats.errorPurge.skippedReasons.referenced_later_text, 1);
 
   const afterSuccess = transformMessages(
     [
@@ -220,7 +220,7 @@ test("an error actively referenced later is preserved", () => {
     CONFIG,
   );
   assert.equal(afterSuccess.changed, false);
-  assert.equal(afterSuccess.stats.errorPurge.skippedReasons.referenced_later, 1);
+  assert.equal(afterSuccess.stats.errorPurge.skippedReasons.referenced_later_text, 1);
 });
 
 test("repeated identical failures keep the newest error output", () => {

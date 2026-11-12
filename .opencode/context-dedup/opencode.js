@@ -63,6 +63,26 @@ function countDecisionKinds(decisions) {
   return result;
 }
 
+/**
+ * Why a later reference blocks this decision, or "" when it does not.
+ *
+ * Both strengths are always distinguished in the counters, so a `mode: "any"`
+ * run can still show whether the block came from a real dependency or from a
+ * sentence that merely quotes the id. `mode: "strong"` lets prose mentions
+ * through: the removed content is duplicated elsewhere by construction, so a
+ * mention without a structured link cannot make the removal lossy.
+ */
+function referenceSkipReason(index, callId, fromOrderExclusive, toOrderExclusive, mode) {
+  if (!index || typeof callId !== "string" || callId.length === 0) return "";
+  if (indexHasStrongReference(index, callId, fromOrderExclusive, toOrderExclusive)) {
+    return "referenced_later_strong";
+  }
+  if (mode === "strong") return "";
+  return indexHasReference(index, callId, fromOrderExclusive, toOrderExclusive)
+    ? "referenced_later_text"
+    : "";
+}
+
 function safeStringify(value) {
   try {
     return JSON.stringify(value);
@@ -244,11 +264,19 @@ function escapeRegex(text) {
   return text.replace(REGEX_ESCAPE, "\\$&");
 }
 
+/**
+ * Text a part contributes to the reference scan, tagged by provenance.
+ * `machine: true` means the text came from a structured field (tool input,
+ * metadata) rather than prose, so an exact id value there is a real
+ * machine-readable reference and not a quotation.
+ */
 function searchableStrings(part, skipPayloadTools) {
   if (!part || typeof part !== "object") return null;
   const candidates = [];
-  if (typeof part.text === "string") candidates.push(part.text);
-  if (part.type === "subtask" && typeof part.prompt === "string") candidates.push(part.prompt);
+  if (typeof part.text === "string") candidates.push({ text: part.text, machine: false });
+  if (part.type === "subtask" && typeof part.prompt === "string") {
+    candidates.push({ text: part.prompt, machine: false });
+  }
   if (part.type === TOOL_PART) {
     // Write payloads (file content / diffs) are data, not conversational
     // references. Serializing megabytes of content here is both expensive and
@@ -258,14 +286,18 @@ function searchableStrings(part, skipPayloadTools) {
       skipPayloadTools !== undefined &&
       typeof part.tool === "string" &&
       skipPayloadTools.has(part.tool);
-    if (part.metadata !== undefined && !skipPayload) candidates.push(safeStringify(part.metadata));
+    if (part.metadata !== undefined && !skipPayload) {
+      candidates.push({ text: safeStringify(part.metadata), machine: true });
+    }
     const state = part.state;
     if (state && typeof state === "object") {
-      if (typeof state.output === "string") candidates.push(state.output);
-      if (typeof state.error === "string") candidates.push(state.error);
-      if (state.input !== undefined && !skipPayload) candidates.push(safeStringify(state.input));
+      if (typeof state.output === "string") candidates.push({ text: state.output, machine: false });
+      if (typeof state.error === "string") candidates.push({ text: state.error, machine: false });
+      if (state.input !== undefined && !skipPayload) {
+        candidates.push({ text: safeStringify(state.input), machine: true });
+      }
       if (state.metadata !== undefined && !skipPayload) {
-        candidates.push(safeStringify(state.metadata));
+        candidates.push({ text: safeStringify(state.metadata), machine: true });
       }
     }
   }
@@ -278,19 +310,25 @@ function searchableStrings(part, skipPayloadTools) {
  * ever matter (no decision can be referenced before it is made). A single
  * alternation regex matches every id in one pass per part instead of one pass
  * per id per part.
+ *
+ * `strongById` holds only machine-readable references: the id appears as an
+ * exact quoted value (`"call_abc"`) inside a structured field. Prose mentions
+ * and log echoes stay in `refsById` only, so a strategy can tell a real
+ * dependency from a sentence.
  */
 export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive = -Infinity, options = {}) {
   const refsById = new Map();
+  const strongById = new Map();
   const skipPayloadTools =
     options && options.skipPayloadTools instanceof Set ? options.skipPayloadTools : null;
   if (!Array.isArray(orderedParts) || !Array.isArray(callIds) || callIds.length === 0) {
-    return { refsById };
+    return { refsById, strongById };
   }
   const unique = new Set();
   for (const id of callIds) {
     if (typeof id === "string" && id.length > 0) unique.add(id);
   }
-  if (unique.size === 0) return { refsById };
+  if (unique.size === 0) return { refsById, strongById };
 
   const pattern = new RegExp([...unique].map(escapeRegex).join("|"), "g");
 
@@ -298,7 +336,8 @@ export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive =
     if (!item || !Number.isFinite(item.order) || item.order <= startOrderExclusive) continue;
     const strings = searchableStrings(item.part, skipPayloadTools);
     if (!strings) continue;
-    for (const text of strings) {
+    for (const source of strings) {
+      const text = source.text;
       if (typeof text !== "string" || text.length === 0) continue;
       pattern.lastIndex = 0;
       let match = pattern.exec(text);
@@ -309,17 +348,26 @@ export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive =
           match = pattern.exec(text);
           continue;
         }
-        let orders = refsById.get(matched);
-        if (!orders) {
-          orders = [];
-          refsById.set(matched, orders);
+        pushOrder(refsById, matched, item.order);
+        // A structured field stores an id as exactly one value; only that is a
+        // machine reference. `includes` is checked once per (part, id) pair.
+        if (source.machine && text.includes(`"${matched}"`)) {
+          pushOrder(strongById, matched, item.order);
         }
-        if (orders[orders.length - 1] !== item.order) orders.push(item.order);
         match = pattern.exec(text);
       }
     }
   }
-  return { refsById };
+  return { refsById, strongById };
+}
+
+function pushOrder(map, key, order) {
+  let orders = map.get(key);
+  if (!orders) {
+    orders = [];
+    map.set(key, orders);
+  }
+  if (orders[orders.length - 1] !== order) orders.push(order);
 }
 
 function lowerBound(orders, target) {
@@ -337,6 +385,15 @@ function lowerBound(orders, target) {
 export function indexHasReference(index, callId, fromOrderExclusive, toOrderExclusive) {
   if (!index || !index.refsById) return false;
   const orders = index.refsById.get(callId);
+  if (!orders || orders.length === 0) return false;
+  const position = lowerBound(orders, fromOrderExclusive);
+  return position < orders.length && orders[position] < toOrderExclusive;
+}
+
+/** Same question restricted to machine-readable (structured-field) references. */
+export function indexHasStrongReference(index, callId, fromOrderExclusive, toOrderExclusive) {
+  if (!index || !index.strongById) return false;
+  const orders = index.strongById.get(callId);
   if (!orders || orders.length === 0) return false;
   const position = lowerBound(orders, fromOrderExclusive);
   return position < orders.length && orders[position] < toOrderExclusive;
@@ -1237,6 +1294,7 @@ export function transformMessages(messages, config = {}) {
   const protectCallIds = config.protectCallIdReferences !== false;
   const protectErrorReferences = errorPurgeConfig.protectReferences !== false;
   const protectSupersedeReferences = supersedeConfig.protectReferences !== false;
+  const referenceMode = config.referenceProtection === "strong" ? "strong" : "any";
 
   // One reference index for all three strategies. The scan starts at the
   // earliest decision order because nothing earlier can reference a decision.
@@ -1277,12 +1335,18 @@ export function transformMessages(messages, config = {}) {
   const attributedIds = new Set();
   const dedupDecisions = [];
   for (const decision of dedupPlan.decisions) {
-    if (
-      protectCallIds &&
-      indexHasReference(referenceIndex, decision.id, decision.order, decision.keeperOrder)
-    ) {
-      increment(stats.skippedReasons, "referenced_later");
-      continue;
+    if (protectCallIds) {
+      const reason = referenceSkipReason(
+        referenceIndex,
+        decision.id,
+        decision.order,
+        decision.keeperOrder,
+        referenceMode,
+      );
+      if (reason) {
+        increment(stats.skippedReasons, reason);
+        continue;
+      }
     }
     dedupDecisions.push(decision);
   }
@@ -1356,12 +1420,18 @@ export function transformMessages(messages, config = {}) {
       increment(stats.errorPurge.skippedReasons, "cross_strategy_conflict");
       continue;
     }
-    if (
-      protectErrorReferences &&
-      indexHasReference(referenceIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
-    ) {
-      increment(stats.errorPurge.skippedReasons, "referenced_later");
-      continue;
+    if (protectErrorReferences) {
+      const reason = referenceSkipReason(
+        referenceIndex,
+        decision.id,
+        decision.order,
+        Number.POSITIVE_INFINITY,
+        referenceMode,
+      );
+      if (reason) {
+        increment(stats.errorPurge.skippedReasons, reason);
+        continue;
+      }
     }
     errorDecisions.push(decision);
   }
@@ -1458,12 +1528,18 @@ export function transformMessages(messages, config = {}) {
       increment(stats.supersedeWrites.skippedReasons, "cross_strategy_conflict");
       continue;
     }
-    if (
-      protectSupersedeReferences &&
-      indexHasReference(referenceIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
-    ) {
-      increment(stats.supersedeWrites.skippedReasons, "referenced_later");
-      continue;
+    if (protectSupersedeReferences) {
+      const reason = referenceSkipReason(
+        referenceIndex,
+        decision.id,
+        decision.order,
+        Number.POSITIVE_INFINITY,
+        referenceMode,
+      );
+      if (reason) {
+        increment(stats.supersedeWrites.skippedReasons, reason);
+        continue;
+      }
     }
     supersedeDecisions.push(decision);
   }

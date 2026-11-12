@@ -188,3 +188,34 @@ test("error purge input options validate with a turn-based default", () => {
     ConfigError,
   );
 });
+
+test("supersedeWrites exposes the order fallback switch (default off)", () => {
+  assert.equal(resolveConfig({}, {}).supersedeWrites.allowOrderFallback, false);
+
+  const enabled = resolveConfig(
+    { supersedeWrites: { allowOrderFallback: true } },
+    {},
+  );
+  assert.equal(enabled.supersedeWrites.allowOrderFallback, true);
+
+  assert.throws(
+    () => resolveConfig({ supersedeWrites: { allowOrderFallback: "yes" } }, {}),
+    ConfigError,
+  );
+});
+
+test("referenceProtection defaults to any and accepts strong", () => {
+  assert.equal(resolveConfig({}, {}).referenceProtection, "any");
+  assert.equal(
+    resolveConfig({ referenceProtection: "strong" }, {}).referenceProtection,
+    "strong",
+  );
+  assert.throws(
+    () => resolveConfig({ referenceProtection: "weak" }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ referenceProtection: true }, {}),
+    ConfigError,
+  );
+});

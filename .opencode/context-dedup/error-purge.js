@@ -49,6 +49,7 @@ import {
   buildOperationSignature,
   estimateTokens,
   hasFailureMetadata,
+  hasHardFailureMetadata,
   increment,
   isConfirmedSuccess,
   isPlainObject,
@@ -334,7 +335,9 @@ function isShellExitError(record) {
     isShellTool(record.tool) &&
     record.status === "completed" &&
     !hasCancellationMetadata(record) &&
-    hasFailureMetadata(record.metadata)
+    // Only structured failure state counts: a diagnostic string in `metadata`
+    // (stderr echo, warning note) is not an exit status.
+    hasHardFailureMetadata(record.metadata)
   );
 }
 

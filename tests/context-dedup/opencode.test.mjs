@@ -221,7 +221,7 @@ test("a later reference to the old call id blocks pruning", () => {
 
   const result = transformMessages(messages, CONFIG);
   assert.equal(result.changed, false);
-  assert.equal(result.stats.skippedReasons.referenced_later, 1);
+  assert.equal(result.stats.skippedReasons.referenced_later_text, 1);
 });
 
 test("preview reports would-prune stats without changing messages", () => {

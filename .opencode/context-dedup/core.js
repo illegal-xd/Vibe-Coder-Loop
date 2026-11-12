@@ -835,6 +835,14 @@ export function planDeduplication(records, config = {}) {
  * Unified implementation supporting both error-purge and supersede-writes.
  */
 export function hasFailureMetadata(metadata) {
+  return hasHardFailureMetadata(metadata) || hasDiagnosticFailureMetadata(metadata);
+}
+
+/**
+ * Failure signals that describe the execution itself (status/exit/timeout).
+ * These always win, even when a caller also sets a success flag.
+ */
+export function hasHardFailureMetadata(metadata) {
   if (!isPlainObject(metadata)) return false;
   const rawExit = metadata.exitCode ?? metadata.exit_code ?? metadata.exit ?? metadata.code;
   if (typeof rawExit === "number" && Number.isFinite(rawExit) && rawExit !== 0) return true;
@@ -851,19 +859,46 @@ export function hasFailureMetadata(metadata) {
     return true;
   }
   if (metadata.status === "error" || metadata.status === "failed") return true;
+  return false;
+}
+
+/**
+ * Diagnostic text attached to a completed call (stderr echo, warning note).
+ * It is real failure evidence only when no structured state says otherwise,
+ * so it never overrides an explicit success marker.
+ */
+export function hasDiagnosticFailureMetadata(metadata) {
+  if (!isPlainObject(metadata)) return false;
   for (const key of ["error", "exception"]) {
     if (typeof metadata[key] === "string" && metadata[key].trim().length > 0) return true;
   }
   return false;
 }
 
+/**
+ * Explicit success markers the runtime may expose on a completed call.
+ * Only affirmative flags count: a bare `failed: false` / `isError: false`
+ * next to a diagnostic string is contradictory, so it stays unresolved
+ * (preserved) rather than being read as success.
+ */
+export function hasExplicitSuccessMetadata(metadata) {
+  if (!isPlainObject(metadata)) return false;
+  return metadata.success === true || metadata.ok === true;
+}
+
 export function isConfirmedSuccess(record) {
-  return (
-    record &&
-    record.status === "completed" &&
-    !(typeof record.error === "string" && record.error.trim().length > 0) &&
-    !hasFailureMetadata(record.metadata)
-  );
+  if (
+    !record ||
+    record.status !== "completed" ||
+    (typeof record.error === "string" && record.error.trim().length > 0)
+  ) {
+    return false;
+  }
+  if (!hasFailureMetadata(record.metadata)) return true;
+  // A diagnostic string alone must not veto an explicit success marker: some
+  // runtimes attach stderr/warning text to successful calls. Hard failure
+  // fields (exit code, timeouts, cancellation) still win.
+  return hasExplicitSuccessMetadata(record.metadata) && !hasHardFailureMetadata(record.metadata);
 }
 
 export function validPlaceholder(value, fallback) {

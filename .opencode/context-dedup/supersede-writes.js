@@ -160,6 +160,12 @@ export function createSupersedeWritesStats() {
     ambiguousWriteCount: 0,
     ambiguousResultCount: 0,
     confirmedWriteCount: 0,
+    // Evidence gaps that keep the strategy at zero on real hosts. They are the
+    // first thing to check when `fileMatchCount > 0` but nothing is pruned.
+    missingWriteEndCount: 0,
+    missingReadStartCount: 0,
+    readMissingEofProofCount: 0,
+    orderFallbackCount: 0,
     eligibleCount: 0,
     candidateCount: 0,
     fileMatchCount: 0,
@@ -536,6 +542,7 @@ export function planSupersedeWrites(records, config = {}) {
         continue;
       }
       stats.confirmedWriteCount += 1;
+      if (timeEnd(record) === null) stats.missingWriteEndCount += 1;
       const protectReason = protectedReason(record, options);
       if (protectReason) {
         increment(stats.skippedReasons, protectReason);
@@ -569,7 +576,13 @@ export function planSupersedeWrites(records, config = {}) {
       const identity = fileIdentityOf(record);
       if (!inspection.full) {
         stats.ambiguousResultCount += 1;
-        increment(stats.readRejectedReasons, inspection.reason || "read_incomplete");
+        const reason = inspection.reason || "read_incomplete";
+        // "No EOF proof" (not a definite partial read) is the common gap on
+        // hosts that do not stamp `truncated`/`display`; surface it by name.
+        if (reason === "read_limited" || reason === "read_unverified") {
+          stats.readMissingEofProofCount += 1;
+        }
+        increment(stats.readRejectedReasons, reason);
         // A rejected read still proves the file was inspected; classify it for
         // the per-write diagnostics only when it was a confirmed success.
         if (identity && isReadCandidate(record, options)) {
@@ -584,6 +597,7 @@ export function planSupersedeWrites(records, config = {}) {
       }
       stats.confirmedReadCount += 1;
       stats.fullReadCount += 1;
+      if (timeStart(record) === null) stats.missingReadStartCount += 1;
       if (!identity) {
         increment(stats.skippedReasons, "read_unresolved_path");
         continue;
@@ -685,10 +699,16 @@ export function planSupersedeWrites(records, config = {}) {
         for (const candidate of pendingWrites) {
           if (candidate.decided) continue;
           if (candidate.order >= read.order) continue; // write after read: retained (Case C)
+          // `readCoversWrite` falls back to emission order only when timings are
+          // missing; record that the decision rests on weaker evidence.
+          const usedOrderFallback =
+            options.allowOrderFallback &&
+            (timeEnd(candidate.record) === null || timeStart(read.record) === null);
           if (!readCoversWrite(candidate.record, read.record, options)) {
             if (!candidate.blockedReason) candidate.blockedReason = "read_not_after_write";
             continue;
           }
+          if (usedOrderFallback) stats.orderFallbackCount += 1;
           if (options.preserveAcrossUserTurns && candidate.userSegment !== read.userSegment) {
             if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
             continue;
