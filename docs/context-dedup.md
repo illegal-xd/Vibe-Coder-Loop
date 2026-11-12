@@ -127,7 +127,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 
 1. 存在**更晚**的同一签名记录，且 `status === "completed"`、无结构化失败 metadata、不是 `unverified_shell`（见 4.8）；
 2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留（重复相同失败规则见 4.4，不受此限制）；
-3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障；
+3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障（含 exit 状态不可证的 `ambiguous` / `unverified_shell` 记录，它们只作屏障候选、不参与减法以外的任何判定）；
 4. 错误 callID 在后续上下文中**未被引用**；
 5. error 文本或失败调用的输入载荷至少有一项带来正收益（error 文本小于占位符时保留原文，只裁剪输入）；
 6. 满足 `minSuccesses`（默认 1；设为 2 可要求连续两次成功）。
@@ -234,6 +234,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 6. **完整性的结构性证明**（按顺序取一个）：
    - 运行时显式报告未截断：`metadata.truncated === false`（OpenCode 的 `read` 工具对每个读取都会写入 `metadata.truncated`，是该运行时可靠的 EOF 信号）；或
    - `metadata.display` 给出 `{ lineStart, lineEnd, totalLines }` 且 `lineStart <= 1` 且 `lineEnd >= totalLines`；或
+   - 运行时自己的 EOF 提示：输出末尾出现 `(End of file - total N lines)`，读取从第 1 行开始，**正文行数与 `N` 严格相等**，且 `N` 不超过该次读取的 `limit`；任一不满足即拒绝（`read_unverified` / `read_limited`）。行数交叉校验用于挡住「被截断的读取」、「文件末行恰好就是这串字符」、「正文少一行但自报 N」三类伪证；只返回 `<path>`/`<type>` 头部行的读取不构成任何证明（`read_unverified`）。注意它仍是**文本证据**，`metadata.truncated === false` 才是唯一权威信号，二者同时缺失时该读取按不完整处理；或
    - **遗留形态**：既无 `offset` 也无 `limit`（无切片参数的读取）。
 
 > **运行时注意**：OpenCode 会把 `offset`（默认 1）与 `limit`（按剩余行数计算的上限）规范化进**每一次**读取的 `state.input`。因此**不能**仅凭 `state.input.limit` 出现就判定为片段读取——那会让全部读取被拒绝、Supersede Writes 贡献恒为 0。`limit` 只在缺少上述 EOF 证明时才作为保守拒绝依据（拒绝原因 `read_limited`）。被拒绝的读取原因记入 `stats.readRejectedReasons` 与 `skippedReasons`（`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` 等）。**缺证明与确定片段分开计数**：只有 `read_limited` / `read_unverified`（缺 EOF 证明）才累加 `stats.readMissingEofProofCount`；`read_partial_offset` / `read_partial_range` / `read_truncated` 是确定片段。
@@ -313,7 +314,9 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   - Supersede Writes 只改 `state.input` 的内容字段与 `state.output`，路径与其余输入字段保持原值；
   - 三条策略都不改 `callID`、`tool`、`state.status`、`title`、`metadata`、`time`、`attachments`。
 - **应用后校验**：逐消息、逐 part 检查数量、`info.id`、`callID`、`tool`、`status`、未目标字段；任何不一致 → 返回原始消息数组，统计 `apply_validation_failed`。
-- **结构异常 fail-closed**：消息缺少 `info`/`parts`、info.id/role 不合法、ToolPart 缺少 `callID`/`state`、`callID` 重复 → 整体回退，不部分裁剪。
+- **结构异常 fail-closed**：消息缺少 `info`/`parts`、info.id/role 不合法、ToolPart 缺少 `callID`/`state` → 整体回退，不部分裁剪；`callID` 重复只跳过冲突的**那一个 part**（计入 `duplicate_call_id`，该 part 不可定位故不参与任何策略），其余记录继续处理——否则一条畸形 part 会让整段会话的三条策略同时失效。
+- **不可定位 part 的屏障语义**：被跳过的重复 `callID` part 保留其 `order` 作为屏障（只读工具除外），因此 Error Purge 不会跨过它清理错误、Supersede Writes 也不会跨过它清理写入；它不参与任何决策目标选择。
+- **应用后校验的目标口径**：只有 `locations` 记录的 `(messageIndex, partIndex)` 才是决策目标；仅重复同一 `callID` 的 part 未被改动属预期，不再报 `target_not_cloned`。
 - **数组替换失败回滚**：插件先备份原数组，再就地替换；若运行时不接受或抛错，恢复原内容并记录 `apply_array_mutation_failed`。
 - **幂等**：三种占位文本都以 `[vibe-context-dedup]` 开头，二次执行直接跳过。
 
@@ -396,7 +399,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
 | `deduplication.tools` | Dedup 白名单（含 `bash`；失败 shell 自动排除） | `["read","grep","glob","bash"]` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
-| `referenceProtection` | 引用守卫强度：`any` 保留任何后续提及（含散文、日志回显）；`strong` 只保留结构化引用（机器字段中的精确 id 值），散文提及仅计数不拦截 | `any` |
+| `referenceProtection` | 引用守卫强度：`any` 保留任何后续提及（含散文、日志回显）；`strong` 只保留结构化引用（机器字段中的精确 id 值），散文提及仅计数不拦截。索引按 id 长度**降序**匹配，避免 `call_1` 吞掉 `call_10` 的引用 | `any` |
 | `mutationTools` | Error Purge 视为状态变更的工具集合 | 见上 |
 | `protectedTools` | 三条策略共用：工具名（支持 `*`/`?` glob）永不裁剪 | `[]` |
 | `protectedFilePatterns` | 三条策略共用：文件 glob 永不裁剪；匹配原始参数、cwd 绝对路径与项目相对路径 | `[]` |
@@ -444,7 +447,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | 变量 | 作用 |
 |---|---|
 | `VIBE_CONTEXT_DEDUP_DISABLED=1` | 插件总关闭（不读配置文件） |
-| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 顶层预览（所有策略默认继承） |
+| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 全局预览：**绝对覆盖**各策略的 `preview`（含配置文件里的显式 `false`），与 `VIBE_CONTEXT_DEDUP_DISABLED` 覆盖 `enabled` 同口径 |
 | `VIBE_CONTEXT_ERROR_PURGE_DISABLED=1` | 仅关闭 Error Purge |
 | `VIBE_CONTEXT_ERROR_PURGE_PREVIEW=1` | 仅 Error Purge 预览 |
 | `VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED=1` | 仅关闭 Supersede Writes |
@@ -929,9 +932,9 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 无法可靠识别自然语言引用；使用 callID 引用扫描、user-turn 屏障、状态变更屏障作为保守代理。
 - 执行环境只建模 `cwd` / `root` / 参数内显式 `cwd`；不建模环境变量、`.gitignore`、网络状态。
 - Error Purge 只替换 `state.error` 与失败调用输入中的大体积顶层字符串；不清理 `state.metadata` 中可能存在的堆栈/诊断字段，也不重写数组/对象型输入（如 `multiedit.edits`）。
-- 受保护规则按工具名与文件路径匹配；无法从参数中解析出路径的工具不会被 `protectedFilePatterns` 命中。
+- 受保护规则按工具名与文件路径匹配；无法从参数中解析出路径的工具不会被 `protectedFilePatterns` 命中。`bash.command` 中的路径**不会**被解析（例如 `cat .env`），需要保护时改用 `protectedTools: ["bash"]`。
 - Supersede Writes 只脱敏写工具输入中的已知内容字段（`content` / `oldString` / `newString` / `edits` / `patch` / `diff` / `input` 等）与 `state.output`；未知形状的写工具输入即使成功也不会被覆盖。
-- 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`）。若宿主不提供这些信号，只按“无 offset/limit 且输出非空”判定，超大文件被静默截断时无法识别；可通过 `requireFullRead` 保持默认保守策略。
+- 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`），并可用输出末尾的 `(End of file - total N lines)` 作为补充证明（要求正文行数与 `N` 严格相等且 `limit >= N`）。EOF 文本是弱证据：构造得足够巧的文件内容仍可能同时满足行数与 `N`；需要严格保证时以 `metadata.truncated === false` 为准。若宿主同时不提供这些信号，只按“无 offset/limit 且输出非空”判定；可通过 `requireFullRead` 保持默认保守策略。
 - 文件版本仅由 `state.time`（写入完成时间、读取开始时间）推断；不读取磁盘 mtime、内容哈希或文件系统锁。读取之后的外部进程修改无法从消息历史中观察，因此不额外失效已经完成的覆盖。
 - 同一文件的中间写入会与更早写入一起被后续完整读取覆盖；这是预期行为（读取代表最终状态），但不是区间级 Supersede。
 - 未实现区间级上下文追踪；部分读取一律不清理整文件写上下文。

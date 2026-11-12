@@ -556,8 +556,13 @@ export function resolveConfig(raw = {}, env = process.env) {
 
   const enabled =
     raw.enabled === undefined ? DEFAULT_CONFIG.enabled : assertBoolean(raw.enabled, "enabled");
-  const preview =
+  const configuredPreview =
     raw.preview === undefined ? DEFAULT_CONFIG.preview : assertBoolean(raw.preview, "preview");
+  // The environment switch is a global dry-run and wins over per-strategy
+  // `preview: false` (the same way VIBE_CONTEXT_DEDUP_DISABLED wins over
+  // `enabled`); otherwise a config file could leave a strategy rewriting the
+  // request while the operator believes the whole plugin is previewing.
+  const preview = isTruthy(env.VIBE_CONTEXT_DEDUP_PREVIEW) ? true : configuredPreview;
 
   const tools = stringList(raw.tools, "tools", DEFAULT_CONFIG.tools);
   const mutationTools = stringList(
@@ -597,9 +602,17 @@ export function resolveConfig(raw = {}, env = process.env) {
   const supersedeWrites = resolveSupersedeWrites(raw.supersedeWrites, env, preview);
   const slimEdit = resolveSlimEdit(raw.slimEdit, env, preview);
 
+  // A global dry-run covers every strategy, including one configured with an
+  // explicit `preview: false`.
+  if (isTruthy(env.VIBE_CONTEXT_DEDUP_PREVIEW)) {
+    errorPurge.preview = true;
+    supersedeWrites.preview = true;
+    slimEdit.preview = true;
+  }
+
   return {
     enabled: isTruthy(env.VIBE_CONTEXT_DEDUP_DISABLED) ? false : enabled,
-    preview: isTruthy(env.VIBE_CONTEXT_DEDUP_PREVIEW) ? true : preview,
+    preview,
     tools,
     placeholder,
     protectCallIdReferences,

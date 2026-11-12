@@ -44,6 +44,26 @@ test("environment can disable or preview without editing the file", () => {
   assert.equal(logDisabled.log.enabled, false);
 });
 
+test("the global preview environment switch reaches every strategy", () => {
+  // A dry-run must not leave sibling strategies rewriting the request.
+  const config = resolveConfig({}, { VIBE_CONTEXT_DEDUP_PREVIEW: "1" });
+  assert.equal(config.preview, true);
+  assert.equal(config.errorPurge.preview, true);
+  assert.equal(config.supersedeWrites.preview, true);
+  assert.equal(config.slimEdit.preview, true);
+});
+
+test("the global preview environment switch wins over explicit false", () => {
+  // The same precedence VIBE_CONTEXT_DEDUP_DISABLED has over `enabled`.
+  const config = resolveConfig(
+    { preview: false, errorPurge: { preview: false }, supersedeWrites: { preview: false } },
+    { VIBE_CONTEXT_DEDUP_PREVIEW: "1" },
+  );
+  assert.equal(config.preview, true);
+  assert.equal(config.errorPurge.preview, true);
+  assert.equal(config.supersedeWrites.preview, true);
+});
+
 test("strategies are independently configurable", () => {
   const config = resolveConfig(
     {

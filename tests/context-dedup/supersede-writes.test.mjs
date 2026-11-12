@@ -528,3 +528,67 @@ test("a partial read never supersedes and is counted separately", () => {
   assert.equal(stats.confirmedReadCount, 0);
   assert.equal(stats.readRejectedReasons.read_partial_offset, 1);
 });
+
+test("a read that returned no content cannot stand in for a write", () => {
+  // Only the runtime's header lines came back: nothing about the file is known.
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: "<path>/repo/src/a.ts</path>\n<type>file</type>\n",
+      args: { filePath: "src/a.ts" },
+    }),
+  ]);
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.readRejectedReasons.read_unverified, 1);
+});
+
+test("the runtime's end-of-file notice proves a full read without metadata", () => {
+  const fullOutput = `${READ_OUTPUT}\n(End of file - total 40 lines)\n`;
+
+  const full = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({ id: "r1", order: 2, output: fullOutput, args: { filePath: "src/a.ts", offset: 1, limit: 2000 } }),
+  ]);
+  assert.equal(full.decisions.length, 1);
+  assert.equal(full.stats.readRejectedReasons.read_limited, undefined);
+
+  // A read capped below the reported total is still partial.
+  const capped = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({ id: "r1", order: 2, output: fullOutput, args: { filePath: "src/a.ts", offset: 1, limit: 10 } }),
+  ]);
+  assert.equal(capped.decisions.length, 0);
+  assert.equal(capped.stats.readRejectedReasons.read_limited, 1);
+});
+
+test("an end-of-file notice that disagrees with the returned text proves nothing", () => {
+  // One real line followed by a notice claiming three: the notice is content,
+  // not evidence, so a truncated read must not be read as complete.
+  const forged = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: "only one line\n(End of file - total 3 lines)\n",
+      args: { filePath: "src/a.ts", offset: 1, limit: 2000 },
+    }),
+  ]);
+  assert.equal(forged.decisions.length, 0);
+  assert.equal(forged.stats.readRejectedReasons.read_unverified, 1);
+
+  // A truncated read whose own last content line looks like the notice must not
+  // be accepted either: the count must match exactly, not approximately.
+  const lookAlike = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: `${"x\n".repeat(120)}(End of file - total 121 lines)\n`,
+      args: { filePath: "src/a.ts", offset: 1, limit: 121 },
+    }),
+  ]);
+  assert.equal(lookAlike.decisions.length, 0);
+  assert.equal(lookAlike.stats.readRejectedReasons.read_unverified, 1);
+});

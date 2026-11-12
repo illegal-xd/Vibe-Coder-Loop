@@ -61,6 +61,120 @@ test("extracts OpenCode ToolPart records with call id, state, and environment", 
   );
 });
 
+test("one repeated call id skips that part instead of the whole request", () => {
+  const messages = [
+    userMessage({ id: "u1" }),
+    assistantMessage({
+      id: "a1",
+      parentID: "u1",
+      parts: [toolPart({ messageID: "a1", callID: "call_dup", output: LONG_OUTPUT })],
+    }),
+    assistantMessage({
+      id: "a2",
+      parentID: "u1",
+      parts: [toolPart({ messageID: "a2", callID: "call_dup", tool: "grep", output: "other" })],
+    }),
+    assistantMessage({
+      id: "a3",
+      parentID: "u1",
+      parts: [toolPart({ messageID: "a3", callID: "call_late", output: LONG_OUTPUT })],
+    }),
+  ];
+
+  const extraction = extractToolRecords(messages);
+  assert.equal(extraction.structuralFailure, "");
+  assert.equal(extraction.skippedReasons.duplicate_call_id, 1);
+  assert.deepEqual(extraction.records.map((record) => record.id), ["call_dup", "call_late"]);
+
+  const result = transformMessages(messages, CONFIG);
+  assert.equal(result.stats.error, undefined);
+  assert.equal(result.stats.prunedCount, 1);
+});
+
+test("a repeated call id does not disable error purge or supersede writes", () => {
+  const longError = "boom detail\n".repeat(60);
+  const messages = [
+    userMessage({ id: "u1" }),
+    assistantMessage({
+      id: "a1",
+      parentID: "u1",
+      parts: [
+        toolPart({
+          messageID: "a1",
+          callID: "call_dup",
+          tool: "bash",
+          input: { command: "npm test" },
+          output: longError,
+          metadata: { exit: 1 },
+        }),
+      ],
+    }),
+    assistantMessage({
+      id: "a2",
+      parentID: "u1",
+      parts: [
+        toolPart({
+          messageID: "a2",
+          callID: "call_dup",
+          tool: "read",
+          input: { filePath: "z.txt" },
+          output: "unrelated",
+        }),
+        toolPart({
+          messageID: "a2",
+          callID: "call_ok",
+          tool: "bash",
+          input: { command: "npm test" },
+          output: "passed",
+          metadata: { exit: 0 },
+        }),
+      ],
+    }),
+  ];
+
+  const result = transformMessages(messages, CONFIG);
+  assert.equal(result.stats.error, undefined);
+  assert.equal(result.stats.skippedReasons.duplicate_call_id, 1);
+  assert.equal(result.stats.errorPurge.changedCount, 1);
+});
+
+test("a repeated call id still counts as an unknown state change", () => {
+  // The duplicate part is unaddressable, but it may have touched state, so it
+  // must keep blocking error purge instead of disappearing from the timeline.
+  const longError = "boom detail\n".repeat(60);
+  const failPart = toolPart({
+    callID: "call_f1",
+    tool: "bash",
+    input: { command: "npm test" },
+    output: longError,
+    metadata: { exit: 1 },
+  });
+  const okPart = toolPart({
+    callID: "call_ok",
+    tool: "bash",
+    input: { command: "npm test" },
+    output: "passed",
+    metadata: { exit: 0 },
+  });
+  const run = (parts) =>
+    transformMessages(
+      [userMessage({ id: "u1" }), assistantMessage({ id: "a1", parentID: "u1", parts })],
+      CONFIG,
+    );
+
+  assert.equal(run([failPart, okPart]).stats.errorPurge.changedCount, 1);
+
+  const duplicateWrite = toolPart({
+    callID: "call_f1",
+    tool: "write",
+    input: { filePath: "b.txt", content: "x" },
+    output: "Wrote b.txt",
+  });
+  const blocked = run([failPart, duplicateWrite, okPart]);
+  assert.equal(blocked.stats.skippedReasons.duplicate_call_id, 1);
+  assert.equal(blocked.stats.errorPurge.changedCount, 0);
+});
+
 test("prunes the older output while preserving message and part structure", () => {
   const messages = duplicateMessages();
   const original = clone(messages);

@@ -120,3 +120,13 @@ test("a part that mentions the same id twice records one order", () => {
   const index = buildReferenceIndex(parts, ["call_x"], -Infinity);
   assert.deepEqual(index.refsById.get("call_x"), [1]);
 });
+
+test("an id that is a prefix of another id still records both references", () => {
+  // Alternation is left-most-wins: the shorter id must not swallow the longer
+  // match, or a real reference to `call_10` would disappear from the index.
+  const parts = [textPart(1, "reuse call_10 here"), textPart(2, "reuse call_1 here")];
+  const index = buildReferenceIndex(parts, ["call_1", "call_10"], -Infinity);
+  assert.deepEqual(index.refsById.get("call_10"), [1]);
+  assert.deepEqual(index.refsById.get("call_1"), [2]);
+  assert.equal(indexHasReference(index, "call_10", 0, 2), true);
+});

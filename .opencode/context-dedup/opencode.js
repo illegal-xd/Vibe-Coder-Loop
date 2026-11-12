@@ -119,6 +119,10 @@ export function extractToolRecords(messages) {
   const locations = new Map();
   const orderedParts = [];
   const skippedReasons = {};
+  // Orders of parts that repeat a call id. They cannot be addressed by any
+  // decision, but they may have touched state, so the strategies keep them as
+  // barriers instead of pretending the part never ran.
+  const unaddressableOrders = [];
   let structuralFailure = "";
   let order = 0;
   let userSegment = 0;
@@ -135,6 +139,7 @@ export function extractToolRecords(messages) {
       orderedParts,
       skippedReasons,
       structuralFailure: "invalid_messages",
+      unaddressableOrders,
     };
   }
 
@@ -210,13 +215,15 @@ export function extractToolRecords(messages) {
         userSegment,
         turn,
       };
-      records.push(record);
-
+      // A repeated call id makes that one part unaddressable, not the request:
+      // treating it as a structural failure would disable every strategy for
+      // the whole conversation because of one malformed part.
       if (locations.has(part.callID)) {
         increment(skippedReasons, "duplicate_call_id");
-        structuralFailure = "duplicate_call_id";
+        if (Number.isFinite(partOrder)) unaddressableOrders.push({ order: partOrder, tool: part.tool });
         continue;
       }
+      records.push(record);
       locations.set(part.callID, {
         messageIndex,
         partIndex,
@@ -233,7 +240,14 @@ export function extractToolRecords(messages) {
     }
   }
 
-  return { records, locations, orderedParts, skippedReasons, structuralFailure };
+  return {
+    records,
+    locations,
+    orderedParts,
+    skippedReasons,
+    structuralFailure,
+    unaddressableOrders,
+  };
 }
 
 /**
@@ -330,7 +344,16 @@ export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive =
   }
   if (unique.size === 0) return { refsById, strongById };
 
-  const pattern = new RegExp([...unique].map(escapeRegex).join("|"), "g");
+  // Longest id first: an alternation is matched left-most-wins, so a shorter id
+  // that is a prefix of a longer one (`call_1` vs `call_10`) would otherwise
+  // swallow the longer match and silently drop that reference from the index.
+  const pattern = new RegExp(
+    [...unique]
+      .sort((left, right) => right.length - left.length)
+      .map(escapeRegex)
+      .join("|"),
+    "g",
+  );
 
   for (const item of orderedParts) {
     if (!item || !Number.isFinite(item.order) || item.order <= startOrderExclusive) continue;
@@ -403,7 +426,7 @@ function sameValue(left, right) {
   return Object.is(left, right);
 }
 
-function validateStructure(before, after, appliedIds, field, replacements) {
+function validateStructure(before, after, appliedIds, field, replacements, locations = null) {
   const failures = [];
   if (before.length !== after.length) failures.push("message_count");
 
@@ -441,8 +464,22 @@ function validateStructure(before, after, appliedIds, field, replacements) {
     for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
       const beforePart = beforeParts[partIndex];
       const afterPart = afterParts[partIndex];
+      // Only the recorded location is the decision target. A part that merely
+      // repeats the same call id is not touched on purpose, so it must not be
+      // reported as an un-cloned target.
+      const located =
+        locations && typeof locations.get === "function"
+          ? locations.get(beforePart?.callID)
+          : null;
+      const isTarget =
+        beforePart?.type === TOOL_PART &&
+        typeof beforePart.callID === "string" &&
+        appliedIds.has(beforePart.callID) &&
+        (!located ||
+          (located.messageIndex === messageIndex && located.partIndex === partIndex));
+
       if (beforePart === afterPart) {
-        if (beforePart?.type === TOOL_PART && appliedIds.has(beforePart.callID)) {
+        if (isTarget) {
           failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
         }
         continue;
@@ -454,7 +491,7 @@ function validateStructure(before, after, appliedIds, field, replacements) {
         beforePart.type !== TOOL_PART ||
         afterPart.type !== TOOL_PART ||
         beforePart.callID !== afterPart.callID ||
-        !appliedIds.has(beforePart.callID)
+        !isTarget
       ) {
         failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
         continue;
@@ -587,7 +624,14 @@ function applyFieldDecisions(messages, decisions, locations, field) {
     return { messages, changed: false, applied, dropped, validation: null };
   }
 
-  const validation = validateStructure(messages, result, appliedIds, field, replacements);
+  const validation = validateStructure(
+    messages,
+    result,
+    appliedIds,
+    field,
+    replacements,
+    locations,
+  );
   if (!validation.ok) {
     return {
       messages,
@@ -621,7 +665,7 @@ export function applyDecisions(messages, decisions, locations, placeholder) {
  * replaces it) and `state.input` (when the decision redacts it) may differ on
  * target parts; every other field must be unchanged.
  */
-function validateErrorStructure(before, after, appliedIds, changes) {
+function validateErrorStructure(before, after, appliedIds, changes, locations = null) {
   const failures = [];
   if (before.length !== after.length) failures.push("message_count");
 
@@ -650,10 +694,16 @@ function validateErrorStructure(before, after, appliedIds, changes) {
     for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
       const beforePart = beforeParts[partIndex];
       const afterPart = afterParts[partIndex];
+      const located =
+        locations && typeof locations.get === "function"
+          ? locations.get(beforePart?.callID)
+          : null;
       const isTarget =
         beforePart?.type === TOOL_PART &&
         typeof beforePart.callID === "string" &&
-        appliedIds.has(beforePart.callID);
+        appliedIds.has(beforePart.callID) &&
+        (!located ||
+          (located.messageIndex === messageIndex && located.partIndex === partIndex));
 
       if (beforePart === afterPart) {
         if (isTarget) failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
@@ -666,7 +716,7 @@ function validateErrorStructure(before, after, appliedIds, changes) {
         beforePart.type !== TOOL_PART ||
         afterPart.type !== TOOL_PART ||
         beforePart.callID !== afterPart.callID ||
-        !appliedIds.has(beforePart.callID)
+        !isTarget
       ) {
         failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
         continue;
@@ -846,7 +896,7 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
     return { messages, changed: false, applied, dropped, validation: null };
   }
 
-  const validation = validateErrorStructure(messages, result, appliedIds, changes);
+  const validation = validateErrorStructure(messages, result, appliedIds, changes, locations);
   if (!validation.ok) {
     return { messages, changed: false, applied: [], dropped, validation };
   }
@@ -861,7 +911,7 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
  * field — status, title, metadata, time, attachments, callID, tool, message
  * identity, message/part counts — must be byte-for-byte unchanged.
  */
-function validateSupersedeStructure(before, after, appliedIds, redactions) {
+function validateSupersedeStructure(before, after, appliedIds, redactions, locations = null) {
   const failures = [];
   if (before.length !== after.length) failures.push("message_count");
 
@@ -890,10 +940,16 @@ function validateSupersedeStructure(before, after, appliedIds, redactions) {
     for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
       const beforePart = beforeParts[partIndex];
       const afterPart = afterParts[partIndex];
+      const located =
+        locations && typeof locations.get === "function"
+          ? locations.get(beforePart?.callID)
+          : null;
       const isTarget =
         beforePart?.type === TOOL_PART &&
         typeof beforePart.callID === "string" &&
-        appliedIds.has(beforePart.callID);
+        appliedIds.has(beforePart.callID) &&
+        (!located ||
+          (located.messageIndex === messageIndex && located.partIndex === partIndex));
 
       if (beforePart === afterPart) {
         if (isTarget) failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
@@ -906,7 +962,7 @@ function validateSupersedeStructure(before, after, appliedIds, redactions) {
         beforePart.type !== TOOL_PART ||
         afterPart.type !== TOOL_PART ||
         beforePart.callID !== afterPart.callID ||
-        !appliedIds.has(beforePart.callID)
+        !isTarget
       ) {
         failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
         continue;
@@ -1052,7 +1108,7 @@ export function applySupersedeWriteDecisions(messages, decisions, locations) {
     return { messages, changed: false, applied, dropped, validation: null };
   }
 
-  const validation = validateSupersedeStructure(messages, result, appliedIds, redactions);
+  const validation = validateSupersedeStructure(messages, result, appliedIds, redactions, locations);
   if (!validation.ok) {
     return { messages, changed: false, applied: [], dropped, validation };
   }
@@ -1253,6 +1309,7 @@ export function transformMessages(messages, config = {}) {
   const errorPlan = planErrorPurge(extraction.records, {
     ...errorPurgeConfig,
     enabled: errorPurgeEnabled,
+    extraBarrierOrders: extraction.unaddressableOrders,
     readOnlyTools: config.tools,
     mutationTools: config.mutationTools,
     writeTools: supersedeConfig.writeTools ?? DEFAULT_WRITE_TOOLS,
@@ -1262,6 +1319,7 @@ export function transformMessages(messages, config = {}) {
   const supersedePlan = planSupersedeWrites(extraction.records, {
     ...supersedeConfig,
     enabled: supersedeEnabled,
+    extraBarrierOrders: extraction.unaddressableOrders,
     mutationTools: config.mutationTools,
     readOnlyTools: config.tools,
     protectedTools: config.protectedTools,

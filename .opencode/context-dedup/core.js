@@ -359,11 +359,17 @@ function collectPathArgs(target, value) {
 }
 
 /**
- * Every file path a tool record refers to, in raw (unresolved) form.
+ * Every file path a tool record states in its structured arguments, in raw
+ * (unresolved) form.
  *
  * Covers the OpenCode and V2 shapes the reference implementation protects:
  * direct `filePath`/`path`, `multiedit`'s nested `edits[]`, `apply_patch`'s
  * `patchText`, and V2 code-mode nested `metadata.toolCalls`.
+ *
+ * Shell commands are deliberately not parsed: a path quoted inside
+ * `bash.command` is not extracted, so `protectedFilePatterns` cannot protect a
+ * file that is only touched through `bash` (protect the tool with
+ * `protectedTools` instead).
  */
 export function recordFilePaths(record) {
   const paths = [];

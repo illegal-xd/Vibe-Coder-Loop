@@ -103,6 +103,46 @@ const TRUNCATION_HINTS = [
   "… show more",
 ];
 
+/** The runtime's own end-of-file notice, emitted only when the read reached EOF. */
+const EOF_NOTICE_RE = /\(End of file - total (\d+) lines\)\s*$/;
+
+/** One runtime metadata line (`<path>`, `<type>`, `<file>`, `<content>`). */
+const HEADER_LINE_RE = /\s*<(?:path|type|file|content)\b[^>]*>[^\n]*(?:\n|$)/iy;
+
+function isSpaceCode(code) {
+  return code === 32 || code === 10 || code === 13 || code === 9;
+}
+
+/**
+ * Content lines that precede an end-of-file notice.
+ *
+ * The runtime prefixes its structured metadata lines (`<path>`, `<type>`, ...);
+ * they are dropped so the count can be compared with the notice's own total.
+ * Counting (rather than trusting the notice alone) is what stops a truncated
+ * read — or a file whose last line merely looks like the notice — from being
+ * accepted as complete. Written index-first: the check runs on every read, so
+ * it must not copy the output.
+ */
+function contentLineCount(output, noticeIndex) {
+  let start = 0;
+  for (let guard = 0; guard < 4; guard += 1) {
+    HEADER_LINE_RE.lastIndex = start;
+    const match = HEADER_LINE_RE.exec(output);
+    if (!match || match.index !== start || match[0].length === 0) break;
+    start = HEADER_LINE_RE.lastIndex;
+    if (start >= noticeIndex) return 0;
+  }
+  let end = noticeIndex;
+  while (end > start && isSpaceCode(output.charCodeAt(end - 1))) end -= 1;
+  if (end <= start) return 0;
+  let count = 1;
+  for (let index = output.indexOf("\n", start); index !== -1 && index < end; ) {
+    count += 1;
+    index = output.indexOf("\n", index + 1);
+  }
+  return count;
+}
+
 function asStringSet(list) {
   const set = new Set();
   if (Array.isArray(list)) {
@@ -118,6 +158,19 @@ function normalizeOptions(config = {}) {
   const writeTools = asStringSet(config.writeTools ?? DEFAULT_WRITE_TOOLS);
   const readTools = asStringSet(config.readTools ?? DEFAULT_SUPERSEDE_READ_TOOLS);
   const readOnlyTools = asStringSet(config.readOnlyTools ?? DEFAULT_READ_ONLY_TOOLS);
+  // Parts the adapter could not address (repeated call id) still count as
+  // potential mutations, unless they are a configured read-only tool.
+  const extraBarrierOrders = Array.isArray(config.extraBarrierOrders)
+    ? config.extraBarrierOrders
+        .filter(
+          (item) =>
+            item &&
+            Number.isFinite(item.order) &&
+            !readTools.has(item.tool) &&
+            !readOnlyTools.has(item.tool),
+        )
+        .map((item) => item.order)
+    : [];
   const protectedTools = Array.isArray(config.protectedTools)
     ? config.protectedTools.filter((tool) => typeof tool === "string" && tool.trim().length > 0)
     : [];
@@ -139,6 +192,7 @@ function normalizeOptions(config = {}) {
     allowOrderFallback: config.allowOrderFallback === true,
     protectedTools,
     protectedFilePatterns,
+    extraBarrierOrders,
   };
 }
 
@@ -323,7 +377,10 @@ function readLineRange(metadata) {
  * evidence, in this order:
  *   1. `metadata.truncated === false` for a read that started at line 1;
  *   2. `metadata.display` range covering `[1, totalLines]`;
- *   3. legacy records that carry neither offset nor limit.
+ *   3. the runtime's own end-of-file notice for a read that started at line 1,
+ *      accepted only when the reported total fits inside the read's `limit`
+ *      (a capped read must never be read as complete);
+ *   4. legacy records that carry neither offset nor limit.
  * Anything weaker is treated as incomplete and never supersedes a write.
  */
 function inspectRead(record, options) {
@@ -367,6 +424,12 @@ function inspectRead(record, options) {
     }
   }
 
+  // A read that returned no content — only the runtime's header lines — proves
+  // nothing about the file, so it can never stand in for a write's payload.
+  if (typeof output !== "string" || contentLineCount(output, output.length) === 0) {
+    return { full: false, reason: "read_unverified" };
+  }
+
   // Proof 1: the runtime explicitly reports that the read was not truncated.
   // Combined with the offset <= 1 check above, the read covered the whole file
   // even though the runtime also stamped a `limit`.
@@ -382,11 +445,40 @@ function inspectRead(record, options) {
     return { full: false, reason: "read_partial_range" };
   }
 
+  const startsAtBeginning =
+    rawOffset === undefined || rawOffset === null || Number(rawOffset) <= 1;
+
+  // Proof 3: the runtime's end-of-file notice. It is only trusted for a read
+  // that started at line 1, when the text actually returned agrees with the
+  // claimed total, and when that total fits inside the read's own `limit`.
+  if (startsAtBeginning && typeof output === "string") {
+    const notice = output.trimEnd().match(EOF_NOTICE_RE);
+    if (notice) {
+      const totalLines = Number(notice[1]);
+      const linesRead = contentLineCount(output, notice.index);
+      // The notice must describe exactly the text that was returned. A strict
+      // count matters: a tolerance window is itself forgeable by content that
+      // ends with a look-alike notice one line early.
+      if (
+        !Number.isFinite(totalLines) ||
+        totalLines <= 0 ||
+        linesRead === 0 ||
+        linesRead !== totalLines
+      ) {
+        return { full: false, reason: "read_unverified" };
+      }
+      const cap =
+        limit === undefined || limit === null ? Number.POSITIVE_INFINITY : Number(limit);
+      if (totalLines <= cap) {
+        return { full: true, reason: "" };
+      }
+      return { full: false, reason: "read_limited" };
+    }
+  }
+
   // Legacy fallback: no explicit slice. Offset 0/1 is the beginning of the
   // file; a bare `limit` without EOF proof stays conservative because it may
   // be a real cap.
-  const startsAtBeginning =
-    rawOffset === undefined || rawOffset === null || Number(rawOffset) <= 1;
   if (startsAtBeginning && (limit === undefined || limit === null)) {
     return { full: true, reason: "" };
   }
@@ -446,7 +538,12 @@ function buildBarrierTimeline(records, options) {
     if (collectBarriers) barrierOrders.push(record.order);
   }
 
-  if (collectBarriers) barrierOrders.sort((left, right) => left - right);
+  if (collectBarriers) {
+    for (const order of options.extraBarrierOrders ?? []) {
+      barrierOrders.push(order);
+    }
+    barrierOrders.sort((left, right) => left - right);
+  }
   return { barrierOrders, confirmedWrites, identityByOrder, invalidRecord };
 }
 
@@ -613,9 +710,10 @@ export function planSupersedeWrites(records, config = {}) {
     }
   }
 
-  // Eligible = confirmed writes with a resolvable canonical file identity.
-  // Candidate = eligible write whose file identity also has an accepted full
-  // read (the version relation is checked later, per read).
+  // Funnel note: `candidateCount` is the *eligible* count (every confirmed
+  // write with a resolvable identity, matching docs/context-dedup.md);
+  // `fileMatchCount` is the narrower "has an accepted full read" step, and
+  // `prunableCount` mirrors it for readers that expect the v2 name.
   stats.candidateCount = 0;
   for (const [identity, list] of writesByFile.entries()) {
     stats.candidateCount += list.length;

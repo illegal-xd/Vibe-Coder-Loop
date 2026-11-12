@@ -258,6 +258,13 @@ function normalizeOptions(config = {}) {
   )
     ? config.shellFailureDetection
     : DEFAULT_SHELL_FAILURE_DETECTION;
+  // Orders of parts the adapter could not address (a repeated call id). A
+  // read-only one cannot change state, so only the others become barriers.
+  const extraBarrierOrders = Array.isArray(config.extraBarrierOrders)
+    ? config.extraBarrierOrders
+        .filter((item) => item && Number.isFinite(item.order) && !readOnlyTools.has(item.tool))
+        .map((item) => item.order)
+    : [];
 
   return {
     enabled,
@@ -291,6 +298,7 @@ function normalizeOptions(config = {}) {
     staleInputAfterTurns,
     shellExitReliable,
     shellFailureDetection,
+    extraBarrierOrders,
     protectedTools,
     protectedFilePatterns,
   };
@@ -418,6 +426,10 @@ function buildBarrierTimeline(records, options) {
       continue;
     }
     stateChangeOrders.push(record.order);
+  }
+  stateChangeOrders.sort((left, right) => left - right);
+  for (const order of options.extraBarrierOrders ?? []) {
+    stateChangeOrders.push(order);
   }
   stateChangeOrders.sort((left, right) => left - right);
   return { stateChangeOrders, ordersBySignature, invalidRecord };
@@ -625,12 +637,44 @@ export function planErrorPurge(records, config = {}) {
   // Bounded by the tools that actually have a confirmed error.
   const successOrdersByTool = new Map();
 
+  /**
+   * Register a record's operation signature so `barrierReason` can subtract
+   * retries of the candidate's own command. `ambiguous` / `unverified_shell`
+   * records never become candidates, but they are still barriers, so they must
+   * be registered too: otherwise one retry whose exit status is unproven makes
+   * an unrelated "intervening state change" out of the candidate's own retry.
+   */
+  const registerSignature = (record) => {
+    if (
+      !Number.isFinite(record.order) ||
+      !isPlainObject(record.args) ||
+      !record.env ||
+      typeof record.env.cwd !== "string" ||
+      record.env.cwd.length === 0
+    ) {
+      return "";
+    }
+    let signature = "";
+    try {
+      signature = buildOperationSignature(record);
+    } catch {
+      return "";
+    }
+    if (signature && !options.readOnlyTools.has(record.tool)) {
+      const list = timeline.ordersBySignature.get(signature);
+      if (list) list.push(record.order);
+      else timeline.ordersBySignature.set(signature, [record.order]);
+    }
+    return signature;
+  };
+
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     const kind = classifications[index];
     if (kind === "invalid") continue;
-    if (kind === "unverified_shell") continue;
-    if (kind === "ambiguous") {
+    if (kind === "unverified_shell" || kind === "ambiguous") {
+      if (candidateTools.has(record.tool)) registerSignature(record);
+      if (kind === "unverified_shell") continue;
       stats.ambiguousResultCount += 1;
       continue;
     }
@@ -645,25 +689,7 @@ export function planErrorPurge(records, config = {}) {
     }
     if (!candidateTools.has(record.tool)) continue;
 
-    let signature = "";
-    if (
-      Number.isFinite(record.order) &&
-      isPlainObject(record.args) &&
-      record.env &&
-      typeof record.env.cwd === "string" &&
-      record.env.cwd.length > 0
-    ) {
-      try {
-        signature = buildOperationSignature(record);
-      } catch {
-        signature = "";
-      }
-      if (signature && !options.readOnlyTools.has(record.tool)) {
-        const list = timeline.ordersBySignature.get(signature);
-        if (list) list.push(record.order);
-        else timeline.ordersBySignature.set(signature, [record.order]);
-      }
-    }
+    const signature = registerSignature(record);
 
     if (kind === "error") {
       const source = isShellExitError(record) ? { field: "output" } : undefined;

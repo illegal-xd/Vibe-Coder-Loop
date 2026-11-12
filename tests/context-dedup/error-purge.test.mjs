@@ -608,6 +608,24 @@ test("repeated identical shell failures keep the newest output", () => {
   assert.equal(decisions[0].kind, "duplicate_failure");
 });
 
+test("an ambiguous retry of the same command does not block supersession", () => {
+  // The retry has exit 0 but failure-looking text, so it is classified
+  // `ambiguous`: a barrier, but the candidate's own retry and therefore not an
+  // unrelated state change.
+  const shell = (id, order, output, exit) =>
+    successRecord({ id, order, output, metadata: { exit } });
+
+  const { decisions } = planErrorPurge([
+    shell("f1", 1, LONG_ERROR, 1),
+    shell("a1", 3, `npm ERR! build failed\n${LONG_ERROR}`, 0),
+    shell("s1", 5, "all tests passed", 0),
+  ]);
+
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].id, "f1");
+  assert.equal(decisions[0].kind, "superseded_by_success");
+});
+
 test("cancelled shell calls are not shell exit failures", () => {
   const { decisions, stats } = planErrorPurge([
     successRecord({
