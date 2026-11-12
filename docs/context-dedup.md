@@ -433,7 +433,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `slimEdit.enabled` | Slim Edit 总开关 | `true` |
 | `slimEdit.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `slimEdit.toolDescriptions` | 压缩内置工具描述 | `true` |
-| `slimEdit.compactRead` | 缩短 read 路径、去掉 type/footer | `true` |
+| `slimEdit.compactRead` | 缩短 read 路径、去掉 `<type>` 行；**保留 EOF footer**（Supersede Writes 的完整读取证据） | `true` |
 | `slimEdit.lineRangeEdit` | 允许 `oldString: "55-64"` 展开为真实行 | `true` |
 | `log.enabled` | 关闭日志 | `true` |
 | `log.onlyWhenActive` | 只在有候选/变更/错误时写日志 | `true` |
@@ -493,7 +493,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | 策略键 | 扫描对象 | 可裁剪候选 | 实际变更 |
 |---|---|---|---|
 | `tool_descriptions` | 每次 `tool.definition` 调用 | 描述与精简版不同且收益为正 | 描述已被替换；同一请求内重复下发的定义按 `duplicate_definition` 只计一次（跨请求仍按请求重复计） |
-| `compact_read` | 每次 `read` 结果 | 路径/type/footer 至少一项可缩短 | 输出字符串确实变短 |
+| `compact_read` | 每次 `read` 结果 | 路径 / `<type>` 行至少一项可缩短（footer 不参与压缩） | 输出字符串确实变短 |
 | `line_range_edit` | 每次 `edit` 调用 | `oldString` 是合法行区间且文件可读 | `oldString` 已展开为真实行 |
 
 `removed_tokens` 对 `tool_descriptions` / `compact_read` 是提示词侧估算节省；对 `line_range_edit` 是模型原本需要生成的 `oldString` 文本与行区间标记之间的估算差，均不是账单实际节省量。
@@ -581,7 +581,7 @@ node --test tests/context-dedup/*.test.mjs
 - Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；completed shell exit 不可信（默认不作 superseder）；shell 硬失败文本（默认歧义、opt-in 确认错误）；后续失败；缺失/畸形关联。
 - Supersede Writes 正向：写后完整读取；连续写入后统一覆盖；跨 user turn 默认允许；相对/绝对路径归一；预览与独立开关。
 - Supersede Writes 负向：写入失败/超时/pending；重复写入后新写入保留；读取 A 不清理 B；同名不同目录/不同 workspace；行范围/offset/limit/截断/空输出/读取失败；读取早于写入或与写入重叠；并发写入；广义变更屏障；引用守卫；路径无法解析；净收益不足；二次执行幂等；状态不一致回退。
-- Slim Edit：工具描述压缩、read 路径/footer 压缩、行区间展开、字面匹配优先、预览不修改、独立开关，以及三个 tool hook 的统计归因到 usage 记录。
+- Slim Edit：工具描述压缩、read 路径与 `<type>` 行压缩（footer 保留）、行区间展开、字面匹配优先、预览不修改、独立开关，以及三个 tool hook 的统计归因到 usage 记录。
 - 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；三条消息策略同请求独立生效；插件 hook 就地应用；日志不落错误正文或文件内容。
 
 环境契约测试读取本机安装的 `@opencode-ai/plugin` 与 SDK 类型，断言 hook 与 `ToolPart` 字段存在；未安装类型时跳过，不伪造通过。
@@ -939,7 +939,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 同一文件的中间写入会与更早写入一起被后续完整读取覆盖；这是预期行为（读取代表最终状态），但不是区间级 Supersede。
 - 未实现区间级上下文追踪；部分读取一律不清理整文件写上下文。
 - 只支持当前 `{ info, parts }` / `ToolPart` 结构；若宿主改成独立 tool-role 消息，会安全 no-op。
-- Slim Edit 的工具描述压缩只覆盖 `slim-edit.js` 中列出的工具 ID；未知工具或改版描述保持原样。`compactRead` 依赖 `read` 输出中的 `<path>` / `<type>` / footer 结构，格式变化时安全 no-op。`lineRangeEdit` 在文件不可读、字面 `oldString` 已存在、行号越界或写入只读时保留原参数。
+- Slim Edit 的工具描述压缩只覆盖 `slim-edit.js` 中列出的工具 ID；未知工具或改版描述保持原样。`compactRead` 依赖 `read` 输出中的 `<path>` / `<type>` 结构，格式变化时安全 no-op；它**不删除**末尾的 `(End of file - total N lines)` footer —— 该行是 Supersede Writes 在没有结构化 metadata 时的唯一完整读取证据，删掉会让同一次读取无法再作为 superseder。`lineRangeEdit` 在文件不可读、字面 `oldString` 已存在、行号越界或写入只读时保留原参数。
 - Slim Edit 的行区间节省是对模型原本需要生成的 `oldString` 文本做字符加权估算，不是 provider 计费差额；`total_removed_tokens` 因而不等同于提示词实际缩减量。
 - 没有真实 tokenizer；所有 token 节省都是估算。Token 用量记录的 `context_estimates` / `pruning` 估算同样使用 `char_weight_v1` 启发式，未用真实 DeepSeek 用量校准。
 - 卡片的两栏分组与缓存加权都是**展示层近似**：分组依赖 `scope`（旧记录回退到规范映射），缓存加权假设“被裁掉的 token 与整请求同比例落在缓存段”，并按固定 `0.1×` 折算缓存读价格；provider 折扣不同或裁剪对象明显偏离该比例时，账单口径会偏离实际。

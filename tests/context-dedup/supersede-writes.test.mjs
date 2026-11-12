@@ -9,6 +9,10 @@ import {
   redactWriteInput,
 } from "../../.opencode/context-dedup/supersede-writes.js";
 import { toolRecord } from "./helpers.mjs";
+import {
+  compactReadOutput,
+  createSlimEditState,
+} from "../../.opencode/context-dedup/slim-edit.js";
 
 const BASE_CONFIG = resolveConfig({}, {});
 const LONG_CONTENT = "export const value = 42;\n".repeat(120);
@@ -561,6 +565,41 @@ test("the runtime's end-of-file notice proves a full read without metadata", () 
   ]);
   assert.equal(capped.decisions.length, 0);
   assert.equal(capped.stats.readRejectedReasons.read_limited, 1);
+});
+
+test("a read compacted by Slim Edit still proves a full read", () => {
+  // Slim Edit runs on the tool result before it is persisted, so its rewrite is
+  // what the next request sees. Stripping the footer there would disqualify the
+  // read as a superseder on hosts without structured truncation metadata.
+  const raw = `<path>/repo/src/a.ts</path>\n<type>file</type>\n${READ_OUTPUT}\n(End of file - total 40 lines)\n`;
+  const state = createSlimEditState({
+    enabled: true,
+    preview: false,
+    toolDescriptions: false,
+    compactRead: true,
+    lineRangeEdit: false,
+  });
+  const compacted = { output: raw };
+  compactReadOutput("/repo", { tool: "read" }, compacted, state, {
+    enabled: true,
+    preview: false,
+    compactRead: true,
+  });
+
+  assert.equal(compacted.output.includes("<type>file</type>"), false);
+  assert.equal(compacted.output.includes("(End of file - total 40 lines)"), true);
+
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: compacted.output,
+      args: { filePath: "src/a.ts", offset: 1, limit: 2000 },
+    }),
+  ]);
+  assert.equal(stats.readRejectedReasons.read_limited, undefined);
+  assert.equal(decisions.length, 1);
 });
 
 test("an end-of-file notice that disagrees with the returned text proves nothing", () => {

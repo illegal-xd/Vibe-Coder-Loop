@@ -84,7 +84,7 @@ test("tool descriptions are replaced and charged once per request round", () => 
   assert.ok(nextRound.toolDescriptions.tokenSavingsEstimated > 0);
 });
 
-test("compact read shortens the path and drops type/footer boilerplate", () => {
+test("compact read shortens the path and drops the type line but keeps the EOF footer", () => {
   const state = createSlimEditState(slimConfig());
   const directory = "/repo";
   const output = {
@@ -102,7 +102,7 @@ test("compact read shortens the path and drops type/footer boilerplate", () => {
   compactReadOutput(directory, { tool: "read" }, output, state, slimConfig());
   assert.equal(
     output.output,
-    ["<path>src/app.js</path>", "", "const value = 1", ""].join("\n"),
+    ["<path>src/app.js</path>", "", "const value = 1", "", "(End of file - total 1 lines)", ""].join("\n"),
   );
   assert.equal(state.compactRead.changedCount, 1);
   assert.ok(state.compactRead.tokenSavingsEstimated > 0);

@@ -327,7 +327,10 @@ export function compactReadOutput(directory, input, output, state, config = DEFA
 
   let text = before.replace(`<path>${rawPath}</path>`, () => `<path>${relative}</path>`);
   text = text.replace("<type>file</type>\n", "");
-  text = text.replace(/\n\n\(End of file - total \d+ lines\)\n/, "\n");
+  // The `(End of file - total N lines)` footer is deliberately kept: Supersede
+  // Writes uses it as its end-of-file proof (`inspectRead`), so stripping it
+  // here would silently disqualify every compacted read as a superseder on
+  // hosts that report no structured `truncated`/`display` metadata.
 
   if (text === before) {
     skip(stats, "no_change");
