@@ -263,18 +263,31 @@ test("truncated, empty, failed, and metadata-only reads are rejected", () => {
   }
 });
 
-test("missing or malformed timestamps prevent supersede", () => {
-  const { decisions } = plan([
+test("missing timestamps use order fallback; malformed intervals never supersede", () => {
+  const missingWriteTime = plan([
     writeRec({ id: "w1", order: 1, time: null }),
     readRec({ id: "r1", order: 2 }),
   ]);
-  assert.equal(decisions.length, 0);
+  assert.equal(missingWriteTime.decisions.length, 1);
+  assert.equal(missingWriteTime.stats.orderFallbackCount, 1);
 
   const missingReadTime = plan([
     writeRec({ id: "w1", order: 1 }),
     readRec({ id: "r1", order: 2, time: null }),
   ]);
-  assert.equal(missingReadTime.decisions.length, 0);
+  assert.equal(missingReadTime.decisions.length, 1);
+  assert.equal(missingReadTime.stats.orderFallbackCount, 1);
+
+  // Explicitly disabling the fallback restores the strict behavior.
+  const strict = plan(
+    [
+      writeRec({ id: "w1", order: 1, time: null }),
+      readRec({ id: "r1", order: 2 }),
+    ],
+    { allowOrderFallback: false },
+  );
+  assert.equal(strict.decisions.length, 0);
+  assert.equal(strict.stats.orderFallbackAvailableCount, 1);
 
   const invalidWriteInterval = plan([
     writeRec({ id: "w1", order: 1, time: { start: 10, end: 5 } }),

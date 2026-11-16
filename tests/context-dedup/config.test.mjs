@@ -16,7 +16,7 @@ test("defaults are safe and explicit", () => {
   assert.equal(config.protectCallIdReferences, true);
   assert.deepEqual(config.deduplication, {
     enabled: true,
-    tools: ["read", "grep", "glob", "bash"],
+    tools: ["read", "grep", "glob"],
     collapseReadWindows: true,
   });
   assert.equal(config.errorPurge.enabled, true);
@@ -30,7 +30,9 @@ test("defaults are safe and explicit", () => {
   // The runtime reports a real exit status, so completed shell calls are
   // success/failure evidence instead of being ignored.
   assert.equal(config.errorPurge.shellExitReliable, true);
-  assert.equal(config.errorPurge.shellFailureDetection, "ambiguous");
+  // Shell output error patterns are treated as confirmed failures by default
+  // (inspection-only commands are excluded from text detection).
+  assert.equal(config.errorPurge.shellFailureDetection, "error");
   // Supersede Writes: non-mutating tools and inspection-only shell chains are
   // not barriers by default; both can be turned off explicitly.
   assert.deepEqual(config.supersedeWrites.barrierExemptTools, [
@@ -220,14 +222,14 @@ test("error purge input options validate with a turn-based default", () => {
   );
 });
 
-test("supersedeWrites exposes the order fallback switch (default off)", () => {
-  assert.equal(resolveConfig({}, {}).supersedeWrites.allowOrderFallback, false);
+test("supersedeWrites uses order fallback by default and can be disabled", () => {
+  assert.equal(resolveConfig({}, {}).supersedeWrites.allowOrderFallback, true);
 
-  const enabled = resolveConfig(
-    { supersedeWrites: { allowOrderFallback: true } },
+  const disabled = resolveConfig(
+    { supersedeWrites: { allowOrderFallback: false } },
     {},
   );
-  assert.equal(enabled.supersedeWrites.allowOrderFallback, true);
+  assert.equal(disabled.supersedeWrites.allowOrderFallback, false);
 
   assert.throws(
     () => resolveConfig({ supersedeWrites: { allowOrderFallback: "yes" } }, {}),

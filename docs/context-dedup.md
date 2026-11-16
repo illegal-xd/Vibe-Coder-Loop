@@ -71,7 +71,7 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 候选必须同时满足：
 
 1. ToolPart 有非空 `callID` / `tool`；
-2. 工具名在 `deduplication.tools` 白名单（默认 `read` / `grep` / `glob` / `bash`）；
+2. 工具名在 `deduplication.tools` 白名单（默认 `read` / `grep` / `glob`；`bash` 需显式加入）；
 3. `state.status === "completed"`；
 4. `state.output` 非空且不是占位文本；
 5. shell 调用（默认 `bash`）的 `metadata` 不含失败信号（非零 `exit` 等），失败输出属于 Error Purge；
@@ -91,7 +91,7 @@ OpenCode 的 `read` 在长文件上会带 `offset`/`limit`，同一文件被分�
 
 1. 仅 `read`，且能确定目标文件与行区间；无 `limit` 时只接受运行时自带的 `(End of file - total N lines)` 作为“读到末尾”的证据，否则不参与；
 2. 后一次读取的区间**严格覆盖**前一次（起点不更晚、终点不更早，且区间不完全相同）；
-3. 两次读取之间没有非只读工具（`read`/`grep`/`glob` 之外）执行——文件可能已变，不做跨版本归并；
+3. 两次读取之间没有会修改文件的调用执行：`read`/`grep`/`glob` 与屏障豁免工具（`todowrite`/`question`/`webfetch`/`websearch`/`list`）可直接穿过；其余调用（含 `bash`、写工具）文件可能已变，不做跨版本归并；
 4. 估算被裁输出 token 大于占位符。
 
 命中后裁剪较早的分片、保留覆盖更大的后一次；`skippedReasons.read_window_subsumed` 与 `readWindowCollapseCount` 观测命中，重复目标聚合到 `repeatedTargets`（Top 5）。
@@ -110,7 +110,7 @@ OpenCode 的 `read` 在长文件上会带 `offset`/`limit`，同一文件被分�
 
 以下情况**不是**确认错误，默认保留：
 
-- `status === "completed"`，即使 `output` 含 `error` / `failed` / `warning`；
+- `status === "completed"`，即使 `output` 含 `error` / `failed` / `warning`——**例外**：shell 工具的构建/测试/脚本类命令在缺少结构化退出码时，命中 `DEFAULT_SHELL_FAILURE_PATTERNS` 的硬失败文本按 `shellFailureDetection` 处理（默认 `error` 即确认失败；`cat`/`grep`/`git log` 等纯查看命令不参与文本判定）；
 - `status === "error"` 但 `error` 为空或缺失；
 - `status === "pending"` / `"running"` / 未知；
 - 取消/中止标记（`metadata.cancelled/canceled/aborted`），即使退出码非零；
@@ -209,15 +209,15 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 3. **文本识别仍保留为补充**：仅用于没有结构化退出码的宿主。
 
 ```json
-{ "errorPurge": { "shellExitReliable": true, "shellFailureDetection": "ambiguous" } }
+{ "errorPurge": { "shellExitReliable": true, "shellFailureDetection": "error" } }
 ```
 
 - `shellExitReliable`：默认 `true`。设为 `false` 时退回 v1 行为（`completed` shell 既不是成功也不是失败，计入 `unverifiedShellCount`），仅用于会掩盖失败退出码的宿主。
-- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `ambiguous`，只在缺少结构化退出码时补充判断。
+- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `error`，只在缺少结构化退出码时补充判断。
   - `off`：忽略输出文本；
   - `ambiguous`：命中硬失败文本的 shell 记录归为歧义（保留、不作 superseder，计入 `shellFailureCount`）；
-  - `error`：命中时作为确认错误候选，仍需满足 4.3 的全部守卫。
-- 识别只作用于 `bash`（`SHELL_TOOLS`）；`read`/`write` 等结构化工具不按文本猜测失败。
+  - `error`：命中时作为确认错误候选，仍需满足 4.3 的全部守卫（旧默认；配置类错误会逃逸 Error Purge，故改为默认）。
+- 识别只作用于 `bash`（`SHELL_TOOLS`），且**排除纯查看命令**（`cat`/`grep`/`git log`/`ls` 等，复用 `isReadOnlyShellCommand`）：日志内容里的 `Error:` 是数据，不是执行结论；`read`/`write` 等结构化工具同样不按文本猜测失败。
 - `unverifiedShellCount` 与 `shellFailureCount` 分别统计“exit 不可信”和“shell 失败”的记录数，便于判断零裁剪原因。
 
 ## 四·五、Supersede Writes 规则
@@ -350,7 +350,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   "protectedFilePatterns": [],
   "deduplication": {
     "enabled": true,
-    "tools": ["read", "grep", "glob", "bash"],
+    "tools": ["read", "grep", "glob"],
     "collapseReadWindows": true
   },
   "errorPurge": {
@@ -369,7 +369,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "protectReferences": true,
     "minSuccesses": 1,
     "shellExitReliable": true,
-    "shellFailureDetection": "ambiguous"
+    "shellFailureDetection": "error"
   },
   "supersedeWrites": {
     "enabled": true,
@@ -383,7 +383,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "barrierOnBroadMutations": true,
     "protectReferences": true,
     "requireFullRead": true,
-    "allowOrderFallback": false
+    "allowOrderFallback": true
   },
   "slimEdit": {
     "enabled": true,
@@ -411,8 +411,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `preview` | 全局观察模式；Dedup 直接使用，其余策略默认继承 | `false` |
 | `tools` | 只读工具集合，供 Error Purge / Supersede 判定“非变更工具” | `["read","grep","glob"]` |
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
-| `deduplication.tools` | Dedup 白名单（含 `bash`；失败 shell 自动排除） | `["read","grep","glob","bash"]` |
-| `deduplication.collapseReadWindows` | 同一文件的窗口化读取：后一次读取的行区间**严格覆盖**前一次、且其间无写操作时，裁剪前一次（见 3.2） | `true` |
+| `deduplication.tools` | Dedup 白名单（默认不含 `bash`：shell 输出几乎不会逐字节重复，白名单只会增加签名开销；需要时显式加入，失败 shell 仍自动排除） | `["read","grep","glob"]` |
+| `deduplication.collapseReadWindows` | 同一文件的窗口化读取：后一次读取的行区间**严格覆盖**前一次、且其间无写操作时，裁剪前一次；`read`/`grep`/`glob` 与 `barrierExemptTools` 可直接穿过（见 3.2） | `true` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
 | `referenceProtection` | 引用守卫强度：`any` 保留任何后续提及（含散文、日志回显）；`strong` 只保留结构化引用（机器字段中的精确 id 值），散文提及仅计数不拦截。索引按 id 长度**降序**匹配，避免 `call_1` 吞掉 `call_10` 的引用 | `any` |
 | `mutationTools` | Error Purge 视为状态变更的工具集合 | 见上 |
@@ -434,7 +434,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.protectReferences` | 旧错误 callID 被后续引用时保留 | `true` |
 | `errorPurge.minSuccesses` | 需要多少个后续等价成功才 supersede | `1` |
 | `errorPurge.shellExitReliable` | 是否信任 `completed` shell 的 exit（非零即确认失败） | `true` |
-| `errorPurge.shellFailureDetection` | shell 输出硬失败识别：`off` / `ambiguous` / `error` | `ambiguous` |
+| `errorPurge.shellFailureDetection` | shell 输出硬失败识别：`off` / `ambiguous` / `error`；纯查看命令不参与文本判定 | `error` |
 | `supersedeWrites.enabled` | Supersede Writes 独立开关 | `true` |
 | `supersedeWrites.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `supersedeWrites.placeholder` | 写上下文被覆盖时的占位文本 | 见上 |
@@ -446,7 +446,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `supersedeWrites.barrierOnBroadMutations` | 写与读之间出现任何非只读/非确认成功写入的记录时保留 | `true` |
 | `supersedeWrites.protectReferences` | 写 callID 被后续引用时保留 | `true` |
 | `supersedeWrites.requireFullRead` | 只允许完整读取触发覆盖（关闭后风险自负） | `true` |
-| `supersedeWrites.allowOrderFallback` | 运行时缺失 `write.time.end` / `read.time.start` 时改用消息顺序判断先后（证据更弱，命中数记入 `orderFallbackCount`） | `false` |
+| `supersedeWrites.allowOrderFallback` | 运行时缺失 `write.time.end` / `read.time.start` 时改用消息顺序判断先后（证据更弱，命中数记入 `orderFallbackCount`）；设 `false` 要求真实 happens-before | `true` |
 | `slimEdit.enabled` | Slim Edit 总开关 | `true` |
 | `slimEdit.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `slimEdit.toolDescriptions` | 压缩内置工具描述 | `true` |
@@ -956,11 +956,15 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - `errorPurge.preserveAcrossUserTurns`：`true` → `false`（跨轮“失败→修复→成功”可修剪）。
 - `referenceProtection`：**保持 `any`**。评估过改为 `strong`，但 prose 提及常是用户明确要求继续使用某次结果（“use call_x”），改为 strong 会丢失用户仍需要的内容；先用 `referenced_later_text` 计数衡量损失，再决定是否切换。
 - `supersedeWrites.barrierExemptTools` / `barrierExemptShellCommands`：新增，默认开启。
+- `errorPurge.shellFailureDetection`：`ambiguous` → `error`（配置/编译类错误在没有结构化退出码时会逃逸清理）；同时纯查看命令（`cat`/`grep`/`git log` 等）退出文本判定，避免把日志内容当执行结论。
+- `deduplication.tools`：移除默认 `bash`（shell 输出几乎不会逐字节重复，白名单只增加签名开销）；需要时显式加入。
+- `supersedeWrites.allowOrderFallback`：`false` → `true`（宿主普遍不提供时间戳时策略会整体失效）；并发宿主可显式设 `false` 要求真实 happens-before。
+- `errorPurge.preserveAcrossUserTurns` 解析：`!== false` → `=== true`，与 `preserveRepeatedFailuresAcrossUserTurns` 和配置文件默认值对齐；重复失败规则只由自身开关控制。
 
 ### 不修（记录理由）
 
 - **`inspectRead` 的 EOF 严格相等**（`linesRead !== totalLines` 即 `read_unverified`）：放宽容差会引入伪造面——文件内容本身可以以一行仿冒的 EOF 提示结尾。已有 `metadata.truncated === false` 与 `metadata.display` 两条结构化证据作为主路径，保持严格相等。
-- **`allowOrderFallback` 默认 `false`**：仅凭发射顺序无法排除并发调用，放开会用更弱证据换命中率。改为输出 `orderFallbackAvailableCount` 诊断，宿主缺时间戳时可据此显式开启。
+- **`requireFullRead` 关闭后的退化**（`false` 时任何非空读取都算完整读取，包括 `offset > 1` 的窗口读取）：保持默认 `true`，避免部分读取替代整份写入；该开关只在手动配置时生效，文档已标注风险。
 
 ### 新增诊断字段
 
@@ -970,7 +974,7 @@ msg.tokens.cache.read + msg.tokens.cache.write
 
 **已限制/明确不做：**
 
-- 只把 `status === "error"` + 非空 `state.error` 视为确认失败；`completed` 结果即使包含错误文本也不按文本分类。
+- 除 shell 构建/测试/脚本命令的硬失败文本（`shellFailureDetection`，纯查看命令除外）外，只把 `status === "error"` + 非空 `state.error` 视为确认失败；`completed` 的其他结果即使包含错误文本也不按文本分类。
 - `completed` + 结构化失败 metadata 视为歧义并保留，不以它作为 superseder；不尝试解析未知 metadata 语义。
 - 操作等价只做精确签名（工具 + 规范化参数 + cwd/root），不做语义命令归一化。
 - 默认保留“失败 → 修改代码/状态变更 → 成功”的旧错误；需要更激进时设 `preserveOnStateChanges: false`。

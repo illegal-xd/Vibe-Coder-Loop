@@ -6,11 +6,14 @@
  *   ToolPart.state.status === "error" && typeof state.error === "string"
  *
  * It never classifies a completed result as an error just because its output
- * contains words like "error" or "failed". Shell hard-failure detection is an
- * opt-in exception: it defaults to `ambiguous` (never successful, never an
- * error) and only `shellFailureDetection: "error"` treats a match as a
- * confirmed error. Completed shell output is never assumed successful when the
- * host's exit status is unreliable.
+ * contains words like "error" or "failed". Shell hard-failure detection is the
+ * one text-based exception: it is on by default (`shellFailureDetection:
+ * "error"`) for commands whose output is a verdict (builds, tests, scripts),
+ * while inspection-only commands (`cat`, `grep`, `git log`, ...) are excluded
+ * because their output is data. Set `shellFailureDetection: "ambiguous"` to
+ * keep matches as "neither success nor error" (the old default). Completed
+ * shell output is never assumed successful when the host's exit status is
+ * unreliable.
  *
  * An earlier confirmed error is pruned only when:
  * - a later equivalent operation (same tool, canonical args, cwd/root)
@@ -59,6 +62,7 @@ import {
   textTokenUnits,
   validPlaceholder,
 } from "./core.js";
+import { isReadOnlyShellCommand } from "./supersede-writes.js";
 
 export const DEFAULT_ERROR_PLACEHOLDER =
   `${PRUNE_MARKER} Error output omitted: a later equivalent successful ` +
@@ -79,14 +83,15 @@ export const DEFAULT_STALE_INPUT_PLACEHOLDER =
 /** Shell tools whose completed state does not prove success in every host. */
 export const SHELL_TOOLS = Object.freeze(["bash"]);
 
-export const DEFAULT_SHELL_FAILURE_DETECTION = "ambiguous";
+export const DEFAULT_SHELL_FAILURE_DETECTION = "error";
 export const SHELL_FAILURE_DETECTION_MODES = Object.freeze(["off", "ambiguous", "error"]);
 
 /**
  * Conservative hard-failure markers for completed shell output. These are
  * evidence that the call did not succeed; they are never used for formatting
- * or wording. Detection is opt-in as an error (default: ambiguous) because the
- * output is still text, not structured state.
+ * or wording. Matches are treated as confirmed failures by default
+ * (`shellFailureDetection: "error"`), except for inspection-only commands
+ * whose output is data rather than a verdict (see `detectShellFailure`).
  */
 export const DEFAULT_SHELL_FAILURE_PATTERNS = Object.freeze([
   /(?:^|\r?\n)(?:\/bin\/)?(?:ba|z|k|fi)?sh: [^\n]*: command not found(?:\r?\n|$)/,
@@ -286,7 +291,12 @@ function normalizeOptions(config = {}) {
     readOnlyTools,
     writeTools,
     barrierWriteTools: config.barrierWriteTools !== false,
-    preserveAcrossUserTurns: config.preserveAcrossUserTurns !== false,
+    // Rule 1 (a later success supersedes an earlier failure) may cross user
+    // turns by default, matching the config default (false). Set true to
+    // require the strict same-turn guard. Parsed with `=== true` so an omitted
+    // key means "don't preserve", consistent with
+    // `preserveRepeatedFailuresAcrossUserTurns` below and the config file.
+    preserveAcrossUserTurns: config.preserveAcrossUserTurns === true,
     // Rule 2 (repeated identical failures) keeps the newest identical failure,
     // so the error text and its arguments are still present later. Crossing a
     // user turn therefore loses nothing; only Rule 1 needs the turn guard
@@ -354,6 +364,9 @@ function isShellExitError(record) {
 /**
  * Detect a hard shell failure encoded only in output. Only completed shell
  * records are considered; structured errors are handled before this check.
+ * Inspection-only commands (`cat`, `grep`, `git log`, ...) print data, so a
+ * line that looks like an error in a log file is content, not a failed
+ * execution — they are never classified from output text.
  */
 function detectShellFailure(record) {
   if (!record || !isShellTool(record.tool) || record.status !== "completed") {
@@ -361,6 +374,7 @@ function detectShellFailure(record) {
   }
   const output = typeof record.output === "string" ? record.output : "";
   if (!output) return false;
+  if (isReadOnlyShellCommand(record.args?.command)) return false;
   return DEFAULT_SHELL_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
 }
 
@@ -399,6 +413,21 @@ function countBetween(sortedOrders, lowerExclusive, upperExclusive) {
 }
 
 /**
+ * A completed write changed the file even when metadata carries only
+ * diagnostic text (a warning note or an stderr echo). For writes the call
+ * status is the success authority; hard failure fields (exit, timeout,
+ * cancellation) still disqualify it. Without this, a warning on an otherwise
+ * successful write made it look like an unverifiable mutation instead of the
+ * repair action (`barrierReason` depends on this distinction for read-only
+ * candidates).
+ */
+function isVerifiedWriteSuccess(record) {
+  if (!record || record.status !== "completed") return false;
+  if (typeof record.error === "string" && record.error.trim().length > 0) return false;
+  return !hasHardFailureMetadata(record.metadata);
+}
+
+/**
  * Precompute the state-change timeline once. `stateChangeOrders` contains
  * every record that could block a supersession; `ordersBySignature` lets the
  * decision pass subtract retries of the candidate's own operation. This turns
@@ -421,7 +450,7 @@ function buildBarrierTimeline(records, options) {
       continue;
     }
     if (options.readOnlyTools.has(record.tool)) continue;
-    if (options.writeTools.has(record.tool) && isConfirmedSuccess(record)) {
+    if (options.writeTools.has(record.tool) && isVerifiedWriteSuccess(record)) {
       // Kept separately as well: for a read-only candidate a recorded write is
       // the repair action itself (see `barrierReason`), even though it still
       // blocks candidates whose own state depends on the file content.
@@ -872,7 +901,8 @@ export function planErrorPurge(records, config = {}) {
         for (const candidate of group.slice(0, -1)) {
           if (candidate.decided) continue;
           if (
-            options.preserveAcrossUserTurns &&
+            // Rule 2 has its own guard: the kept failure repeats the same
+            // error text, so only an explicit opt-in should block it.
             options.preserveRepeatedFailuresAcrossUserTurns &&
             candidate.userSegment !== keeper.userSegment
           ) {

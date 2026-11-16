@@ -192,16 +192,16 @@ test("supersedeWrites supports allowOrderFallback when time is missing", () => {
     },
   ];
 
-  // Without fallback: missing time preserves the write
-  const strict = planSupersedeWrites(records);
-  assert.equal(strict.decisions.length, 0);
-  assert.equal(strict.stats.skippedReasons.read_not_after_write, 1);
-
-  // With fallback: order (1 < 2) allows supersession
-  const fallback = planSupersedeWrites(records, { allowOrderFallback: true });
+  // By default: missing time falls back to emission order (1 < 2).
+  const fallback = planSupersedeWrites(records);
   assert.equal(fallback.decisions.length, 1);
   assert.equal(fallback.decisions[0].id, "w1");
   assert.equal(fallback.decisions[0].keeperId, "r1");
+
+  // Explicitly disabled: missing time preserves the write.
+  const strict = planSupersedeWrites(records, { allowOrderFallback: false });
+  assert.equal(strict.decisions.length, 0);
+  assert.equal(strict.stats.skippedReasons.read_not_after_write, 1);
 });
 
 // --- success classification: diagnostic text vs explicit success ------------
@@ -297,35 +297,34 @@ function fullRead(overrides = {}) {
   };
 }
 
-test("supersede reports missing timestamps instead of silently pruning nothing", () => {
+test("missing timestamps fall back to emission order by default", () => {
   // Write has no completion time, read has no start time: neither side can
-  // prove happens-before, which is exactly the real-host zero case.
+  // prove happens-before. The default order fallback still supersedes, and the
+  // weaker evidence is counted.
   const plan = planSupersedeWrites([
     timedWrite({ time: { start: 1 } }),
     fullRead({ time: { end: 4 } }),
   ]);
 
-  assert.equal(plan.decisions.length, 0);
+  assert.equal(plan.decisions.length, 1);
   assert.equal(plan.stats.missingWriteEndCount, 1);
   assert.equal(plan.stats.missingReadStartCount, 1);
-  assert.equal(plan.stats.orderFallbackCount, 0);
-  assert.equal(plan.stats.skippedReasons.read_not_after_write, 1);
+  assert.equal(plan.stats.orderFallbackCount, 1);
 });
 
-test("order fallback is opt-in through config and is counted when used", () => {
+test("order fallback can be disabled through config", () => {
   const records = [
     timedWrite({ time: { start: 1 } }),
     fullRead({ time: { start: 3 } }),
   ];
   const config = resolveConfig(
-    { supersedeWrites: { allowOrderFallback: true } },
+    { supersedeWrites: { allowOrderFallback: false } },
     {},
   );
   const plan = planSupersedeWrites(records, config.supersedeWrites);
 
-  assert.equal(plan.decisions.length, 1);
-  assert.equal(plan.decisions[0].id, "w1");
-  assert.equal(plan.stats.orderFallbackCount, 1);
+  assert.equal(plan.decisions.length, 0);
+  assert.equal(plan.stats.orderFallbackCount, 0);
   assert.equal(plan.stats.missingWriteEndCount, 1);
   // The read does carry a start time, so only the write side is missing proof.
   assert.equal(plan.stats.missingReadStartCount, 0);
@@ -504,15 +503,15 @@ test("the adapter wires supersedeWrites.allowOrderFallback end to end", () => {
     assistantMessage({ id: "a2", parentID: "u1", parts: [readPart] }),
   ];
 
-  const strict = transformMessages(messages, resolveConfig({}, {}));
-  assert.equal(strict.changed, false);
-  assert.equal(strict.stats.supersedeWrites.missingWriteEndCount, 1);
-
-  const relaxed = transformMessages(
-    messages,
-    resolveConfig({ supersedeWrites: { allowOrderFallback: true } }, {}),
-  );
+  const relaxed = transformMessages(messages, resolveConfig({}, {}));
   assert.equal(relaxed.changed, true);
   assert.equal(relaxed.stats.supersedeWrites.orderFallbackCount, 1);
   assert.equal(relaxed.stats.supersedeWrites.decisionKinds.superseded_by_read, 1);
+
+  const strict = transformMessages(
+    messages,
+    resolveConfig({ supersedeWrites: { allowOrderFallback: false } }, {}),
+  );
+  assert.equal(strict.changed, false);
+  assert.equal(strict.stats.supersedeWrites.missingWriteEndCount, 1);
 });

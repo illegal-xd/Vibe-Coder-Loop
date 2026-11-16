@@ -37,6 +37,7 @@
  */
 
 import {
+  DEFAULT_BARRIER_EXEMPT_TOOLS,
   DEFAULT_READ_ONLY_TOOLS,
   DEFAULT_WRITE_TOOLS,
   PRUNE_MARKER,
@@ -66,22 +67,9 @@ export { DEFAULT_WRITE_TOOLS };
 /** Tools that can return a file's full current content. grep/glob are partial. */
 export const DEFAULT_SUPERSEDE_READ_TOOLS = Object.freeze(["read"]);
 
-/**
- * Tools that never modify the workspace, so a call to one of them between a
- * write and a read cannot invalidate that read. Without this list, one
- * `todowrite` between a write and its verification read was enough to keep the
- * write's payload forever (`intervening_broad_mutation`).
- *
- * `task` / `skill` are deliberately absent: a sub-agent or skill can write
- * files. Pass `barrierExemptTools: []` to disable the exemption entirely.
- */
-export const DEFAULT_BARRIER_EXEMPT_TOOLS = Object.freeze([
-  "todowrite",
-  "question",
-  "webfetch",
-  "websearch",
-  "list",
-]);
+// Core owns this list (Read Window Collapse needs it too); re-exported here
+// because config.js and callers have always imported it from this module.
+export { DEFAULT_BARRIER_EXEMPT_TOOLS };
 
 /** Shell heads that only print data. `cd`/`echo`/`test` never write files. */
 const READ_ONLY_SHELL_HEADS = new Set([
@@ -302,7 +290,10 @@ function normalizeOptions(config = {}) {
     barrierOnBroadMutations: config.barrierOnBroadMutations !== false,
     protectReferences: config.protectReferences !== false,
     requireFullRead: config.requireFullRead !== false,
-    allowOrderFallback: config.allowOrderFallback === true,
+    // Emission order is the fallback when the host omits timestamps. Default
+    // on: hosts that report no `time.end`/`time.start` would otherwise make
+    // this strategy unreachable; set false to require real happens-before.
+    allowOrderFallback: config.allowOrderFallback !== false,
     protectedTools,
     protectedFilePatterns,
     extraBarrierOrders,
@@ -335,8 +326,8 @@ export function createSupersedeWritesStats() {
     orderFallbackCount: 0,
     // `allowOrderFallback` is off but the records had everything needed for it.
     // A non-zero value with `missingWriteEndCount`/`missingReadStartCount` > 0
-    // means the host omits timestamps and enabling the fallback is the only way
-    // to make this strategy reachable on that host.
+    // means the host omits timestamps; if the fallback is also disabled, it is
+    // the only way to make this strategy reachable on that host.
     orderFallbackAvailableCount: 0,
     // Internal: writes already counted, so one write paired with several reads
     // is not double counted.

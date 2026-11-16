@@ -6,7 +6,8 @@
  *   2. non-mutating tools / read-only shell chains must not block supersession;
  *   3. a read-only candidate's repair write must not block error supersession;
  *   4. a later read covering a larger line window subsumes the earlier one;
- *   5. missing timestamps surface as an actionable diagnostic;
+ *   5. missing timestamps use the order fallback by default and surface as an
+ *      actionable diagnostic when explicitly disabled;
  *   6. no `step-start` part falls back to the user-turn age measure;
  *   7. repeated targets are aggregated for follow-up optimization.
  */
@@ -227,23 +228,43 @@ test("a window without EOF evidence does not participate", () => {
   assert.equal(decisions.length, 0);
 });
 
-test("missing timestamps surface the order-fallback diagnostic", () => {
-  const { stats } = planSupersedeWrites(
+test("missing timestamps fall back to order by default; the diagnostic appears when disabled", () => {
+  const records = [
+    rec({ id: "w1", order: 1, tool: "write", args: { filePath: "a.js", content: LONG }, output: "ok", time: null }),
+    rec({
+      id: "r1",
+      order: 2,
+      tool: "read",
+      args: { filePath: "a.js" },
+      output: "l1\nl2\n(End of file - total 2 lines)",
+      metadata: { truncated: false },
+      time: null,
+    }),
+  ];
+
+  const fallback = planSupersedeWrites(records, { enabled: true });
+  assert.equal(fallback.decisions.length, 1);
+  assert.equal(fallback.stats.orderFallbackCount, 1);
+
+  const strict = planSupersedeWrites(records, { enabled: true, allowOrderFallback: false });
+  assert.equal(strict.decisions.length, 0);
+  assert.equal(strict.stats.orderFallbackAvailableCount, 1);
+});
+
+test("barrier-exempt calls between two reads do not block window collapse", () => {
+  const { decisions, stats } = planDeduplication(
     [
-      rec({ id: "w1", order: 1, tool: "write", args: { filePath: "a.js", content: LONG }, output: "ok", time: null }),
-      rec({
-        id: "r1",
-        order: 2,
-        tool: "read",
-        args: { filePath: "a.js" },
-        output: "l1\nl2\n(End of file - total 2 lines)",
-        metadata: { truncated: false },
-        time: null,
-      }),
+      readRec({ id: "c1", order: 1, args: { filePath: "a.txt", offset: 1, limit: 20 }, output: numberedLines(1, 20) }),
+      rec({ id: "t1", order: 2, tool: "todowrite", args: { todos: [] }, output: "ok" }),
+      readRec({ id: "c2", order: 3, args: { filePath: "a.txt", offset: 1, limit: 40 }, output: numberedLines(1, 40) }),
     ],
-    { enabled: true },
+    { enabled: true, tools: ["read"] },
   );
-  assert.equal(stats.orderFallbackAvailableCount, 1);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["c1"],
+  );
+  assert.equal(stats.readWindowCollapseCount, 1);
 });
 
 test("no step-start part falls back to the user-turn age measure", () => {

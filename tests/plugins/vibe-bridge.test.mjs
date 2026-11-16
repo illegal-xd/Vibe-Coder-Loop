@@ -245,6 +245,17 @@ test("inspection command with host exit metadata still does not extract error ma
   assert.deepEqual(last.errors, []);
 });
 
+test("mutating git subcommands are not inspection-only", async () => {
+  const p = await newPlugin();
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "g1", args: { command: "git branch -d feature" } },
+    { output: "error: branch 'feature' is not fully merged", metadata: { exitCode: 1 } }
+  );
+  const feeds = await readJsonLines(feedsFile);
+  const last = feeds[feeds.length - 1];
+  assert.equal(last.ok, false, "git branch -d can delete a branch, so it is not inspection-only");
+});
+
 test("host exit 0 wins over failure-looking output lines", async () => {
   const p = await newPlugin();
   await p["tool.execute.after"](

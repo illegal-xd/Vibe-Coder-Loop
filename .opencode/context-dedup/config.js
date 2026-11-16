@@ -107,10 +107,11 @@ export const DEFAULT_CONFIG = Object.freeze({
     requireFullRead: true,
     /**
      * When the runtime omits write/read timestamps, fall back to emission
-     * order. Off by default: order alone cannot prove the read observed the
-     * finished file, so enabling it trades certainty for coverage.
+     * order. Default on: a host that reports no `time.end` / `time.start`
+     * otherwise never supersedes anything. Order alone cannot rule out
+     * parallel calls, so set false to require real happens-before.
      */
-    allowOrderFallback: false,
+    allowOrderFallback: true,
   }),
   /** OpenSlimedit-derived definition/output slimming (see slim-edit.js). */
   slimEdit: Object.freeze({ ...DEFAULT_SLIM_EDIT }),

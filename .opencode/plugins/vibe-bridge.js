@@ -44,6 +44,11 @@ import { fileURLToPath } from "node:url";
 
 import { tool } from "@opencode-ai/plugin";
 
+// Single source for inspection-only command detection: shares the exact
+// read-only shell/git list (and chain parsing) with Supersede Writes, so the
+// two layers cannot drift (e.g. `git branch -d` is not inspection-only).
+import { isReadOnlyShellCommand } from "../context-dedup/supersede-writes.js";
+
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PENDING_TTL_MS = 30 * 60 * 1000;
 const CLI_TIMEOUT_MS = 10000;
@@ -299,38 +304,11 @@ function extractErrors(output) {
 
 // Inspection-only commands print DATA; a line that says "Error:" in a log file
 // is content, not a failed execution. Only a host exit status may flag failure.
-const READ_ONLY_COMMANDS = new Set([
-  "cat", "bat", "head", "tail", "less", "more", "grep", "rg", "ag", "ls", "find",
-  "tree", "wc", "stat", "file", "jq", "diff", "sort", "uniq", "cut", "du", "df",
-  "pwd", "which", "type", "echo", "printf",
-]);
-const READ_ONLY_GIT = new Set([
-  "log", "show", "diff", "status", "blame", "branch", "rev-parse", "ls-files",
-  "describe", "remote",
-]);
-
+// The predicate (and its read-only shell/git list) is shared with Supersede
+// Writes so both layers classify a command the same way.
 function isInspectionCommand(args) {
   const cmd = typeof args === "string" ? args : args?.command;
-  if (typeof cmd !== "string" || cmd.trim() === "") return false;
-  const tokens = cmd.trim().split(/\s+/);
-  let i = 0;
-  while (i < tokens.length) {
-    // skip env prefixes (FOO=1) and `cd <dir> &&` prologues
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
-      i += 1;
-      continue;
-    }
-    if (tokens[i] === "cd" && tokens[i + 1] && tokens[i + 2] === "&&") {
-      i += 3;
-      continue;
-    }
-    break;
-  }
-  let head = tokens[i] || "";
-  if (head.includes("/")) head = head.slice(head.lastIndexOf("/") + 1);
-  if (READ_ONLY_COMMANDS.has(head)) return true;
-  if (head === "git") return READ_ONLY_GIT.has(tokens[i + 1] || "");
-  return false;
+  return isReadOnlyShellCommand(cmd);
 }
 
 function extractFilesModified(tool, args) {

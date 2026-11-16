@@ -32,15 +32,37 @@ export const DEFAULT_PLACEHOLDER =
 export const DEFAULT_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "glob"]);
 
 /**
- * Deduplication scope. Shell output is eligible too: two calls with identical
- * arguments and byte-identical output carry the same information, so pruning
- * the older result is lossless. Failed shell calls are excluded separately by
- * the metadata failure check below.
+ * Tools that never modify the workspace, so a call to one of them cannot
+ * invalidate a later read of an earlier result. Shared by Supersede Writes
+ * (write→read barrier exemption) and Read Window Collapse (dedup barrier).
+ *
+ * `task` / `skill` are deliberately absent: a sub-agent or skill can write
+ * files.
  */
-export const DEFAULT_DEDUP_TOOLS = Object.freeze([
-  ...DEFAULT_READ_ONLY_TOOLS,
-  "bash",
+export const DEFAULT_BARRIER_EXEMPT_TOOLS = Object.freeze([
+  "todowrite",
+  "question",
+  "webfetch",
+  "websearch",
+  "list",
 ]);
+
+/** Read-only tools plus tools that cannot touch files: no barrier, no mutation. */
+const NON_FILE_MUTATION_TOOLS = new Set([
+  ...DEFAULT_READ_ONLY_TOOLS,
+  ...DEFAULT_BARRIER_EXEMPT_TOOLS,
+]);
+
+/**
+ * Deduplication scope. Shell output is technically eligible (identical args +
+ * byte-identical output is lossless to prune), but real shell output almost
+ * never repeats byte-for-byte — timestamps, PIDs and modified-file lists
+ * change between runs — so whitelisting `bash` by default pays signature and
+ * token cost for a near-zero hit rate. Shell stays opt-in through
+ * `deduplication.tools`. Failed shell calls are excluded separately by the
+ * metadata failure check below.
+ */
+export const DEFAULT_DEDUP_TOOLS = Object.freeze([...DEFAULT_READ_ONLY_TOOLS]);
 
 /**
  * Shell tools whose exit status (not the output text) decides success.
@@ -714,12 +736,15 @@ function collapseCoveredReads(records, eligible, options, stats, decisions, plac
   }
   if (groups.size === 0) return collapsedIds;
 
-  // Reads and other read-only tools cannot change the file; anything else can.
+  // Reads, other read-only tools and barrier-exempt tools cannot change the
+  // file; anything else can. The exempt list is shared with Supersede Writes
+  // so a `todowrite`/`question`/`list` call between two reads of the same file
+  // does not silently disable window collapse.
   const mutationOrders = [];
   for (const record of records) {
     if (!record || !Number.isFinite(record.order)) continue;
     if (typeof record.tool !== "string") continue;
-    if (DEFAULT_READ_ONLY_TOOLS.includes(record.tool)) continue;
+    if (NON_FILE_MUTATION_TOOLS.has(record.tool)) continue;
     mutationOrders.push(record.order);
   }
   mutationOrders.sort((left, right) => left - right);
