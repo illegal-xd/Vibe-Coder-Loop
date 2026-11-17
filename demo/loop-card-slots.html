@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="description" content="循环卡片组：5 个槽位（隐藏 / 胶囊 / 展开 / 胶囊 / 隐藏），每张卡移动一格并补间过渡，运动模糊随速度变化。" />
+<title>Loop Stack · 循环卡片组</title>
+<style>
+  :root{
+    --bg:#08080a;
+    --ink:#f4f0ea;
+    --rail-k:1;
+    --head:54px;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    overflow:hidden;overscroll-behavior:none;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- 氛围层 ---------- */
+  .aura{
+    position:fixed;inset:-15%;pointer-events:none;
+    background:
+      radial-gradient(46% 38% at 50% 44%, rgba(255,168,96,.14), transparent 68%),
+      radial-gradient(38% 38% at 84% 76%, rgba(96,140,255,.07), transparent 70%),
+      radial-gradient(40% 30% at 14% 10%, rgba(120,255,214,.05), transparent 70%);
+    filter:blur(8px);
+  }
+  .grain{
+    position:fixed;inset:0;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .topline{
+    position:fixed;top:26px;left:50%;transform:translateX(-50%);z-index:20;
+    display:flex;align-items:center;gap:12px;white-space:nowrap;
+    font-size:9.5px;letter-spacing:.34em;text-transform:uppercase;
+    color:rgba(244,240,234,.30);
+  }
+  .topline i{
+    display:block;width:36px;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent);
+  }
+
+  /* ---------- 轨道：5 个槽位共用同一坐标系 ---------- */
+  .stage{position:fixed;inset:0;display:grid;place-items:center;}
+  .rail{
+    position:relative;
+    width:min(560px,calc(100vw - 44px));
+    height:490px;
+    transform:scale(var(--rail-k));
+  }
+
+  /* ---------- 卡片 ---------- */
+  .card{
+    position:absolute;left:0;right:0;top:0;
+    height:58px;
+    border-radius:18px;
+    background-color:#131317;
+    background-image:linear-gradient(168deg,rgba(255,255,255,.085),rgba(255,255,255,.02) 52%,rgba(255,255,255,.045));
+    border:1px solid rgba(255,255,255,calc(.085 + var(--hot,0) * .18));
+    box-shadow:0 26px 70px -32px rgba(0,0,0,.98), 0 1px 0 rgba(255,255,255,.05) inset;
+    overflow:hidden;
+    transform-origin:50% 0;
+    will-change:transform,height,opacity,filter;
+    contain:layout paint style;
+    cursor:pointer;
+    --hot:0;
+    --tint:#7fb0ff;
+  }
+  /* 展开态的描边高光：颜色来自每张卡自己的 tint */
+  .halo{
+    position:absolute;inset:-1px;border-radius:inherit;pointer-events:none;z-index:2;
+    border:1px solid var(--tint);
+    opacity:calc(var(--hot,0) * .40);
+  }
+  .card::after{
+    content:'';position:absolute;top:0;left:14%;right:14%;height:1px;pointer-events:none;
+    background:linear-gradient(90deg,transparent,var(--tint),transparent);
+    opacity:calc(var(--hot,0) * .75);
+  }
+
+  /* 固定标题栏：高度锁死，永远贴在卡片顶部 */
+  .card-head{
+    position:relative;height:var(--head);
+    display:flex;align-items:center;gap:11px;
+    padding:0 18px;
+  }
+  .card-head::after{
+    content:'';position:absolute;left:18px;right:18px;bottom:0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.10),transparent);
+    opacity:calc(var(--hot,0) * .9);
+  }
+  .idx{
+    font-size:10px;letter-spacing:.08em;font-variant-numeric:tabular-nums;
+    color:rgba(244,240,234,.32);
+  }
+  .card-title{
+    flex:1;min-width:0;margin:0;
+    font-size:15.5px;font-weight:500;letter-spacing:.02em;color:#f4f0ea;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .tag{
+    flex:none;
+    padding:4px 8px;border-radius:999px;
+    border:1px solid rgba(255,255,255,.14);
+    font-size:9px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--tint);
+    border-color:var(--tint);
+    opacity:.72;
+  }
+
+  /* 正文：绝对定位在标题栏下方，卡片变高即向下展开 */
+  .card-body{
+    position:absolute;left:0;right:0;top:var(--head);bottom:0;
+    display:flex;flex-direction:column;gap:10px;
+    padding:0 18px 16px;
+    overflow:hidden;
+    opacity:var(--hot,0);
+  }
+  .card-body p{
+    margin:0;
+    font-size:14px;line-height:1.85;letter-spacing:.01em;
+    color:rgba(244,240,234,.70);
+  }
+  .meta{
+    margin-top:auto;padding-top:11px;
+    border-top:1px solid rgba(255,255,255,.07);
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+    color:rgba(244,240,234,.42);
+  }
+  .meta .kick{color:rgba(244,240,234,.56);}
+  .meta .arrow{font-size:12px;color:var(--tint);opacity:.8;}
+
+  /* ---------- 左下角：提示词卡片 ---------- */
+  .prompt{
+    position:fixed;left:20px;bottom:20px;z-index:50;
+    width:min(332px,calc(100vw - 40px));
+    padding:14px 15px 12px;border-radius:16px;
+    background:rgba(16,16,19,.74);
+    border:1px solid rgba(255,255,255,.09);
+    box-shadow:0 20px 50px -24px rgba(0,0,0,.95);
+    -webkit-backdrop-filter:blur(18px) saturate(120%);
+    backdrop-filter:blur(18px) saturate(120%);
+    font-size:11.5px;line-height:1.62;
+    color:rgba(244,240,234,.62);
+    -webkit-user-select:text;user-select:text;
+  }
+  .prompt-head{
+    display:flex;align-items:center;gap:8px;margin-bottom:9px;
+    font-size:9.5px;letter-spacing:.26em;text-transform:uppercase;
+    color:rgba(244,240,234,.40);
+  }
+  .prompt-head .dot{
+    width:5px;height:5px;border-radius:50%;background:#ffb877;
+    box-shadow:0 0 10px #ffb877;
+  }
+  .prompt ol{margin:0;padding:0;list-style:none;counter-reset:p;}
+  .prompt li{
+    counter-increment:p;position:relative;padding-left:21px;
+  }
+  .prompt li::before{
+    content:counter(p,decimal-leading-zero);position:absolute;left:0;top:0;
+    font-size:9.5px;letter-spacing:.06em;
+    color:rgba(255,184,119,.55);font-variant-numeric:tabular-nums;
+  }
+  .prompt li + li{margin-top:3px;}
+  .prompt-foot{
+    margin-top:10px;padding-top:9px;
+    border-top:1px solid rgba(255,255,255,.07);
+    display:flex;justify-content:space-between;gap:10px;
+    font-size:10px;letter-spacing:.06em;color:rgba(244,240,234,.34);
+  }
+
+  /* ---------- 自适应 ---------- */
+  @media (max-width:1180px){
+    :root{--rail-k:.86;}
+    .stage{padding-left:120px;}
+    .prompt{width:270px;font-size:10.5px;left:16px;}
+  }
+  @media (max-height:820px){
+    :root{--rail-k:.82;}
+  }
+  @media (max-height:680px){
+    :root{--rail-k:.68;}
+    .prompt{max-height:44vh;overflow:auto;}
+  }
+  @media (max-width:700px){
+    :root{--rail-k:.72;}
+    .stage{padding:0 0 34vh;}
+    .topline{top:18px;font-size:8.5px;letter-spacing:.26em;}
+    .prompt{left:12px;right:12px;bottom:12px;width:auto;font-size:10px;max-height:36vh;overflow:auto;}
+  }
+</style>
+</head>
+<body>
+
+<div class="aura"></div>
+<div class="grain"></div>
+<div class="topline"><span>Loop Stack</span><i></i><span>5 Slots</span></div>
+
+<main class="stage">
+  <div class="rail" id="rail"></div>
+</main>
+
+<aside class="prompt">
+  <div class="prompt-head"><span class="dot"></span><span>提示词 · Prompt</span></div>
+  <ol>
+    <li>5 个槽位：隐藏 · 胶囊 · 展开 · 胶囊 · 隐藏</li>
+    <li>每个槽位：位置 · 高度 · 透明度 · 模糊</li>
+    <li>每张卡移动一个槽位，再补间过渡</li>
+    <li>固定标题栏，正文向下展开</li>
+    <li>旧内容先淡出，新内容淡入</li>
+    <li>运动模糊随速度变化</li>
+    <li>提示词在页面左下角以卡片展示</li>
+  </ol>
+  <div class="prompt-foot"><span>点击任意处 / 空格</span><span>前进一格 →</span></div>
+</aside>
+
+<script>
+(() => {
+  'use strict';
+
+  /* =========================================================
+     数据
+     ========================================================= */
+  const ITEMS = [
+    {
+      id: '01', tag: 'CSS', tint: '#7fb0ff', title: '容器查询',
+      kick: '@container · 组件自适应',
+      copy: '组件不再猜自己的宽度，而是问容器。同一张卡片在侧栏与主区各自排版，媒体查询退为页面级的兜底。'
+    },
+    {
+      id: '02', tag: 'Motion', tint: '#ffb877', title: '视图过渡',
+      kick: 'View Transitions · 跨状态补间',
+      copy: '给同一份内容换一套骨架，浏览器替你做共享元素的插值。旧视图先定格，新视图随后淡入，中间是一次呼吸。'
+    },
+    {
+      id: '03', tag: 'CSS', tint: '#a9d9a4', title: '滚动驱动',
+      kick: 'animation-timeline · 时间交给滚动',
+      copy: '把动画的时钟挂在滚动轴上，进度条、视差与段落揭幕不再需要监听事件，也不再抢占主线程。'
+    },
+    {
+      id: '04', tag: 'Layout', tint: '#e6a8d8', title: '锚点定位',
+      kick: 'anchor-name · 气泡自己找位置',
+      copy: '气泡不再靠脚本计算坐标，而是声明它依附哪个锚点。翻转、夹取与回退交给排版引擎，缩放时也不漂移。'
+    },
+    {
+      id: '05', tag: 'Perf', tint: '#ffd37f', title: '内容可见性',
+      kick: 'content-visibility · 只绘制看得见的',
+      copy: '屏幕外的长列表直接跳过样式、布局与绘制，只在临近视口时唤醒，首屏成本按可见区域付费。'
+    },
+    {
+      id: '06', tag: 'JS', tint: '#8fd7e0', title: '调度分层',
+      kick: 'scheduler.postTask · 让节奏跟着设备',
+      copy: '把工作切成可中断的小块，按优先级排队。输入优先、渲染随后、预取最后，拥挤的主线程也能保持响应。'
+    }
+  ];
+
+  /* 5 个槽位：y = 卡片顶边偏移，h = 高度，o = 透明度，b = 静态模糊，s = 缩放
+     0 隐藏(上) / 1 胶囊 / 2 展开 / 3 胶囊 / 4 隐藏(下)
+     相邻槽位的 y 增量与 h 增量配对，补间过程中间距恒为 20px，不会互相穿插 */
+  const SLOTS = [
+    { y: 0,   h: 40,  o: 0, b: 18,  s: 0.900 },
+    { y: 72,  h: 58,  o: 1, b: 2.2, s: 0.965 },
+    { y: 150, h: 196, o: 1, b: 0,   s: 1.000 },
+    { y: 366, h: 58,  o: 1, b: 2.2, s: 0.965 },
+    { y: 444, h: 40,  o: 0, b: 18,  s: 0.900 }
+  ];
+
+  const CARD_COUNT = 5;
+  const DUR = 900;      // 槽位补间时长
+  const HOLD = 2600;    // 自动前进间隔
+  const BLUR_K = 1.2;   // 速度 → 运动模糊系数
+  const BLUR_MAX = 7;
+
+  /* =========================================================
+     构建
+     ========================================================= */
+  const rail = document.getElementById('rail');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const cards = [];
+  let nextItem = CARD_COUNT;   // 前 5 条先分给 5 张卡
+  let anim = null;             // { t0, from: [{y,h,o,b,s}] }
+  let queued = false;
+  let timer = 0;
+
+  function setContent(card, item) {
+    card.idx.textContent = item.id;
+    card.title.textContent = item.title;
+    card.tag.textContent = item.tag;
+    card.copy.textContent = item.copy;
+    card.kick.textContent = item.kick;
+    card.el.style.setProperty('--tint', item.tint);
+  }
+
+  for (let i = 0; i < CARD_COUNT; i++) {
+    const el = document.createElement('article');
+    el.className = 'card';
+    el.innerHTML =
+      '<span class="halo"></span>' +
+      '<header class="card-head">' +
+        '<span class="idx"></span>' +
+        '<h2 class="card-title"></h2>' +
+        '<span class="tag"></span>' +
+      '</header>' +
+      '<div class="card-body">' +
+        '<p></p>' +
+        '<div class="meta"><span class="kick"></span><span class="arrow">↗</span></div>' +
+      '</div>';
+    rail.appendChild(el);
+
+    const card = {
+      el,
+      slot: i,
+      prevSlot: i,
+      idx: el.querySelector('.idx'),
+      title: el.querySelector('.card-title'),
+      tag: el.querySelector('.tag'),
+      copy: el.querySelector('.card-body p'),
+      kick: el.querySelector('.kick'),
+      cur: { ...SLOTS[i] },                       // 当前渲染值，供下一次补间起点
+      lastCenter: SLOTS[i].y + SLOTS[i].h / 2     // 上一帧中心，用于测速
+    };
+    cards.push(card);
+    setContent(card, ITEMS[i]);
+  }
+
+  /* =========================================================
+     工具
+     ========================================================= */
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const easeInOut = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const smoothstep = (a, b, x) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+
+  function zOf(slot) {
+    return String(20 - Math.abs(slot - 2) * 4);
+  }
+
+  function paint(card, y, h, o, blur, scale, hot) {
+    const st = card.el.style;
+    st.transform = 'translate3d(0,' + y.toFixed(2) + 'px,0) scale(' + scale.toFixed(3) + ')';
+    st.height = h.toFixed(2) + 'px';
+    st.opacity = o.toFixed(3);
+    st.filter = blur > 0.05 ? 'blur(' + blur.toFixed(2) + 'px)' : 'none';
+    st.zIndex = zOf(card.slot);
+    st.setProperty('--hot', hot.toFixed(3));
+  }
+
+  /* 首帧前先落位，避免默认样式闪一帧 */
+  cards.forEach(card => {
+    const cfg = SLOTS[card.slot];
+    paint(card, cfg.y, cfg.h, cfg.o, cfg.b, cfg.s, card.slot === 2 ? 1 : 0);
+  });
+
+  /* =========================================================
+     推进一格
+     ========================================================= */
+  function startTick() {
+    clearTimeout(timer);
+
+    if (anim) {            // 运动中：排队一次，等这格走完再走
+      queued = true;
+      return;
+    }
+
+    const from = cards.map(c => ({ ...c.cur }));
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i];
+      card.prevSlot = card.slot;
+      card.slot -= 1;                       // 全部向上移动一格
+
+      if (card.slot < 0) {
+        // 顶部隐藏槽 → 瞬移到下方隐藏槽（两端都不可见，跳变无痕）
+        card.slot = 4;
+        setContent(card, ITEMS[nextItem % ITEMS.length]);
+        nextItem += 1;
+
+        const cfg = SLOTS[4];
+        card.cur = { ...cfg };
+        card.lastCenter = cfg.y + cfg.h / 2;
+        from[i] = { ...cfg };               // 该卡本格不参与补间
+      }
+    }
+
+    anim = { t0: performance.now(), from };
+    timer = setTimeout(startTick, HOLD);
+  }
+
+  /* =========================================================
+     每帧渲染：补间 + 测速 + 运动模糊
+     ========================================================= */
+  let lastFrame = performance.now();
+
+  function frame(now) {
+    const dt = Math.min(80, Math.max(8, now - lastFrame));
+    lastFrame = now;
+    const fpsK = 16.7 / dt;                 // 把不同刷新率归一到 60fps 的位移
+
+    let t = 1;
+    let from = null;
+    if (anim) {
+      t = Math.min(1, Math.max(0, (now - anim.t0) / DUR));
+      from = anim.from;
+      if (t >= 1) anim = null;
+    }
+    const e = easeInOut(t);
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i];
+      const to = SLOTS[card.slot];
+      const a = from ? from[i] : card.cur;
+
+      const y = lerp(a.y, to.y, e);
+      const h = lerp(a.h, to.h, e);
+      const o = lerp(a.o, to.o, e);
+      const bl = lerp(a.b, to.b, e);
+      const sc = lerp(a.s, to.s, e);
+
+      // 内容交叉淡化：旧正文在前 46% 淡出，新正文等高度展开到一半后再淡入
+      let body;
+      if (from) {
+        if (card.prevSlot === 3 && card.slot === 2) {
+          body = smoothstep(0.52, 1, t);          // 从下方胶囊升入展开槽：后段淡入
+        } else if (card.prevSlot === 2 && card.slot === 1) {
+          body = 1 - smoothstep(0.06, 0.46, t);   // 升出展开槽：前段先淡出
+        } else {
+          body = 0;
+        }
+      } else {
+        body = card.slot === 2 ? 1 : 0;
+      }
+
+      // 速度 = 卡片中心位移 / 帧，越快越糊
+      const center = y + h / 2;
+      const speed = Math.abs(center - card.lastCenter) * fpsK;
+      card.lastCenter = center;
+
+      const motionBlur = reduceMotion ? 0 : Math.min(BLUR_MAX, speed * BLUR_K);
+      paint(card, y, h, o, bl + motionBlur, sc, body);
+
+      card.cur = { y, h, o, b: bl, s: sc };
+    }
+
+    if (queued && !anim) {
+      queued = false;
+      startTick();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  /* =========================================================
+     交互
+     ========================================================= */
+  document.addEventListener('pointerdown', e => {
+    if (e.target.closest('.prompt')) return;   // 读提示词时不推进
+    startTick();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowRight' || e.code === 'Enter') {
+      e.preventDefault();
+      startTick();
+    }
+  });
+
+  requestAnimationFrame(frame);
+
+  if (!reduceMotion) {
+    timer = setTimeout(startTick, 1600);       // 留一点时间先看清初始槽位
+  }
+})();
+</script>
+</body>
+</html>

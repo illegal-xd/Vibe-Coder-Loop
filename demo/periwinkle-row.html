@@ -1,0 +1,3772 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0c0a10" />
+<meta name="description" content="Periwinkle Row：米莉的暖光小屋。Three.js 程序化生成的轻松生活模拟游戏，含烹饪、布置、邻里社交与自动保存。" />
+<title>Periwinkle Row · 米莉的暖光小屋</title>
+<style>
+  :root {
+    --bg0: #0b0910;
+    --ink: #f6eee5;
+    --muted: #c6b6a9;
+    --faint: #b09e90;
+    --amber: #ffc98a;
+    --rose: #ff9384;
+    --sage: #a9c8a4;
+    --line: rgba(255, 198, 148, 0.15);
+    --line-strong: rgba(255, 198, 148, 0.3);
+    --shadow: 0 18px 50px rgba(0, 0, 0, 0.46);
+    --r: 18px;
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: var(--bg0); color: var(--ink);
+    overscroll-behavior: none; -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none; user-select: none;
+  }
+  #scene {
+    position: fixed; inset: 0; display: block; width: 100%; height: 100%;
+    outline: none; touch-action: none; cursor: grab;
+  }
+  #scene:active { cursor: grabbing; }
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 1;
+    background:
+      radial-gradient(120% 85% at 50% 42%, transparent 38%, rgba(6, 4, 9, 0.42) 100%),
+      linear-gradient(180deg, rgba(8, 6, 12, 0.28), transparent 18%, transparent 82%, rgba(8, 6, 12, 0.4));
+  }
+  #ui { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+  [hidden] { display: none !important; }
+  button { font-family: inherit; }
+
+  /* topbar */
+  .topbar {
+    position: absolute; top: max(14px, env(safe-area-inset-top)); left: 16px; right: 16px;
+    display: flex; align-items: center; gap: 12px; padding: 9px 12px;
+    border-radius: var(--r);
+    background: linear-gradient(180deg, rgba(32, 24, 32, 0.88), rgba(20, 15, 22, 0.72));
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    pointer-events: auto;
+    -webkit-backdrop-filter: blur(18px) saturate(130%);
+    backdrop-filter: blur(18px) saturate(130%);
+  }
+  .identity { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; cursor: pointer; border-radius: 12px; }
+  .identity:hover .who b { color: var(--amber); }
+  .avatar {
+    position: relative; width: 40px; height: 40px; flex: 0 0 auto; border-radius: 14px;
+    display: grid; place-items: center; font-weight: 800; font-size: 19px; color: #2c1a1c;
+    background: linear-gradient(145deg, #ffd9a6, #f0a07a 52%, #a985c9);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 6px 16px rgba(0, 0, 0, 0.35);
+  }
+  .avatar::after {
+    content: ""; position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px;
+    border-radius: 50%; background: var(--sage); border: 2px solid #1b131b;
+    box-shadow: 0 0 10px rgba(169, 200, 164, 0.55);
+  }
+  .who { min-width: 0; }
+  .who b { display: block; font-size: 14px; letter-spacing: 0.02em; }
+  .who span {
+    display: block; max-width: 36vw; font-size: 11.5px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .modes {
+    display: flex; gap: 3px; margin: 0 auto; padding: 4px; border-radius: 13px;
+    background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.055);
+  }
+  .mode {
+    display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 13px;
+    border: 0; border-radius: 10px; background: transparent; color: var(--muted);
+    font-size: 12.5px; cursor: pointer;
+    transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+  }
+  .mode span { font-size: 13px; }
+  .mode:hover { color: var(--ink); background: rgba(255, 255, 255, 0.055); }
+  .mode.active {
+    color: var(--amber);
+    background: linear-gradient(180deg, rgba(255, 201, 138, 0.22), rgba(255, 157, 92, 0.1));
+    box-shadow: inset 0 0 0 1px rgba(255, 201, 138, 0.25);
+  }
+  .stats { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .chip {
+    display: flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px;
+    border-radius: 11px; background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.07); color: var(--ink);
+    font-size: 12.5px; white-space: nowrap;
+  }
+  .chip.coins b { color: var(--amber); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .chip.save { cursor: pointer; color: var(--muted); }
+  .chip.save:hover { color: var(--ink); border-color: var(--line); }
+  .chip.save .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--sage);
+    box-shadow: 0 0 9px rgba(169, 200, 164, 0.7); flex: 0 0 auto;
+  }
+  .chip.save.flash { border-color: rgba(169, 200, 164, 0.42); }
+  .chip.save.flash .dot { animation: savePulse 0.75s ease; }
+  .coin-pop b { animation: coinPop 0.45s ease; }
+  @keyframes savePulse {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(169, 200, 164, 0.7); }
+    60% { transform: scale(1.5); box-shadow: 0 0 0 7px rgba(169, 200, 164, 0); }
+    100% { transform: scale(1); }
+  }
+  @keyframes coinPop {
+    0% { transform: scale(1); } 40% { transform: scale(1.3); color: #fff0cf; }
+    100% { transform: scale(1); }
+  }
+
+  /* panels */
+  .panel {
+    position: absolute; border-radius: var(--r); padding: 14px;
+    background: linear-gradient(180deg, rgba(30, 23, 31, 0.86), rgba(18, 13, 20, 0.8));
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    pointer-events: auto;
+    -webkit-backdrop-filter: blur(18px) saturate(125%);
+    backdrop-filter: blur(18px) saturate(125%);
+  }
+  .panel-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin: 2px 0 10px; font-size: 11px; letter-spacing: 0.1em; color: var(--faint);
+  }
+  .panel-title:not(:first-child) { margin-top: 16px; }
+  .tiny { font-size: 11px; letter-spacing: 0; color: var(--faint); }
+  .needs { left: 16px; top: 92px; width: 250px; }
+  .need {
+    display: grid; grid-template-columns: 18px 1fr auto; align-items: center;
+    gap: 2px 7px; margin-top: 9px; font-size: 12px; color: var(--muted);
+  }
+  .need .ico { font-size: 13px; line-height: 1; filter: saturate(0.9); }
+  .need .val { font-size: 11px; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .need .track {
+    grid-column: 1 / -1; height: 6px; border-radius: 99px;
+    background: rgba(255, 255, 255, 0.075); overflow: hidden;
+  }
+  .need .fill {
+    display: block; height: 100%; width: 50%; border-radius: 99px;
+    background: linear-gradient(90deg, #ffb072, #ffd39b);
+    transition: width 0.4s ease, background 0.3s;
+  }
+  .need[data-level="mid"] .fill { background: linear-gradient(90deg, #ff9a63, #ffbe86); }
+  .need[data-level="low"] .fill { background: linear-gradient(90deg, #ff7a67, #ffa088); }
+  .need.low { color: #ffc4b6; }
+  .need.low .val { color: #ffb3a2; }
+  .side {
+    right: 16px; top: 92px; width: 308px; max-height: calc(100vh - 176px);
+    overflow-y: auto; overscroll-behavior: contain;
+  }
+  .side::-webkit-scrollbar { width: 6px; }
+  .side::-webkit-scrollbar-thumb { background: rgba(255, 198, 148, 0.2); border-radius: 99px; }
+  .side::-webkit-scrollbar-track { background: transparent; }
+  .goals { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+  .goal {
+    display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 10px;
+    background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.045);
+    font-size: 12px; color: var(--ink);
+  }
+  .goal .tick {
+    display: grid; place-items: center; width: 16px; height: 16px; flex: 0 0 auto;
+    border-radius: 50%; border: 1px solid rgba(255, 198, 148, 0.35);
+    color: #2a1a18; font-size: 10px; font-weight: 700;
+  }
+  .goal .g-label { flex: 1; min-width: 0; }
+  .goal .g-reward { font-size: 10.5px; color: var(--amber); }
+  .goal.done { color: var(--faint); }
+  .goal.done .g-label { text-decoration: line-through; text-decoration-color: rgba(198, 182, 169, 0.4); }
+  .goal.done .tick { background: var(--sage); border-color: transparent; }
+  .goal.done .g-reward { color: var(--faint); }
+  .skills { display: grid; gap: 9px; }
+  .skill { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .skill .lvl { color: var(--amber); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .skill .mini { grid-column: 2 / -1; height: 4px; border-radius: 99px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
+  .skill .mini i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #ffb072, #ffd7a4); transition: width 0.4s; }
+  .rels { display: grid; gap: 6px; }
+  .rel {
+    display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px;
+    border-radius: 11px; border: 1px solid transparent; background: rgba(255, 255, 255, 0.03);
+    color: var(--ink); text-align: left; cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .rel:hover { background: rgba(255, 255, 255, 0.06); border-color: var(--line); }
+  .rel-avatar {
+    display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto;
+    border-radius: 10px; font-size: 12px; font-weight: 700; color: #241a1c;
+    background: var(--tint, #ffd0a0);
+  }
+  .rel-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .rel-main b { font-size: 12px; font-weight: 600; }
+  .rel-main small { font-size: 10.5px; color: var(--faint); }
+  .rel-main .mini { height: 3px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+  .rel-main .mini i { display: block; height: 100%; background: linear-gradient(90deg, #e79a8a, #ffcf9b); border-radius: 99px; }
+  .rel em { font-style: normal; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .panel-foot { margin-top: 14px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.06); text-align: right; }
+  .link-btn { border: 0; background: transparent; color: var(--faint); font-size: 10.5px; cursor: pointer; padding: 4px 2px; border-radius: 6px; }
+  .link-btn:hover { color: var(--rose); }
+
+  /* shop */
+  .shop { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .shop-item {
+    display: grid; grid-template-columns: 22px 1fr; grid-template-rows: auto auto;
+    gap: 1px 6px; align-items: center; padding: 7px 8px; border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.055); background: rgba(255, 255, 255, 0.035);
+    color: var(--ink); font-size: 11.5px; text-align: left; cursor: pointer;
+    transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  }
+  .shop-item:hover { background: rgba(255, 201, 138, 0.1); border-color: var(--line); }
+  .shop-item:active { transform: scale(0.97); }
+  .shop-item .si-ico { grid-row: 1 / 3; font-size: 16px; }
+  .shop-item .si-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .shop-item .si-price { font-size: 10.5px; color: var(--amber); }
+  .shop-item .si-price i { color: var(--faint); font-style: normal; }
+  .shop-item.poor { opacity: 0.62; }
+  .shop-item.active { border-color: var(--line-strong); background: rgba(255, 201, 138, 0.14); }
+  .decor-ops {
+    margin-top: 10px; padding: 9px; border-radius: 12px;
+    border: 1px dashed rgba(255, 198, 148, 0.25); background: rgba(255, 201, 138, 0.05);
+    font-size: 11.5px;
+  }
+  .decor-ops .do-name { color: var(--amber); margin-bottom: 7px; display: block; }
+  .decor-ops .do-btns { display: flex; gap: 6px; }
+  .decor-ops button {
+    flex: 1; height: 30px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06); color: var(--ink); font-size: 11px; cursor: pointer;
+  }
+  .decor-ops button:hover { border-color: var(--line-strong); }
+  .decor-ops button.danger { color: #ffb0a1; }
+
+  /* action bar */
+  .hint {
+    position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%);
+    font-size: 11px; color: rgba(214, 197, 184, 0.72);
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+    white-space: nowrap; pointer-events: none;
+  }
+  .actionbar {
+    position: absolute; left: 50%; bottom: max(16px, env(safe-area-inset-bottom));
+    transform: translateX(-50%); display: flex; align-items: center; gap: 4px;
+    padding: 5px; border-radius: 16px; background: rgba(24, 18, 26, 0.84);
+    border: 1px solid var(--line); box-shadow: var(--shadow);
+    pointer-events: auto;
+    -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  }
+  .actionbar button {
+    display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px;
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    font-size: 16px; line-height: 1; cursor: pointer;
+    transition: background 0.18s, color 0.18s, border-color 0.18s;
+  }
+  .actionbar button:hover { background: rgba(255, 255, 255, 0.07); color: var(--ink); border-color: rgba(255, 255, 255, 0.08); }
+  .actionbar button:active { background: rgba(255, 201, 138, 0.16); color: var(--amber); }
+  .actionbar .sep { width: 1px; height: 22px; margin: 0 2px; background: rgba(255, 255, 255, 0.1); }
+  .only-mobile { display: none !important; }
+
+  /* action card */
+  .action-card {
+    position: absolute; left: 50%; bottom: 78px;
+    transform: translateX(-50%) translateY(8px);
+    width: min(368px, calc(100vw - 32px)); padding: 13px 14px 14px;
+    border-radius: var(--r);
+    background: linear-gradient(180deg, rgba(37, 28, 36, 0.94), rgba(20, 15, 22, 0.94));
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    -webkit-backdrop-filter: blur(20px) saturate(130%);
+    backdrop-filter: blur(20px) saturate(130%);
+    opacity: 0; transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.22, 0.8, 0.3, 1);
+    pointer-events: auto; z-index: 28;
+  }
+  .action-card.in { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .ac-head { display: flex; align-items: flex-start; gap: 10px; }
+  .ac-ico {
+    display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto;
+    border-radius: 12px;
+    background: radial-gradient(circle at 30% 25%, rgba(255, 214, 160, 0.34), rgba(255, 157, 92, 0.1));
+    border: 1px solid rgba(255, 201, 138, 0.25); font-size: 19px;
+  }
+  .ac-titles { flex: 1; min-width: 0; padding-top: 1px; }
+  .ac-titles b { display: block; font-size: 14px; letter-spacing: 0.01em; }
+  .ac-titles small { display: block; margin-top: 3px; font-size: 11px; line-height: 1.55; color: var(--muted); }
+  .ac-close {
+    flex: 0 0 auto; width: 26px; height: 26px; border-radius: 8px; border: 0;
+    background: rgba(255, 255, 255, 0.05); color: var(--faint); font-size: 12px; cursor: pointer;
+  }
+  .ac-close:hover { color: var(--ink); background: rgba(255, 255, 255, 0.1); }
+  .ac-fx { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0 11px; }
+  .ac-fx span {
+    padding: 3px 7px; border-radius: 7px; background: rgba(255, 201, 138, 0.09);
+    border: 1px solid rgba(255, 201, 138, 0.14); color: #ffd9ae; font-size: 10.5px;
+  }
+  .ac-actions { display: grid; gap: 6px; }
+  .ac-btn {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    min-height: 40px; padding: 0 12px; border-radius: 11px;
+    border: 1px solid rgba(255, 255, 255, 0.09); background: rgba(255, 255, 255, 0.055);
+    color: var(--ink); font-size: 12.5px; text-align: left; cursor: pointer;
+    transition: background 0.18s, border-color 0.18s;
+  }
+  .ac-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); border-color: var(--line); }
+  .ac-btn em { font-style: normal; font-size: 10.5px; color: var(--faint); }
+  .ac-btn.primary {
+    background: linear-gradient(180deg, rgba(255, 201, 138, 0.24), rgba(255, 157, 92, 0.14));
+    border-color: rgba(255, 201, 138, 0.3); color: #fff2dd;
+  }
+  .ac-btn.primary:hover:not(:disabled) { background: linear-gradient(180deg, rgba(255, 201, 138, 0.32), rgba(255, 157, 92, 0.2)); }
+  .ac-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .ac-btn.primary em { color: var(--amber); }
+
+  /* build hint / tooltip / float / toast */
+  .build-hint {
+    position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px; width: min(420px, calc(100vw - 32px));
+    padding: 9px 12px; border-radius: 14px; background: rgba(24, 18, 26, 0.9);
+    border: 1px solid var(--line-strong); box-shadow: var(--shadow);
+    font-size: 11.5px; color: var(--muted);
+    pointer-events: auto; z-index: 27;
+    -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  }
+  .build-hint b { color: var(--amber); font-weight: 600; }
+  .build-hint button {
+    margin-left: auto; height: 28px; padding: 0 10px; border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.06);
+    color: var(--ink); font-size: 11px; cursor: pointer;
+  }
+  .tip {
+    position: fixed; z-index: 50; display: flex; align-items: center; gap: 6px;
+    max-width: 240px; padding: 6px 9px; border-radius: 9px;
+    background: rgba(17, 12, 19, 0.9); border: 1px solid var(--line); color: var(--ink);
+    font-size: 11px; pointer-events: none; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  }
+  .tip em { font-style: normal; font-size: 9.5px; color: var(--faint); margin-left: 2px; }
+  .float {
+    position: fixed; z-index: 40; transform: translate(-50%, -50%);
+    font-size: 13px; font-weight: 700; color: #ffe6bd;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.7); pointer-events: none;
+    animation: floatUp 1.35s cubic-bezier(0.2, 0.7, 0.3, 1) forwards; white-space: nowrap;
+  }
+  @keyframes floatUp {
+    0% { opacity: 0; transform: translate(-50%, -40%) scale(0.9); }
+    18% { opacity: 1; }
+    100% { opacity: 0; transform: translate(-50%, -160%) scale(1.02); }
+  }
+  .toasts {
+    position: absolute; top: 88px; left: 50%; transform: translateX(-50%); z-index: 45;
+    display: flex; flex-direction: column; align-items: center; gap: 7px;
+    width: min(420px, calc(100vw - 32px)); pointer-events: none;
+  }
+  .toast {
+    padding: 9px 14px; border-radius: 11px; background: rgba(22, 16, 24, 0.9);
+    border: 1px solid var(--line); border-left: 2px solid var(--amber); color: var(--ink);
+    font-size: 12px; line-height: 1.45; text-align: center;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    animation: toastIn 0.28s cubic-bezier(0.22, 0.8, 0.3, 1) both; max-width: 100%;
+  }
+  .toast.warn { border-left-color: var(--rose); color: #ffded6; }
+  .toast.goal { border-left-color: var(--sage); }
+  .toast.save { border-left-color: #8fb6d8; }
+  .toast.out { animation: toastOut 0.3s ease forwards; }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes toastOut { to { opacity: 0; transform: translateY(-6px); } }
+  #fatal {
+    position: fixed; inset: 0; z-index: 100; display: none; align-items: center;
+    justify-content: center; padding: 32px; color: #d9cabb; font-size: 13.5px;
+    line-height: 1.8; text-align: center; background: #0b0910;
+  }
+  #fatal.show { display: flex; }
+  #fatal code { color: var(--amber); }
+
+  /* responsive */
+  @media (max-width: 1020px) {
+    .who span { max-width: 26vw; }
+    .side { width: 286px; }
+    .needs { width: 232px; }
+  }
+  @media (max-width: 760px) {
+    .topbar {
+      top: max(8px, env(safe-area-inset-top)); left: 8px; right: 8px;
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 8px;
+      padding: 8px 10px; border-radius: 16px;
+    }
+    .identity { grid-column: 1; grid-row: 1; }
+    .stats { grid-column: 2; grid-row: 1; gap: 6px; }
+    .modes { grid-column: 1 / -1; grid-row: 2; width: 100%; margin: 0; }
+    .mode { flex: 1; justify-content: center; height: 36px; padding: 0 6px; font-size: 12px; gap: 4px; }
+    .avatar { width: 34px; height: 34px; border-radius: 11px; font-size: 16px; }
+    .who b { font-size: 13px; }
+    .who span { max-width: 42vw; font-size: 10.5px; }
+    .chip { height: 32px; padding: 0 9px; font-size: 11px; gap: 5px; }
+    .chip.coins b { font-size: 12.5px; }
+    .chip.save #saveText { max-width: 74px; overflow: hidden; text-overflow: ellipsis; }
+    .chip.save .dot { width: 6px; height: 6px; }
+    .needs {
+      left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 117px); width: auto;
+      padding: 8px 8px 9px; display: block;
+      border-radius: 14px; background: rgba(23, 17, 25, 0.72);
+    }
+    .needs .panel-title { display: none; }
+    .needs #needsBody { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+    .need {
+      display: grid; grid-template-columns: 13px minmax(0, 1fr); grid-template-rows: auto auto;
+      align-items: center; gap: 3px 4px; margin: 0; min-width: 0;
+      font-size: 10.5px; line-height: 1.2;
+    }
+    .need .ico { grid-column: 1; grid-row: 1; font-size: 11px; text-align: center; }
+    .need .val { display: none; }
+    .need .track { grid-column: 1 / -1; grid-row: 2; width: 100%; height: 4px; margin: 0; }
+    .need .name { grid-column: 2; grid-row: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+    .side {
+      left: 8px; right: 8px; top: auto; bottom: calc(env(safe-area-inset-bottom) + 72px);
+      width: auto; max-height: min(58vh, 520px);
+      transform: translateY(calc(100% + 110px)); opacity: 0; pointer-events: none;
+      transition: transform 0.32s cubic-bezier(0.22, 0.8, 0.3, 1), opacity 0.25s;
+      z-index: 26; border-color: var(--line-strong);
+    }
+    .side.open { transform: none; opacity: 1; pointer-events: auto; }
+    .hint { display: none; }
+    .actionbar {
+      left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+      transform: none; justify-content: space-between; gap: 2px; padding: 4px; border-radius: 15px;
+    }
+    .actionbar button { width: 42px; height: 42px; font-size: 17px; }
+    .only-mobile { display: grid !important; }
+    .actionbar .sep { margin: 0; }
+    .action-card {
+      left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 66px);
+      width: auto; transform: translateY(10px); max-height: 52vh; overflow-y: auto;
+    }
+    .action-card.in { transform: none; }
+    .ac-titles small { font-size: 11px; }
+    .ac-btn { min-height: 44px; }
+    .build-hint {
+      left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 66px);
+      width: auto; transform: none;
+    }
+    .toasts { top: calc(env(safe-area-inset-top) + 178px); width: calc(100vw - 20px); }
+    .toast { font-size: 11.5px; padding: 8px 12px; }
+    .tip { display: none !important; }
+  }
+  /* short landscape phones */
+  @media (max-height: 500px) and (orientation: landscape) {
+    .topbar {
+      top: 6px; left: 8px; right: 8px; display: flex; align-items: center;
+      gap: 8px; padding: 4px 8px; border-radius: 14px;
+    }
+    .identity { gap: 7px; }
+    .avatar { width: 30px; height: 30px; border-radius: 10px; font-size: 15px; }
+    .who b { font-size: 12px; }
+    .who span { max-width: 200px; font-size: 9.5px; }
+    .modes { margin: 0 auto; padding: 3px; }
+    .mode { height: 30px; padding: 0 8px; font-size: 11px; gap: 3px; }
+    .chip { height: 28px; padding: 0 8px; font-size: 10.5px; gap: 5px; }
+    .chip.coins b { font-size: 12px; }
+    .needs {
+      top: 54px; left: 50%; right: auto; transform: translateX(-50%);
+      width: min(620px, calc(100vw - 24px)); padding: 5px 8px 6px; display: block;
+      border-radius: 12px; background: rgba(23, 17, 25, 0.72);
+    }
+    .needs .panel-title { display: none; }
+    .needs #needsBody { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+    .need {
+      display: grid; grid-template-columns: 12px minmax(0, 1fr); grid-template-rows: auto auto;
+      align-items: center; gap: 2px 4px; margin: 0; min-width: 0; font-size: 10px; line-height: 1.15;
+    }
+    .need .ico { grid-column: 1; grid-row: 1; font-size: 10.5px; text-align: center; }
+    .need .name { grid-column: 2; grid-row: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .need .val { display: none; }
+    .need .track { grid-column: 1 / -1; grid-row: 2; width: 100%; height: 3px; margin: 0; }
+    .side {
+      left: 8px; right: 8px; top: auto; bottom: 58px; width: auto;
+      max-height: 56vh; z-index: 26; border-color: var(--line-strong);
+      transform: translateY(calc(100% + 90px)); opacity: 0; pointer-events: none;
+      transition: transform 0.32s cubic-bezier(0.22, 0.8, 0.3, 1), opacity 0.25s;
+    }
+    .side.open { transform: none; opacity: 1; pointer-events: auto; }
+    .only-mobile { display: grid !important; }
+    .hint { display: none; }
+    .actionbar {
+      left: 50%; right: auto; bottom: 6px; transform: translateX(-50%);
+      justify-content: center; gap: 3px; padding: 4px; border-radius: 15px;
+    }
+    .actionbar button { width: 40px; height: 40px; font-size: 16px; }
+    .action-card {
+      left: 50%; right: auto; bottom: 56px; width: min(372px, calc(100vw - 24px));
+      transform: translateX(-50%) translateY(8px); max-height: 64vh; overflow-y: auto;
+    }
+    .action-card.in { transform: translateX(-50%); }
+    .build-hint {
+      left: 50%; right: auto; bottom: 56px; width: min(420px, calc(100vw - 24px));
+      transform: translateX(-50%);
+    }
+    .toasts { top: 92px; width: min(420px, calc(100vw - 24px)); }
+    .tip { display: none !important; }
+  }
+
+  @media (max-width: 380px) {
+    .chip.save #saveText { display: none; }
+    .needs { gap: 4px; }
+    .need { font-size: 10px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+  :focus-visible { outline: 2px solid rgba(255, 201, 138, 0.7); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="米莉的 3D 小屋"></canvas>
+<div class="vignette" aria-hidden="true"></div>
+
+<div id="ui">
+  <header class="topbar">
+    <div class="identity" id="miriIdentity" role="button" tabindex="0" aria-label="查看米莉的状态" title="查看米莉的状态">
+      <div class="avatar" aria-hidden="true">M</div>
+      <div class="who">
+        <b>Miri</b>
+        <span id="whoSub">Periwinkle Row · 第 1 天 · 08:10</span>
+      </div>
+    </div>
+    <nav class="modes" aria-label="游戏模式">
+      <button class="mode active" data-mode="life" aria-pressed="true"><span aria-hidden="true">🏠</span>生活</button>
+      <button class="mode" data-mode="build" aria-pressed="false"><span aria-hidden="true">🛠</span>建造</button>
+      <button class="mode" data-mode="hood" aria-pressed="false"><span aria-hidden="true">🌿</span>邻里</button>
+    </nav>
+    <div class="stats">
+      <div class="chip coins" id="coinChip" title="金币"><span aria-hidden="true">🪙</span><b id="coinText">68</b></div>
+      <button class="chip save" id="saveChip" title="点击立即保存到本地">
+        <span class="dot" aria-hidden="true"></span><span id="saveText">自动保存已开启</span>
+      </button>
+    </div>
+  </header>
+
+  <section class="panel needs" id="needsPanel" aria-label="米莉的状态">
+    <div class="panel-title"><span>米莉的状态</span><span class="tiny" id="moodTag">心情不错</span></div>
+    <div id="needsBody"></div>
+  </section>
+
+  <aside class="panel side" id="sidePanel" aria-label="目标与关系">
+    <div class="panel-title"><span>今日小目标</span><span class="tiny" id="goalCount">0/3</span></div>
+    <ul class="goals" id="goalList"></ul>
+    <div class="panel-title"><span>技能</span><span class="tiny">慢慢来</span></div>
+    <div class="skills" id="skillList"></div>
+    <div class="panel-title"><span>邻里关系</span><span class="tiny">点击拜访</span></div>
+    <div class="rels" id="relList"></div>
+    <div id="buildBlock" hidden>
+      <div class="panel-title"><span>家具目录</span><span class="tiny">选好后点地板</span></div>
+      <div class="shop" id="shopList"></div>
+      <div class="decor-ops" id="decorOps" hidden></div>
+    </div>
+    <div class="panel-foot"><button class="link-btn" id="resetBtn">重置存档</button></div>
+  </aside>
+
+  <div class="hint" id="hint">点击地板走动 · 点击物件互动 · 拖动旋转</div>
+
+  <div class="actionbar" id="actionBar" aria-label="视角控制">
+    <button data-cam="left" aria-label="向左旋转" title="向左旋转">↺</button>
+    <button data-cam="right" aria-label="向右旋转" title="向右旋转">↻</button>
+    <span class="sep" aria-hidden="true"></span>
+    <button data-cam="in" aria-label="放大" title="放大">＋</button>
+    <button data-cam="out" aria-label="缩小" title="缩小">－</button>
+    <span class="sep" aria-hidden="true"></span>
+    <button data-cam="reset" aria-label="重置视角" title="重置视角">⌂</button>
+    <button data-cam="panel" id="panelToggle" class="only-mobile" aria-label="打开面板" aria-expanded="false">☰</button>
+  </div>
+
+  <div class="action-card" id="actionCard" hidden>
+    <div class="ac-head">
+      <div class="ac-ico" id="acIcon" aria-hidden="true">🍳</div>
+      <div class="ac-titles"><b id="acTitle"></b><small id="acNote"></small></div>
+      <button class="ac-close" id="acClose" aria-label="关闭">✕</button>
+    </div>
+    <div class="ac-fx" id="acFx"></div>
+    <div class="ac-actions" id="acActions"></div>
+  </div>
+
+  <div class="build-hint" id="buildHint" hidden>
+    <span>放置 <b id="buildName">家具</b> · 轻点地板，拖动可旋转视角</span>
+    <button id="buildCancel">取消</button>
+  </div>
+
+  <div class="tip" id="tip" hidden><span id="tipIcon"></span><span id="tipText"></span><em>点击</em></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</div>
+
+<div id="fatal">无法加载 Three.js（本页通过 CDN 引入）。请确认网络可用后刷新，或用本地服务器打开：<br /><code>python3 -m http.server</code></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+/* ==================================================================
+ * Periwinkle Row · 米莉的暖光小屋
+ * HTML / CSS / JavaScript / Three.js，全部模型与贴图由代码生成。
+ * ================================================================== */
+const canvas = document.getElementById('scene');
+
+try {
+  const THREE = await import('three');
+  const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+  start(THREE, OrbitControls).catch((err) => {
+    console.error('[periwinkle] start failed', err);
+    const box = document.getElementById('fatal');
+    if (box) box.classList.add('show');
+  });
+} catch (err) {
+  console.error('[periwinkle] boot failed', err);
+  const box = document.getElementById('fatal');
+  if (box) box.classList.add('show');
+}
+
+async function start(THREE, OrbitControls) {
+  const {
+    Scene, PerspectiveCamera, WebGLRenderer, Group, Mesh, Sprite, SpriteMaterial,
+    MeshToonMaterial, MeshBasicMaterial, ShaderMaterial, Color, Vector2, Vector3, Plane,
+    BoxGeometry, CylinderGeometry, PlaneGeometry, RingGeometry, SphereGeometry, TubeGeometry,
+    DataTexture, RedFormat, NearestFilter, CanvasTexture, RepeatWrapping,
+    QuadraticBezierCurve3, Clock, FogExp2,
+    HemisphereLight, DirectionalLight, PointLight,
+    FrontSide, BackSide, DoubleSide, AdditiveBlending, NormalBlending,
+    ACESFilmicToneMapping, PCFSoftShadowMap, SRGBColorSpace
+  } = THREE;
+
+  const narrowQuery = window.matchMedia('(max-width: 760px), (max-height: 500px) and (orientation: landscape)');
+  const isNarrow = () => narrowQuery.matches;
+
+  /* ============================================================
+   * 0. 渲染器 / 场景 / 相机 / 交互
+   * ============================================================ */
+  const renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isNarrow() ? 1.75 : 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = PCFSoftShadowMap;
+  renderer.toneMapping = ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.08;
+
+  const scene = new Scene();
+  scene.fog = new FogExp2(0x0c0912, 0.0055);
+
+  const camera = new PerspectiveCamera(36, window.innerWidth / window.innerHeight, 0.5, 220);
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  controls.enablePan = false;
+  controls.rotateSpeed = 0.8;
+  controls.zoomSpeed = 0.9;
+  controls.minDistance = 8;
+  controls.maxDistance = 38;
+  controls.minPolarAngle = 0.16;
+  controls.maxPolarAngle = Math.PI * 0.478;
+  controls.target.set(0, 1.5, 0);
+
+  const homeWorld = new Group();
+  const hoodWorld = new Group();
+  hoodWorld.position.set(0, 0, -46);
+  hoodWorld.visible = false;
+  scene.add(homeWorld, hoodWorld);
+
+  /* ============================================================
+   * 1. 通用工具
+   * ============================================================ */
+  let seed = 20261116;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+  const rr = (a, b) => a + (b - a) * rnd();
+  const pickOne = (arr) => arr[Math.floor(rnd() * arr.length) % arr.length];
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const uid = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+
+  const GRAD = (() => {
+    const steps = new Uint8Array([66, 128, 194, 255]);
+    const t = new DataTexture(steps, steps.length, 1, RedFormat);
+    t.needsUpdate = true;
+    t.minFilter = NearestFilter;
+    t.magFilter = NearestFilter;
+    t.generateMipmaps = false;
+    return t;
+  })();
+
+  const OUTLINE_CACHE = new Map();
+  function outlineMaterial(thickness) {
+    const key = thickness.toFixed(3);
+    let mat = OUTLINE_CACHE.get(key);
+    if (!mat) {
+      mat = new ShaderMaterial({
+        uniforms: { uThickness: { value: thickness }, uColor: { value: new Color(0x120d12) } },
+        vertexShader: [
+          'uniform float uThickness;',
+          'void main() {',
+          '  vec3 n = normalize(normalMatrix * normal);',
+          '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+          '  mv.xyz += n * uThickness;',
+          '  gl_Position = projectionMatrix * mv;',
+          '}'
+        ].join('\n'),
+        fragmentShader: 'uniform vec3 uColor; void main() { gl_FragColor = vec4(uColor, 1.0); }',
+        side: BackSide
+      });
+      OUTLINE_CACHE.set(key, mat);
+    }
+    return mat;
+  }
+
+  const B = (w, h, d) => new BoxGeometry(w, h, d);
+  const CYL = (rt, rb, h, seg = 16) => new CylinderGeometry(rt, rb, h, seg);
+  const SPH = (r, seg = 16) => new SphereGeometry(r, seg, Math.max(8, Math.round(seg * 0.66)));
+
+  function mk(parent, geo, color, opts = {}) {
+    const {
+      pos = [0, 0, 0], rot = [0, 0, 0], scale = null,
+      outline = 0.016, emissive = 0x000000, emissiveIntensity = 1,
+      basic = false, opacity = 1, transparent = false, map = null,
+      side = FrontSide, blending = NormalBlending, depthWrite = true,
+      cast, receive = true, renderOrder = 0
+    } = opts;
+    const isTrans = transparent || opacity < 1;
+    let mat;
+    if (basic) {
+      mat = new MeshBasicMaterial({
+        color, map, side, transparent: isTrans, opacity, blending, depthWrite
+      });
+    } else {
+      mat = new MeshToonMaterial({
+        color, map, gradientMap: GRAD, side, emissive, emissiveIntensity,
+        transparent: isTrans, opacity, blending, depthWrite
+      });
+    }
+    const m = new Mesh(geo, mat);
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.rotation.set(rot[0], rot[1], rot[2]);
+    if (scale !== null) {
+      if (Array.isArray(scale)) m.scale.set(scale[0], scale[1], scale[2]);
+      else m.scale.setScalar(scale);
+    }
+    m.castShadow = cast === undefined ? !basic : cast;
+    m.receiveShadow = receive && !basic;
+    m.renderOrder = renderOrder;
+    if (outline > 0 && !basic) m.add(new Mesh(geo, outlineMaterial(outline)));
+    if (parent) parent.add(m);
+    return m;
+  }
+
+  function tube(parent, a, b, r, color, outline = 0.008) {
+    const va = new Vector3(a[0], a[1], a[2]);
+    const vb = new Vector3(b[0], b[1], b[2]);
+    const dir = vb.clone().sub(va);
+    const len = dir.length();
+    if (len < 1e-4) return null;
+    const m = mk(parent, CYL(r, r, len, 8), color, { outline, cast: false });
+    m.position.copy(va).add(vb).multiplyScalar(0.5);
+    m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), dir.normalize());
+    return m;
+  }
+
+  function wire(parent, a, b, sag = 0.35, r = 0.014, color = 0x3a2a24) {
+    const va = new Vector3(a[0], a[1], a[2]);
+    const vb = new Vector3(b[0], b[1], b[2]);
+    const mid = va.clone().add(vb).multiplyScalar(0.5);
+    mid.y -= sag;
+    const curve = new QuadraticBezierCurve3(va, mid, vb);
+    return mk(parent, new TubeGeometry(curve, 14, r, 4, false), color, { outline: 0, cast: false, receive: false });
+  }
+
+  function canvasTex(w, h, draw) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    draw(ctx, w, h);
+    const t = new CanvasTexture(c);
+    t.colorSpace = SRGBColorSpace;
+    t.anisotropy = 4;
+    t.needsUpdate = true;
+    return t;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rad = Math.min(r, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+
+  const GLOW_TEX = canvasTex(128, 128, (ctx, w, h) => {
+    const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.34, 'rgba(255,255,255,0.6)');
+    g.addColorStop(0.7, 'rgba(255,255,255,0.18)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  });
+
+  function glowSprite(parent, x, y, z, sx, sy, color, opacity = 0.8) {
+    const s = new Sprite(new SpriteMaterial({
+      map: GLOW_TEX, color, transparent: true, opacity, blending: AdditiveBlending, depthWrite: false
+    }));
+    s.position.set(x, y, z);
+    s.scale.set(sx, sy, 1);
+    s.raycast = () => {};
+    parent.add(s);
+    return s;
+  }
+
+  function labelSprite(text, accent = '#ffd2a0', scaleX = 1.9) {
+    const tex = canvasTex(512, 128, (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = 'rgba(18, 13, 21, 0.84)';
+      roundRect(ctx, 12, 12, w - 24, h - 24, 34);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 201, 138, 0.42)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.fillStyle = accent;
+      ctx.font = '600 42px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, w / 2, h / 2 + 2);
+    });
+    const s = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+    s.scale.set(scaleX, scaleX * 0.25, 1);
+    s.raycast = () => {};
+    return s;
+  }
+
+  function signTex(text, bg = '#f3e0c6', ink = '#5b3a2e') {
+    return canvasTex(256, 128, (ctx, w, h) => {
+      ctx.fillStyle = bg;
+      roundRect(ctx, 6, 6, w - 12, h - 12, 18);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(90, 58, 44, 0.4)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.fillStyle = ink;
+      ctx.font = '700 46px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, w / 2, h / 2 + 2);
+    });
+  }
+
+  /* ============================================================
+   * 2. 程序化贴图
+   * ============================================================ */
+  const floorTex = canvasTex(512, 512, (ctx, w, h) => {
+    ctx.fillStyle = '#7c5236';
+    ctx.fillRect(0, 0, w, h);
+    const rows = 8;
+    for (let r = 0; r < rows; r++) {
+      const y = r * h / rows;
+      ctx.fillStyle = r % 2 ? '#8c5f40' : '#805538';
+      ctx.fillRect(0, y, w, h / rows);
+      ctx.fillStyle = 'rgba(42, 25, 16, 0.5)';
+      ctx.fillRect(0, y, w, 2);
+      ctx.strokeStyle = 'rgba(58, 34, 20, 0.22)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 10; i++) {
+        const yy = y + 8 + Math.random() * (h / rows - 16);
+        ctx.beginPath();
+        ctx.moveTo(0, yy);
+        ctx.bezierCurveTo(w * 0.3, yy + 4, w * 0.7, yy - 4, w, yy + 2);
+        ctx.stroke();
+      }
+      const offset = (r % 2) * (w / 4);
+      for (let x = offset; x < w; x += w / 2) {
+        ctx.fillStyle = 'rgba(42, 25, 16, 0.42)';
+        ctx.fillRect(x, y, 2, h / rows);
+      }
+    }
+  });
+  floorTex.wrapS = floorTex.wrapT = RepeatWrapping;
+  floorTex.repeat.set(2, 2);
+
+  const grassTex = canvasTex(256, 256, (ctx, w, h) => {
+    ctx.fillStyle = '#4c5b3e';
+    ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 900; i++) {
+      const x = Math.random() * w;
+      const y = Math.random() * h;
+      ctx.fillStyle = Math.random() > 0.5 ? 'rgba(120, 148, 96, 0.25)' : 'rgba(48, 62, 40, 0.35)';
+      ctx.fillRect(x, y, 1.6, 2.4);
+    }
+  });
+  grassTex.wrapS = grassTex.wrapT = RepeatWrapping;
+  grassTex.repeat.set(5, 5);
+
+  const skyTex = canvasTex(512, 384, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#ffe9bd');
+    g.addColorStop(0.42, '#ffc98f');
+    g.addColorStop(0.72, '#f3a97f');
+    g.addColorStop(1, '#d98e77');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = 'rgba(255, 248, 220, 0.95)';
+    ctx.beginPath();
+    ctx.arc(w * 0.72, h * 0.25, 34, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 240, 205, 0.35)';
+    ctx.beginPath();
+    ctx.arc(w * 0.72, h * 0.25, 64, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 236, 210, 0.55)';
+    ctx.beginPath();
+    ctx.ellipse(w * 0.2, h * 0.3, 54, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(w * 0.45, h * 0.16, 40, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(139, 92, 82, 0.4)';
+    for (let i = 0; i < 8; i++) {
+      const bw = 40 + Math.random() * 56;
+      const bh = 26 + Math.random() * 40;
+      const x = i * 70 - 10;
+      ctx.fillRect(x, h - bh - 12, bw, bh);
+      ctx.beginPath();
+      ctx.moveTo(x - 6, h - bh - 12);
+      ctx.lineTo(x + bw / 2, h - bh - 34);
+      ctx.lineTo(x + bw + 6, h - bh - 12);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(90, 78, 62, 0.45)';
+    for (let i = 0; i < 7; i++) {
+      ctx.beginPath();
+      ctx.arc(i * 86 + 20, h - 30, 18 + Math.random() * 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  const tileTex = canvasTex(256, 256, (ctx, w, h) => {
+    ctx.fillStyle = '#e8d3bd';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(150, 112, 90, 0.35)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i <= 4; i++) {
+      ctx.beginPath(); ctx.moveTo(i * w / 4, 0); ctx.lineTo(i * w / 4, h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i * h / 4); ctx.lineTo(w, i * h / 4); ctx.stroke();
+    }
+  });
+
+  const rugTex = canvasTex(512, 384, (ctx, w, h) => {
+    ctx.fillStyle = '#b76e63';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#d9a08a';
+    ctx.fillRect(14, 14, w - 28, h - 28);
+    ctx.fillStyle = '#8d5a5a';
+    ctx.fillRect(28, 28, w - 56, h - 56);
+    ctx.strokeStyle = 'rgba(255, 224, 190, 0.55)';
+    ctx.lineWidth = 3;
+    for (let x = 44; x < w - 40; x += 34) {
+      ctx.beginPath();
+      ctx.moveTo(x, 44);
+      ctx.lineTo(x + 20, h / 2);
+      ctx.lineTo(x, h - 44);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(20, 12, 14, 0.16)';
+    for (let i = 0; i < 260; i++) ctx.fillRect(Math.random() * w, Math.random() * h, 2, 1);
+  });
+
+  const artTexA = canvasTex(256, 320, (ctx, w, h) => {
+    ctx.fillStyle = '#f6e6d2';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#e7a17e';
+    ctx.beginPath(); ctx.arc(w * 0.52, h * 0.42, 70, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#9a7bb0';
+    ctx.beginPath(); ctx.arc(w * 0.3, h * 0.66, 52, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#7d9d7b';
+    ctx.fillRect(w * 0.18, h * 0.2, 26, h * 0.6);
+    ctx.strokeStyle = '#5b3a2e';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(10, 10, w - 20, h - 20);
+  });
+
+  const artTexB = canvasTex(320, 240, (ctx, w, h) => {
+    ctx.fillStyle = '#2b2331';
+    ctx.fillRect(0, 0, w, h);
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#ffc98a');
+    g.addColorStop(1, '#b76e63');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(w * 0.62, h * 0.5, 86, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255, 236, 210, 0.75)';
+    ctx.fillRect(w * 0.12, h * 0.22, 14, h * 0.56);
+    ctx.fillStyle = '#7d9d7b';
+    ctx.beginPath(); ctx.arc(w * 0.24, h * 0.3, 30, 0, Math.PI * 2); ctx.fill();
+  });
+
+  const beamTex = canvasTex(64, 256, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(255, 226, 170, 0.55)');
+    g.addColorStop(0.6, 'rgba(255, 205, 150, 0.16)');
+    g.addColorStop(1, 'rgba(255, 205, 150, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  });
+
+  const bgTexture = canvasTex(4, 512, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#191221');
+    g.addColorStop(0.5, '#0e0b14');
+    g.addColorStop(1, '#08060c');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  });
+  scene.background = bgTexture;
+
+  /* ============================================================
+   * 3. 游戏数据
+   * ============================================================ */
+  const NEEDS = [
+    { key: 'hunger', label: '饥饿', icon: '🍞', hint: '去灶台做点吃的' },
+    { key: 'energy', label: '精力', icon: '⚡', hint: '在床边小睡一会儿' },
+    { key: 'fun', label: '娱乐', icon: '🎈', hint: '读读书、听听唱片' },
+    { key: 'social', label: '社交', icon: '💬', hint: '去邻里找朋友聊聊' },
+    { key: 'hygiene', label: '卫生', icon: '🧼', hint: '冲个热水澡' }
+  ];
+  const SKILLS = {
+    cooking: { name: '烹饪', icon: '🍳' },
+    creativity: { name: '创作', icon: '🎨' },
+    social: { name: '社交', icon: '💬' }
+  };
+  const GOALS = [
+    { id: 'cook', icon: '🍲', label: '做一顿温暖的饭', reward: 14, done: (s) => s.today.cook > 0 },
+    { id: 'social', icon: '👋', label: '和邻居说说话', reward: 12, done: (s) => s.today.social > 0 },
+    { id: 'create', icon: '🎨', label: '完成一幅小画', reward: 14, done: (s) => s.today.create > 0 },
+    { id: 'tidy', icon: '🪑', label: '给房间添点新意', reward: 16, done: (s) => s.today.tidy > 0 },
+    { id: 'shower', icon: '🚿', label: '洗个热水澡', reward: 10, done: (s) => s.today.shower > 0 },
+    { id: 'read', icon: '📖', label: '读几页书', reward: 10, done: (s) => s.today.read > 0 },
+    { id: 'play', icon: '🐈', label: '摸摸猫或听张唱片', reward: 8, done: (s) => s.today.play > 0 }
+  ];
+
+  const CATALOG = {
+    lamp: { icon: '💡', name: '落地灯', price: 45, w: 0.7, d: 0.7, make: buildLamp, action: 'lamp' },
+    plant: { icon: '🪴', name: '龟背竹', price: 28, w: 0.8, d: 0.8, make: buildPlant, action: 'plant' },
+    rug: { icon: '🧶', name: '手织地毯', price: 60, w: 2.4, d: 1.7, walkable: true, make: buildRug },
+    stool: { icon: '🪑', name: '小圆凳', price: 35, w: 0.8, d: 0.8, make: buildStool },
+    shelf: { icon: '📚', name: '手工书架', price: 120, w: 1.6, d: 0.7, make: buildShelf, action: 'shelf' },
+    easel: { icon: '🎨', name: '木画架', price: 95, w: 1.0, d: 0.8, make: buildEasel, action: 'easel' },
+    player: { icon: '💿', name: '唱片机', price: 110, w: 1.0, d: 0.7, make: buildPlayer, action: 'player' },
+    table: { icon: '🫖', name: '圆茶几', price: 70, w: 1.4, d: 1.4, make: buildTable },
+    cushion: { icon: '🧸', name: '懒人沙发', price: 80, w: 1.3, d: 1.3, make: buildCushion, action: 'cushion' }
+  };
+
+  const NEIGHBORS = [
+    {
+      key: 'juniper', name: 'Juniper', role: '花房主人', icon: '🌿', tint: '#b9d3a6',
+      x: -4.1, z: 1.0, gift: '一小束尤加利', house: '花房小屋',
+      line: '她正把新到的尤加利叶扎成小束，手指上有青草味。',
+      talk: ['Juniper 说窗台的薄荷长得很好。', 'Juniper 分了你一小枝迷迭香。', 'Juniper 笑着问你今天有没有晒太阳。']
+    },
+    {
+      key: 'otto', name: 'Otto', role: '面包师', icon: '🥐', tint: '#f0c991',
+      x: 0.2, z: -1.2, gift: '一只刚出炉的可颂', house: '面包房',
+      line: 'Otto 把刚出炉的面包摆上木架，围裙上沾着面粉。',
+      talk: ['Otto 塞给你一小块温热的可颂。', 'Otto 说今天的黄油特别香。', 'Otto 问你晚饭想不想试试新配方。']
+    },
+    {
+      key: 'nell', name: 'Nell', role: '画画的人', icon: '🎨', tint: '#c9b1d8',
+      x: 4.1, z: 1.0, gift: '一张手作明信片', house: '画室',
+      line: 'Nell 坐在门口画速写，脚边散着一排短铅笔。',
+      talk: ['Nell 把你的侧影画进了速写本。', 'Nell 说这条街的黄昏最好看。', 'Nell 借你一支很软的铅笔。']
+    }
+  ];
+
+  const SAVE_KEY = 'periwinkle-row-save-v1';
+  const freshState = () => ({
+    v: 1, day: 1, clock: 490, coins: 68,
+    needs: { hunger: 62, energy: 74, fun: 58, social: 48, hygiene: 83 },
+    skills: { cooking: 0, creativity: 0, social: 0 },
+    rel: { juniper: 6, otto: 4, nell: 2 },
+    helped: {},
+    goals: { day: 1, ids: [], done: [], bonus: false },
+    today: { cook: 0, social: 0, create: 0, tidy: 0, shower: 0, read: 0, play: 0 },
+    placed: [], savedAt: 0
+  });
+
+  function pickGoals(day) {
+    const pool = GOALS.slice();
+    let s = day * 9301 + 49297;
+    const rand = () => {
+      s = (s * 9301 + 49297) % 233280;
+      return s / 233280;
+    };
+    const out = [];
+    while (out.length < 3 && pool.length) {
+      const i = Math.floor(rand() * pool.length);
+      out.push(pool.splice(i, 1)[0].id);
+    }
+    return out;
+  }
+
+  function ensureGoals(s) {
+    const valid = Array.isArray(s.goals.ids) && s.goals.ids.length > 0 &&
+      s.goals.ids.every((id) => GOALS.some((g) => g.id === id));
+    if (!valid || s.goals.day !== s.day) {
+      s.goals = { day: s.day, ids: pickGoals(s.day), done: [], bonus: false };
+    }
+  }
+
+  function loadState() {
+    const base = freshState();
+    let raw = null;
+    try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { /* storage blocked */ }
+    if (!raw) return base;
+    try {
+      const d = JSON.parse(raw);
+      if (!d || d.v !== 1) return base;
+      const s = {
+        ...base, ...d,
+        needs: { ...base.needs, ...(d.needs || {}) },
+        skills: { ...base.skills, ...(d.skills || {}) },
+        rel: { ...base.rel, ...(d.rel || {}) },
+        helped: { ...base.helped, ...(d.helped || {}) },
+        goals: { ...base.goals, ...(d.goals || {}) },
+        today: { ...base.today, ...(d.today || {}) }
+      };
+      s.placed = Array.isArray(d.placed)
+        ? d.placed.filter((p) => p && CATALOG[p.kind] && isFinite(p.x) && isFinite(p.z))
+        : [];
+      for (const k of Object.keys(s.needs)) s.needs[k] = clamp(Number(s.needs[k]) || 0, 0, 100);
+      s.coins = Math.max(0, Math.floor(Number(s.coins) || 0));
+      s.day = Math.max(1, Math.floor(Number(s.day) || 1));
+      s.clock = ((Number(s.clock) || 0) % 1440 + 1440) % 1440;
+      ensureGoals(s);
+      return s;
+    } catch (e) {
+      return base;
+    }
+  }
+
+  let hadSave = false;
+  try { hadSave = !!localStorage.getItem(SAVE_KEY); } catch (e) {}
+  const S = loadState();
+  ensureGoals(S);
+
+  let mode = 'life';
+  let hoodSeen = false;
+  let lastSaveToast = -1e9;
+  let resetting = false;
+  let selectedId = null;
+  let placing = null;
+  let camTween = null;
+  let miri, hoodMiri, cat;
+  let selRing;
+  let elapsed = 0;
+  let uiTimer = 0;
+  let navHome = null;
+  let navHood = null;
+  const homeActor = { group: null, path: [], speed: 1.55, walkPhase: 0, look: null };
+  const hoodActor = { group: null, path: [], speed: 1.55, walkPhase: 0, look: null };
+
+  const effects = [];
+  const motes = [];
+  const fireflies = [];
+  const placedRuntime = new Map();
+  const obstacles = [];
+  const lastWarn = {};
+
+  /* ============================================================
+   * 4. 人物 / 宠物
+   * ============================================================ */
+  function buildPerson(o = {}) {
+    const g = new Group();
+    const skin = o.skin ?? 0xf2c9a4;
+    const hair = o.hair ?? 0x83543a;
+    const top = o.top ?? 0xb79dd6;
+    const bottom = o.bottom ?? 0xe2a07f;
+    const shoe = o.shoe ?? 0x5b4137;
+
+    const legL = new Group();
+    legL.position.set(-0.11, 0.42, 0);
+    g.add(legL);
+    mk(legL, CYL(0.072, 0.08, 0.3, 10), 0xf0dcc8, { pos: [0, -0.21, 0], outline: 0.008 });
+    mk(legL, B(0.17, 0.09, 0.26), shoe, { pos: [0, -0.375, 0.03], outline: 0.008 });
+    const legR = new Group();
+    legR.position.set(0.11, 0.42, 0);
+    g.add(legR);
+    mk(legR, CYL(0.072, 0.08, 0.3, 10), 0xf0dcc8, { pos: [0, -0.21, 0], outline: 0.008 });
+    mk(legR, B(0.17, 0.09, 0.26), shoe, { pos: [0, -0.375, 0.03], outline: 0.008 });
+    mk(g, CYL(0.21, 0.35, 0.32, 16), bottom, { pos: [0, 0.48, 0], outline: 0.014 });
+    mk(g, CYL(0.24, 0.22, 0.4, 16), top, { pos: [0, 0.83, 0], outline: 0.014 });
+    mk(g, CYL(0.2, 0.24, 0.05, 16), 0xefe2cf, { pos: [0, 1.03, 0], outline: 0.006 });
+    const armL = new Group();
+    armL.position.set(-0.29, 1.02, 0);
+    g.add(armL);
+    mk(armL, CYL(0.06, 0.07, 0.36, 10), top, { pos: [0, -0.15, 0], rot: [0, 0, 0.16], outline: 0.008 });
+    mk(armL, SPH(0.075, 10), skin, { pos: [-0.04, -0.34, 0.02], outline: 0.006 });
+    const armR = new Group();
+    armR.position.set(0.29, 1.02, 0);
+    g.add(armR);
+    mk(armR, CYL(0.06, 0.07, 0.36, 10), top, { pos: [0, -0.15, 0], rot: [0, 0, -0.16], outline: 0.008 });
+    mk(armR, SPH(0.075, 10), skin, { pos: [0.04, -0.34, 0.02], outline: 0.006 });
+    mk(g, CYL(0.055, 0.06, 0.08, 10), skin, { pos: [0, 1.04, 0], outline: 0 });
+
+    mk(g, SPH(0.27, 20), skin, { pos: [0, 1.24, 0.02], outline: 0.012 });
+    mk(g, SPH(0.288, 20), hair, { pos: [0, 1.27, -0.06], outline: 0.01 });
+    mk(g, SPH(0.075, 12), hair, { pos: [-0.25, 1.2, 0.06], scale: [1, 1.15, 0.8], outline: 0 });
+    mk(g, SPH(0.075, 12), hair, { pos: [0.25, 1.2, 0.06], scale: [1, 1.15, 0.8], outline: 0 });
+    mk(g, SPH(0.12, 12), hair, { pos: [0, 1.5, -0.16], outline: 0.006 });
+    mk(g, SPH(0.05, 10), 0xe07f68, { pos: [0.08, 1.52, -0.16], outline: 0 });
+    // bangs
+    mk(g, SPH(0.1, 10), hair, { pos: [-0.13, 1.43, 0.17], scale: [1.2, 0.55, 0.6], outline: 0 });
+    mk(g, SPH(0.1, 10), hair, { pos: [0.13, 1.43, 0.17], scale: [1.2, 0.55, 0.6], outline: 0 });
+    mk(g, SPH(0.1, 10), hair, { pos: [0, 1.45, 0.2], scale: [1.1, 0.5, 0.55], outline: 0 });
+    // eyes / cheeks / mouth
+    mk(g, SPH(0.027, 8), 0x34221f, { pos: [-0.095, 1.25, 0.275], outline: 0, basic: true });
+    mk(g, SPH(0.027, 8), 0x34221f, { pos: [0.095, 1.25, 0.275], outline: 0, basic: true });
+    mk(g, SPH(0.008, 6), 0xfff3e6, { pos: [-0.088, 1.26, 0.296], outline: 0, basic: true });
+    mk(g, SPH(0.008, 6), 0xfff3e6, { pos: [0.102, 1.26, 0.296], outline: 0, basic: true });
+    mk(g, SPH(0.042, 8), 0xef9a86, { pos: [-0.16, 1.17, 0.24], scale: [1, 0.62, 0.3], outline: 0, basic: true });
+    mk(g, SPH(0.042, 8), 0xef9a86, { pos: [0.16, 1.17, 0.24], scale: [1, 0.62, 0.3], outline: 0, basic: true });
+    mk(g, B(0.05, 0.012, 0.01), 0xbe6a5c, { pos: [0, 1.13, 0.27], outline: 0, basic: true });
+
+    if (o.satchel) {
+      mk(g, B(0.16, 0.19, 0.08), 0x8a5a3c, { pos: [0.27, 0.75, 0.08], rot: [0, 0.3, 0], outline: 0.006 });
+      tube(g, [0.12, 1.02, 0.05], [0.27, 0.84, 0.08], 0.018, 0x6d4530, 0.004);
+    }
+    if (o.pencil) {
+      mk(g, CYL(0.012, 0.012, 0.22, 6), 0xd9a45b, { pos: [0.26, 1.47, 0.06], rot: [0.2, 0, 0.45], outline: 0 });
+    }
+    if (o.apron) {
+      mk(g, B(0.36, 0.44, 0.02), o.apron, { pos: [0, 0.83, 0.225], outline: 0, cast: false });
+    }
+    if (o.hat === 'straw') {
+      mk(g, CYL(0.36, 0.36, 0.03, 18), 0xe0bd82, { pos: [0, 1.5, -0.03], outline: 0.008 });
+      mk(g, CYL(0.2, 0.22, 0.17, 14), 0xe6c790, { pos: [0, 1.58, -0.03], outline: 0.006 });
+      mk(g, CYL(0.215, 0.215, 0.04, 14), 0xb9785c, { pos: [0, 1.52, -0.03], outline: 0 });
+    } else if (o.hat === 'baker') {
+      mk(g, CYL(0.24, 0.26, 0.3, 16), 0xf3e9d8, { pos: [0, 1.56, -0.04], outline: 0.008 });
+      mk(g, CYL(0.26, 0.26, 0.05, 16), 0xe8dcc7, { pos: [0, 1.43, -0.04], outline: 0 });
+    } else if (o.hat === 'beret') {
+      mk(g, SPH(0.28, 14), 0x7a5a70, { pos: [0.03, 1.47, -0.05], scale: [1.02, 0.42, 1.02], outline: 0.006 });
+      mk(g, SPH(0.035, 8), 0x5c4256, { pos: [0.03, 1.56, -0.05], outline: 0 });
+    }
+    g.userData.baseY = 0;
+    g.userData.phase = Math.random() * 6.28;
+    g.userData.limbs = { legL, legR, armL, armR };
+    return g;
+  }
+
+  function buildCat() {
+    const g = new Group();
+    const fur = 0xd8c3a8;
+    mk(g, SPH(0.28, 14), fur, { pos: [0, 0.2, 0], scale: [1.45, 0.8, 0.95], outline: 0.01 });
+    mk(g, SPH(0.19, 14), fur, { pos: [0.34, 0.27, 0.03], outline: 0.008 });
+    mk(g, CYL(0.001, 0.075, 0.11, 5), 0xe0cdb6, { pos: [0.28, 0.41, 0], outline: 0 });
+    mk(g, CYL(0.001, 0.075, 0.11, 5), 0xe0cdb6, { pos: [0.4, 0.41, 0], outline: 0 });
+    mk(g, B(0.16, 0.02, 0.03), 0x8a6a52, { pos: [0.34, 0.24, 0.2], outline: 0 });
+    mk(g, B(0.1, 0.012, 0.01), 0x4a3428, { pos: [0.3, 0.3, 0.205], outline: 0, basic: true });
+    mk(g, B(0.1, 0.012, 0.01), 0x4a3428, { pos: [0.39, 0.3, 0.205], outline: 0, basic: true });
+    mk(g, B(0.12, 0.05, 0.25), 0xc9ac8f, { pos: [-0.05, 0.14, 0.22], outline: 0 });
+    wire(g, [-0.32, 0.2, 0], [-0.55, 0.12, 0.16], 0.12, 0.035, fur);
+    mk(g, B(0.05, 0.08, 0.34), 0xc9ac8f, { pos: [-0.02, 0.3, 0], outline: 0 });
+    mk(g, B(0.05, 0.08, 0.34), 0xc9ac8f, { pos: [0.12, 0.3, 0.02], outline: 0 });
+    return g;
+  }
+
+  /* ============================================================
+   * 5. 米莉的房间
+   * ============================================================ */
+  function pick(obj, data) {
+    obj.userData.pick = data;
+    return obj;
+  }
+
+  // 只有头部可点开“Miri 状态”，身体不阻挡点击地板移动
+  function addSelfPick(person) {
+    const mat = new MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+    mat.visible = false;
+    const hit = new Mesh(SPH(0.34, 12), mat);
+    hit.position.set(0, 1.32, 0);
+    hit.userData.pick = { type: 'self' };
+    person.add(hit);
+    return hit;
+  }
+
+  function addBeam(parent, from, to, r1, r2, opacity) {
+    const a = new Vector3(from[0], from[1], from[2]);
+    const b = new Vector3(to[0], to[1], to[2]);
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    const geo = new CylinderGeometry(r2, r1, len, 14, 1, true);
+    const mat = new MeshBasicMaterial({
+      color: 0xffd9a6, transparent: true, opacity, blending: AdditiveBlending,
+      depthWrite: false, side: DoubleSide
+    });
+    const m = new Mesh(geo, mat);
+    m.position.copy(a).add(b).multiplyScalar(0.5);
+    m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), dir.normalize());
+    m.renderOrder = 2;
+    parent.add(m);
+    return m;
+  }
+
+  function buildHome() {
+    const g = new Group();
+    homeWorld.add(g);
+
+    const C = {
+      wall: 0xc8ac9c, wallDeep: 0xb3968a, trim: 0xf0ddc9, wood: 0x9a6848,
+      woodDark: 0x6d4a33, walnut: 0x4a3228, cream: 0xf3e4d1, linen: 0xe7d6c3,
+      peach: 0xe8a17e, coral: 0xd97f6b, lavender: 0xa798c9, sage: 0x9db89a,
+      brass: 0xd9a45b, terracotta: 0xc97c5a, leaf: 0x6e9c6b
+    };
+
+    // base & floor
+    mk(g, B(9.9, 0.42, 9.9), C.walnut, { pos: [0, -0.38, 0], outline: 0.03 });
+    mk(g, B(9.4, 0.16, 9.4), C.woodDark, { pos: [0, -0.16, 0], outline: 0.02 });
+    mk(g, B(8.8, 0.12, 8.8), 0xffffff, { pos: [0, -0.06, 0], map: floorTex, outline: 0.02 });
+
+    // walls
+    mk(g, B(8.8, 4.3, 0.24), C.wall, { pos: [0, 2.15, -4.4], outline: 0.026 });
+    mk(g, B(0.24, 4.3, 8.8), C.wall, { pos: [-4.4, 2.15, 0], outline: 0.026 });
+    mk(g, B(8.8, 0.2, 0.08), C.trim, { pos: [0, 4.14, -4.25], outline: 0, cast: false });
+    mk(g, B(0.08, 0.2, 8.8), C.trim, { pos: [-4.25, 4.14, 0], outline: 0, cast: false });
+    mk(g, B(8.8, 0.18, 0.06), C.trim, { pos: [0, 0.09, -4.25], outline: 0, cast: false });
+    mk(g, B(0.06, 0.18, 8.8), C.trim, { pos: [-4.25, 0.09, 0], outline: 0, cast: false });
+    // wall panel lines
+    for (let i = 0; i < 4; i++) {
+      mk(g, B(0.02, 3.2, 0.02), 0xb89c8f, { pos: [-2.2 + i * 1.5, 2.1, -4.275], outline: 0, cast: false });
+    }
+
+    // window
+    const win = new Group();
+    win.position.set(0.55, 2.42, -4.26);
+    g.add(win);
+    pick(win, { type: 'action', key: 'window' });
+    const fw = 2.7, fh = 1.95;
+    const glass = new Mesh(new PlaneGeometry(fw - 0.18, fh - 0.18), new MeshBasicMaterial({ map: skyTex }));
+    glass.position.z = 0.005;
+    win.add(glass);
+    mk(win, B(fw, 0.1, 0.12), C.trim, { pos: [0, fh / 2, 0.03], outline: 0.008 });
+    mk(win, B(fw, 0.1, 0.12), C.trim, { pos: [0, -fh / 2, 0.03], outline: 0.008 });
+    mk(win, B(0.1, fh, 0.12), C.trim, { pos: [-fw / 2, 0, 0.03], outline: 0.008 });
+    mk(win, B(0.1, fh, 0.12), C.trim, { pos: [fw / 2, 0, 0.03], outline: 0.008 });
+    mk(win, B(0.06, fh, 0.06), C.trim, { pos: [0, 0, 0.05], outline: 0 });
+    mk(win, B(fw, 0.06, 0.06), C.trim, { pos: [0, 0, 0.05], outline: 0 });
+    mk(win, B(fw + 0.34, 0.12, 0.36), C.cream, { pos: [0, -fh / 2 - 0.08, 0.14], outline: 0.008 });
+    glowSprite(win, 0, 0, 0.08, 4.4, 3.2, 0xffc98a, 0.22);
+
+    // curtains
+    function curtain(x, flip) {
+      const geo = new PlaneGeometry(0.56, 2.3, 10, 1);
+      const pos = geo.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const px = pos.getX(i);
+        pos.setZ(i, Math.sin((px / 0.56) * Math.PI * 4.2) * 0.05);
+      }
+      geo.computeVertexNormals();
+      const m = new Mesh(geo, new MeshToonMaterial({
+        color: 0xecdbc4, gradientMap: GRAD, side: DoubleSide
+      }));
+      m.position.set(x, 2.5, -4.14);
+      m.rotation.y = flip ? 0.06 : -0.06;
+      m.castShadow = false;
+      g.add(m);
+    }
+    curtain(-0.95, false);
+    curtain(2.05, true);
+    mk(g, CYL(0.022, 0.022, 3.4, 8), C.brass, { pos: [0.55, 3.72, -4.12], rot: [0, 0, Math.PI / 2], outline: 0 });
+    mk(g, SPH(0.05, 8), C.brass, { pos: [-1.15, 3.72, -4.12], outline: 0 });
+    mk(g, SPH(0.05, 8), C.brass, { pos: [2.25, 3.72, -4.12], outline: 0 });
+
+    // sun beams & patch
+    addBeam(g, [0.3, 3.25, -4.0], [0.1, 0.06, -1.3], 0.5, 1.35, 0.07);
+    addBeam(g, [1.0, 3.2, -4.0], [1.5, 0.06, -1.1], 0.35, 0.95, 0.055);
+    const patch = new Mesh(new PlaneGeometry(3.4, 2.3), new MeshBasicMaterial({
+      map: GLOW_TEX, color: 0xffc281, transparent: true, opacity: 0.2,
+      blending: AdditiveBlending, depthWrite: false
+    }));
+    patch.rotation.x = -Math.PI / 2;
+    patch.position.set(0.8, 0.018, -1.1);
+    g.add(patch);
+
+    // desk
+    const desk = new Group();
+    desk.position.set(0.5, 0, -3.72);
+    g.add(desk);
+    pick(desk, { type: 'action', key: 'desk' });
+    mk(desk, B(2.6, 0.1, 1.0), C.wood, { pos: [0, 1.01, 0], outline: 0.012 });
+    for (const [x, z] of [[-1.16, -0.38], [1.16, -0.38], [-1.16, 0.38], [1.16, 0.38]]) {
+      mk(desk, B(0.08, 0.96, 0.08), C.woodDark, { pos: [x, 0.5, z], outline: 0.006 });
+    }
+    mk(desk, B(0.62, 0.42, 0.9), C.woodDark, { pos: [0.97, 0.76, 0], outline: 0.01 });
+    mk(desk, B(0.58, 0.05, 0.05), C.brass, { pos: [0.97, 0.78, 0.47], outline: 0 });
+    // laptop
+    mk(desk, B(0.62, 0.035, 0.44), 0x4f4a52, { pos: [0.1, 1.08, 0.04], outline: 0.005 });
+    mk(desk, B(0.62, 0.42, 0.025), 0x4f4a52, { pos: [0.1, 1.28, -0.19], rot: [-0.22, 0, 0], outline: 0.005 });
+    mk(desk, B(0.55, 0.34, 0.01), 0xffe0b0, { pos: [0.1, 1.28, -0.175], rot: [-0.22, 0, 0], basic: true, outline: 0, opacity: 0.82 });
+    // lamp
+    mk(desk, CYL(0.13, 0.15, 0.04, 14), C.brass, { pos: [-1.0, 1.08, -0.18], outline: 0.006 });
+    tube(desk, [-1.0, 1.1, -0.18], [-0.98, 1.55, -0.24], 0.025, C.brass);
+    mk(desk, CYL(0.18, 0.07, 0.16, 14), 0xf0c48c, { pos: [-0.98, 1.62, -0.25], rot: [0.3, 0, 0], outline: 0.006, emissive: 0x5a3418 });
+    mk(desk, SPH(0.055, 8), 0xffe1a8, { pos: [-0.98, 1.56, -0.25], basic: true, outline: 0 });
+    // mug, papers, pencils, plant
+    mk(desk, CYL(0.075, 0.065, 0.14, 12), 0xd8b4a0, { pos: [0.78, 1.12, 0.2], outline: 0.004 });
+    mk(desk, new BoxGeometry(0.3, 0.012, 0.4), 0xf5e8d5, { pos: [-0.5, 1.07, 0.1], rot: [0, 0.2, 0], outline: 0 });
+    mk(desk, new BoxGeometry(0.26, 0.012, 0.34), 0xffd9ae, { pos: [-0.44, 1.085, 0.14], rot: [0, -0.15, 0], outline: 0 });
+    mk(desk, CYL(0.07, 0.07, 0.14, 10), 0x7d9d7b, { pos: [1.02, 1.12, 0.18], outline: 0.004 });
+    for (let i = 0; i < 5; i++) {
+      mk(desk, CYL(0.012, 0.012, 0.32, 6), [0xd9a45b, 0xc97c5a, 0x7d9d7b][i % 3], {
+        pos: [0.92 + i * 0.026, 1.26, -0.1], rot: [0.12, 0, -0.18 + i * 0.05], outline: 0
+      });
+    }
+    mk(desk, SPH(0.09, 10), C.leaf, { pos: [-0.62, 1.16, -0.28], scale: [0.9, 1, 0.9], outline: 0.004 });
+    mk(desk, CYL(0.08, 0.07, 0.12, 10), 0xc97c5a, { pos: [-0.62, 1.09, -0.28], outline: 0.004 });
+
+    // chair
+    const chair = new Group();
+    chair.position.set(0.55, 0, -2.95);
+    g.add(chair);
+    mk(chair, B(0.62, 0.08, 0.6), C.wood, { pos: [0, 0.52, 0], outline: 0.008 });
+    mk(chair, B(0.56, 0.1, 0.52), 0xd9a08a, { pos: [0, 0.57, 0], outline: 0.006 });
+    for (const [x, z] of [[-0.26, -0.24], [0.26, -0.24], [-0.26, 0.24], [0.26, 0.24]]) {
+      mk(chair, B(0.06, 0.5, 0.06), C.woodDark, { pos: [x, 0.26, z], outline: 0.004 });
+    }
+    mk(chair, B(0.62, 0.7, 0.07), C.wood, { pos: [0, 0.86, 0.27], outline: 0.008 });
+    for (let i = 0; i < 3; i++) mk(chair, B(0.08, 0.56, 0.03), C.woodDark, { pos: [-0.18 + i * 0.18, 0.86, 0.24], outline: 0 });
+
+    // bed
+    const bed = new Group();
+    bed.position.set(3.0, 0, -2.6);
+    g.add(bed);
+    pick(bed, { type: 'action', key: 'bed' });
+    mk(bed, B(1.86, 0.3, 2.45), C.wood, { pos: [0, 0.29, 0], outline: 0.012 });
+    mk(bed, B(1.86, 1.05, 0.12), C.woodDark, { pos: [0, 1.0, -1.24], outline: 0.012 });
+    mk(bed, B(1.72, 0.28, 2.2), 0xf3e6d3, { pos: [0, 0.55, 0.04], outline: 0.01 });
+    mk(bed, B(1.7, 0.14, 1.5), C.lavender, { pos: [0, 0.73, 0.32], outline: 0.008 });
+    mk(bed, B(1.72, 0.1, 0.42), C.peach, { pos: [0, 0.8, 0.94], outline: 0.006 });
+    mk(bed, B(0.66, 0.18, 0.44), 0xf9efe0, { pos: [-0.4, 0.76, -0.86], rot: [0, 0.04, 0], outline: 0.008 });
+    mk(bed, B(0.66, 0.18, 0.44), 0xf9efe0, { pos: [0.4, 0.76, -0.86], rot: [0, -0.04, 0], outline: 0.008 });
+    mk(bed, B(1.6, 0.06, 0.5), 0xd9a08a, { pos: [0, 0.64, 0.6], outline: 0.004 });
+
+    // cat
+    cat = buildCat();
+    cat.position.set(2.42, 0.72, -1.62);
+    cat.rotation.y = 1.1;
+    cat.scale.setScalar(0.9);
+    pick(cat, { type: 'action', key: 'cat' });
+    g.add(cat);
+
+    // kitchen counter
+    const kitchen = new Group();
+    kitchen.position.set(-4.0, 0, -2.3);
+    g.add(kitchen);
+    mk(kitchen, B(0.86, 0.9, 2.3), 0xe4d2bd, { pos: [0, 0.47, 0], outline: 0.012 });
+    mk(kitchen, B(0.96, 0.08, 2.42), 0xf0e0cb, { pos: [0.02, 0.95, 0], outline: 0.008 });
+    mk(kitchen, B(0.04, 0.8, 2.2), 0xd8c2aa, { pos: [0.44, 0.47, 0], outline: 0 });
+    for (let i = 0; i < 3; i++) {
+      mk(kitchen, B(0.02, 0.36, 0.6), 0xcdb69d, { pos: [0.455, 0.55, -0.72 + i * 0.7], outline: 0 });
+      mk(kitchen, B(0.06, 0.03, 0.18), C.brass, { pos: [0.48, 0.7, -0.72 + i * 0.7], outline: 0, cast: false });
+    }
+    // sink
+    mk(kitchen, B(0.52, 0.05, 0.5), 0x8a8f96, { pos: [0.02, 0.96, -0.7], outline: 0.006 });
+    mk(kitchen, B(0.44, 0.02, 0.42), 0x6d737b, { pos: [0.02, 0.99, -0.7], outline: 0 });
+    tube(kitchen, [0.02, 1.0, -0.94], [0.02, 1.32, -0.94], 0.025, 0x9aa5b8);
+    tube(kitchen, [0.02, 1.32, -0.94], [0.02, 1.32, -0.78], 0.025, 0x9aa5b8);
+    // stove
+    const stove = new Group();
+    stove.position.set(0.02, 1.0, 0.5);
+    kitchen.add(stove);
+    pick(stove, { type: 'action', key: 'stove' });
+    mk(stove, B(0.78, 0.03, 0.72), 0x4a454d, { pos: [0, 0, 0], outline: 0.004 });
+    mk(stove, new RingGeometry(0.1, 0.15, 20), 0x2a262c, { pos: [-0.18, 0.017, -0.15], rot: [-Math.PI / 2, 0, 0], basic: true, outline: 0 });
+    mk(stove, new RingGeometry(0.1, 0.15, 20), 0x2a262c, { pos: [0.18, 0.017, 0.15], rot: [-Math.PI / 2, 0, 0], basic: true, outline: 0 });
+    mk(stove, CYL(0.22, 0.2, 0.24, 16), 0x8a5a44, { pos: [-0.18, 0.15, -0.15], outline: 0.006 });
+    mk(stove, CYL(0.23, 0.23, 0.03, 16), 0x6d4533, { pos: [-0.18, 0.28, -0.15], outline: 0.004 });
+    mk(stove, SPH(0.04, 8), 0xffd9a0, { pos: [-0.18, 0.26, -0.15], basic: true, outline: 0 });
+    // backsplash & cabinets
+    const splash = new Mesh(new PlaneGeometry(2.4, 0.72), new MeshToonMaterial({ map: tileTex, gradientMap: GRAD }));
+    splash.position.set(-4.27, 1.38, -2.3);
+    splash.rotation.y = Math.PI / 2;
+    g.add(splash);
+    mk(g, B(0.44, 0.9, 1.9), 0xe4d2bd, { pos: [-4.16, 2.35, -2.3], outline: 0.012 });
+    mk(g, B(0.05, 0.78, 0.84), 0xd8c2aa, { pos: [-3.93, 2.35, -2.75], outline: 0 });
+    mk(g, B(0.05, 0.78, 0.84), 0xd8c2aa, { pos: [-3.93, 2.35, -1.85], outline: 0 });
+    mk(g, B(0.05, 0.03, 0.16), C.brass, { pos: [-3.9, 2.35, -2.42], outline: 0, cast: false });
+    mk(g, B(0.05, 0.03, 0.16), C.brass, { pos: [-3.9, 2.35, -2.18], outline: 0, cast: false });
+
+    // fridge
+    const fridge = new Group();
+    fridge.position.set(-3.98, 0, -0.35);
+    g.add(fridge);
+    pick(fridge, { type: 'action', key: 'fridge' });
+    mk(fridge, B(0.95, 2.05, 0.9), 0xf0e3d0, { pos: [0, 1.03, 0], outline: 0.016 });
+    mk(fridge, B(0.9, 0.02, 0.86), 0xd6c4ae, { pos: [0, 1.42, 0], outline: 0 });
+    mk(fridge, B(0.04, 0.34, 0.06), C.brass, { pos: [0.44, 1.02, 0.34], outline: 0 });
+    mk(fridge, B(0.04, 0.24, 0.06), C.brass, { pos: [0.44, 1.62, 0.34], outline: 0 });
+    mk(fridge, B(0.2, 0.24, 0.01), 0xffd9ae, { pos: [-0.18, 1.5, 0.455], rot: [0, 0, -0.06], basic: true, outline: 0 });
+    mk(fridge, SPH(0.05, 8), 0xe8a17e, { pos: [0.16, 1.2, 0.46], outline: 0, basic: true });
+    mk(fridge, SPH(0.04, 8), 0x7d9d7b, { pos: [0.02, 0.95, 0.46], outline: 0, basic: true });
+
+    // shower nook
+    const shower = new Group();
+    shower.position.set(-3.62, 0, 2.55);
+    g.add(shower);
+    pick(shower, { type: 'action', key: 'shower' });
+    const showerTile = new Mesh(new PlaneGeometry(1.9, 2.7), new MeshToonMaterial({ map: tileTex, gradientMap: GRAD }));
+    showerTile.position.set(-0.66, 1.4, 0);
+    showerTile.rotation.y = Math.PI / 2;
+    g.add(showerTile);
+    mk(shower, B(1.5, 0.14, 1.55), 0xe8d6bf, { pos: [0, 0.07, 0], outline: 0.012 });
+    mk(shower, B(1.42, 0.02, 1.47), 0xd3bda5, { pos: [0, 0.15, 0], outline: 0 });
+    tube(shower, [-0.64, 1.6, -0.15], [-0.64, 2.25, -0.15], 0.025, 0xcfae7e);
+    tube(shower, [-0.64, 2.25, -0.15], [-0.34, 2.25, -0.15], 0.025, 0xcfae7e);
+    mk(shower, CYL(0.15, 0.09, 0.1, 14), 0xcfae7e, { pos: [-0.3, 2.2, -0.15], outline: 0.006 });
+    // curtain
+    const geo = new PlaneGeometry(1.45, 2.25, 12, 1);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const px = pos.getX(i);
+      pos.setZ(i, Math.sin((px / 1.45) * Math.PI * 5) * 0.055);
+    }
+    geo.computeVertexNormals();
+    const curtainMesh = new Mesh(geo, new MeshToonMaterial({
+      color: 0xe9d6bd, gradientMap: GRAD, side: DoubleSide, transparent: true, opacity: 0.92
+    }));
+    curtainMesh.position.set(0.2, 1.25, 0.78);
+    curtainMesh.castShadow = false;
+    shower.add(curtainMesh);
+    mk(shower, CYL(0.018, 0.018, 1.6, 8), 0xcfae7e, { pos: [0.2, 2.4, 0.78], rot: [0, 0, Math.PI / 2], outline: 0 });
+    mk(shower, CYL(0.06, 0.05, 0.12, 10), 0xd8b4a0, { pos: [-0.55, 1.55, 0.5], outline: 0.004 });
+    mk(shower, CYL(0.06, 0.05, 0.12, 10), 0xd8b4a0, { pos: [-0.55, 1.55, 0.66], outline: 0.004 });
+
+    // armchair
+    const chair2 = new Group();
+    chair2.position.set(3.0, 0, 2.35);
+    chair2.rotation.y = -2.15;
+    g.add(chair2);
+    pick(chair2, { type: 'action', key: 'armchair' });
+    mk(chair2, B(1.15, 0.26, 0.98), 0xa97a5e, { pos: [0, 0.42, 0], outline: 0.014 });
+    mk(chair2, B(1.02, 0.16, 0.86), 0xe0b394, { pos: [0, 0.6, 0.02], outline: 0.008 });
+    mk(chair2, B(1.15, 0.92, 0.2), 0xa97a5e, { pos: [0, 0.95, -0.4], rot: [-0.12, 0, 0], outline: 0.012 });
+    mk(chair2, B(0.2, 0.62, 0.95), 0xa97a5e, { pos: [-0.56, 0.62, 0], outline: 0.012 });
+    mk(chair2, B(0.2, 0.62, 0.95), 0xa97a5e, { pos: [0.56, 0.62, 0], outline: 0.012 });
+    mk(chair2, B(0.34, 0.3, 0.14), 0xd98d76, { pos: [-0.28, 0.8, -0.24], rot: [0.1, 0.2, 0.1], outline: 0.008 });
+    mk(chair2, B(0.3, 0.26, 0.12), 0xf1c9a8, { pos: [0.26, 0.8, -0.25], rot: [0.12, -0.16, -0.08], outline: 0.008 });
+    for (const [x, z] of [[-0.45, -0.35], [0.45, -0.35], [-0.45, 0.35], [0.45, 0.35]]) {
+      mk(chair2, B(0.08, 0.28, 0.08), C.woodDark, { pos: [x, 0.18, z], outline: 0.004 });
+    }
+
+    // rug & coffee table
+    const rug = new Mesh(new PlaneGeometry(3.2, 2.4), new MeshToonMaterial({ map: rugTex, gradientMap: GRAD }));
+    rug.rotation.x = -Math.PI / 2;
+    rug.position.set(1.0, 0.022, 2.0);
+    rug.receiveShadow = true;
+    g.add(rug);
+    const table = new Group();
+    table.position.set(1.25, 0, 1.85);
+    g.add(table);
+    mk(table, CYL(0.56, 0.56, 0.08, 22), C.wood, { pos: [0, 0.45, 0], outline: 0.012 });
+    mk(table, CYL(0.44, 0.44, 0.03, 20), 0xd9a08a, { pos: [0, 0.5, 0], outline: 0.004 });
+    for (let i = 0; i < 3; i++) {
+      const a = i / 3 * Math.PI * 2;
+      mk(table, CYL(0.035, 0.05, 0.44, 8), C.woodDark, { pos: [Math.cos(a) * 0.3, 0.22, Math.sin(a) * 0.3], outline: 0.004 });
+    }
+    mk(table, CYL(0.08, 0.06, 0.16, 12), 0x7d9d7b, { pos: [0.1, 0.58, 0.12], outline: 0.004 });
+    mk(table, SPH(0.1, 10), 0xd9b0d0, { pos: [0.1, 0.7, 0.12], scale: [1, 0.8, 1], outline: 0 });
+    mk(table, B(0.26, 0.04, 0.34), 0xf0e0c8, { pos: [-0.22, 0.55, -0.08], rot: [0, 0.3, 0], outline: 0 });
+
+    // big plant
+    const plant = new Group();
+    plant.position.set(-2.6, 0, 3.7);
+    g.add(plant);
+    pick(plant, { type: 'action', key: 'plant' });
+    mk(plant, CYL(0.34, 0.26, 0.5, 16), 0xc97c5a, { pos: [0, 0.25, 0], outline: 0.012 });
+    mk(plant, CYL(0.38, 0.38, 0.06, 16), 0x9a5a42, { pos: [0, 0.5, 0], outline: 0.004 });
+    mk(plant, CYL(0.04, 0.05, 1.20, 8), 0x6e7f52, { pos: [0.02, 1.1, 0], outline: 0.004 });
+    for (let i = 0; i < 8; i++) {
+      const a = i / 8 * Math.PI * 2 + 0.4;
+      const y = 0.8 + (i % 4) * 0.22;
+      const r = 0.36 + (i % 3) * 0.1;
+      mk(plant, SPH(0.24, 10), i % 2 ? 0x6e9c6b : 0x7fae79, {
+        pos: [Math.cos(a) * r, y, Math.sin(a) * r],
+        scale: [1.25, 0.24, 0.8], rot: [0.2, -a, 0.25], outline: 0.005
+      });
+    }
+    mk(plant, SPH(0.26, 10), 0x7fae79, { pos: [0, 1.75, 0], scale: [1.1, 0.3, 0.8], outline: 0.005 });
+
+    // door to neighbourhood
+    const door = new Group();
+    door.position.set(-2.75, 0, -4.25);
+    g.add(door);
+    pick(door, { type: 'action', key: 'door' });
+    mk(door, B(1.4, 2.75, 0.12), C.trim, { pos: [0, 1.37, 0.02], outline: 0.01 });
+    mk(door, B(1.06, 2.36, 0.09), 0xb9744f, { pos: [0, 1.18, 0.08], outline: 0.01 });
+    mk(door, B(0.78, 0.82, 0.03), 0xa5643f, { pos: [0, 1.72, 0.135], outline: 0.004 });
+    mk(door, B(0.78, 0.82, 0.03), 0xa5643f, { pos: [0, 0.75, 0.135], outline: 0.004 });
+    mk(door, SPH(0.06, 10), C.brass, { pos: [0.37, 1.15, 0.16], outline: 0.004 });
+    mk(door, B(0.8, 0.3, 0.02), 0xffd9a0, { pos: [0, 2.62, 0.135], basic: true, outline: 0, opacity: 0.9 });
+    mk(door, B(1.02, 0.04, 0.5), 0x8a5a44, { pos: [0, 0.03, 0.5], outline: 0.004 });
+    const doorLabel = labelSprite('去邻里', '#ffd2a0', 1.35);
+    doorLabel.position.set(0, 3.05, 0.1);
+    g.add(doorLabel);
+
+    // pendant
+    tube(g, [0, 4.2, 0.2], [0, 3.15, 0.2], 0.012, 0x3a2a24, 0);
+    mk(g, CYL(0.06, 0.5, 0.42, 18), 0xe0b394, { pos: [0, 2.98, 0.2], outline: 0.008 });
+    mk(g, SPH(0.09, 10), 0xffe0a8, { pos: [0, 2.82, 0.2], basic: true, outline: 0 });
+    glowSprite(g, 0, 2.86, 0.2, 1.4, 1.4, 0xffb46e, 0.5);
+
+    // string lights
+    for (let i = 0; i < 8; i++) {
+      const x1 = -4.1 + i * 1.03;
+      const x2 = x1 + 1.03;
+      wire(g, [x1, 3.88, -4.12], [x2, 3.88, -4.12], 0.14, 0.008, 0x4a3428);
+      mk(g, SPH(0.035, 8), 0xffe0a8, { pos: [(x1 + x2) / 2, 3.74, -4.12], basic: true, outline: 0 });
+      glowSprite(g, (x1 + x2) / 2, 3.74, -4.1, 0.28, 0.28, 0xffb46e, 0.34);
+    }
+
+    // shelves above bed
+    for (let k = 0; k < 2; k++) {
+      const y = 2.25 + k * 0.58;
+      mk(g, B(1.8, 0.07, 0.26), C.wood, { pos: [3.0, y, -4.2], outline: 0.006 });
+      for (let i = 0; i < 7; i++) {
+        mk(g, B(0.1, 0.24 + (i % 3) * 0.04, 0.2), [0xb9744f, 0x7d9d7b, 0xd9a08a, 0xa798c9, 0xe0b394][i % 5], {
+          pos: [2.35 + i * 0.14, y + 0.16, -4.2], outline: 0.003
+        });
+      }
+      mk(g, SPH(0.11, 8), 0x7d9d7b, { pos: [3.72, y + 0.17, -4.2], scale: [1, 0.8, 1], outline: 0.004 });
+      mk(g, CYL(0.08, 0.06, 0.11, 10), 0xc97c5a, { pos: [3.72, y + 0.09, -4.2], outline: 0.003 });
+    }
+
+    // framed art near door
+    const frame = new Group();
+    frame.position.set(-1.8, 2.9, -4.26);
+    g.add(frame);
+    mk(frame, B(0.86, 1.06, 0.06), C.woodDark, { pos: [0, 0, 0], outline: 0.006 });
+    mk(frame, new PlaneGeometry(0.72, 0.92), 0xffffff, { pos: [0, 0, 0.04], map: artTexA, outline: 0, cast: false, receive: false });
+
+    // miri
+    miri = buildPerson({ satchel: true, pencil: true, top: 0xb79dd6, bottom: 0xe2a07f, hair: 0x8a5a3a });
+    miri.position.set(-0.45, 0, 0.75);
+    miri.rotation.y = 0.5;
+    addSelfPick(miri);
+    g.add(miri);
+
+    // base plaque
+    const plaque = new Mesh(
+      new PlaneGeometry(2.3, 0.28),
+      new MeshBasicMaterial({
+        map: canvasTex(512, 64, (ctx, w, h) => {
+          ctx.clearRect(0, 0, w, h);
+          ctx.fillStyle = 'rgba(255, 224, 186, 0.82)';
+          ctx.font = '600 30px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('PERIWINKLE ROW · MIRI', w / 2, h / 2 + 1);
+        }),
+        transparent: true, depthWrite: false
+      })
+    );
+    plaque.position.set(0, -0.2, 4.965);
+    g.add(plaque);
+
+    // lights
+    homeWorld.add(new HemisphereLight(0x6c5472, 0x2b1d18, 1.0));
+    const sun = new DirectionalLight(0xffd3a0, 2.2);
+    sun.position.set(5.5, 9.5, -8);
+    sun.target.position.set(0, 1, 1.5);
+    homeWorld.add(sun, sun.target);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(isNarrow() ? 1024 : 1536, isNarrow() ? 1024 : 1536);
+    sun.shadow.camera.left = -9;
+    sun.shadow.camera.right = 9;
+    sun.shadow.camera.top = 9;
+    sun.shadow.camera.bottom = -9;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 32;
+    sun.shadow.bias = -0.0008;
+    sun.shadow.normalBias = 0.02;
+
+    const winLight = new PointLight(0xffb877, 16, 10, 2);
+    winLight.position.set(0.8, 2.4, -3.6);
+    homeWorld.add(winLight);
+    const pendantLight = new PointLight(0xffb46e, 9, 7, 2);
+    pendantLight.position.set(0, 2.7, 0.2);
+    homeWorld.add(pendantLight);
+    const deskLight = new PointLight(0xffa860, 4.5, 4, 2);
+    deskLight.position.set(1.5, 1.55, -3.5);
+    homeWorld.add(deskLight);
+    glowSprite(g, 1.5, 1.6, -3.5, 0.9, 0.9, 0xffb46e, 0.25);
+
+    // dust motes
+    for (let i = 0; i < 24; i++) {
+      const s = new Sprite(new SpriteMaterial({
+        map: GLOW_TEX, color: 0xffd9a6, transparent: true, opacity: 0.5,
+        blending: AdditiveBlending, depthWrite: false
+      }));
+      const x = rr(-0.6, 2.4);
+      const y = rr(0.5, 3.1);
+      const z = rr(-3.9, -0.8);
+      s.position.set(x, y, z);
+      s.scale.setScalar(rr(0.035, 0.09));
+      s.raycast = () => {};
+      g.add(s);
+      motes.push({ s, x, y, z, ph: rr(0, 6.28), sp: rr(0.3, 0.8) });
+    }
+  }
+
+  /* ============================================================
+   * 6. 可购买家具模型
+   * ============================================================ */
+  function buildLamp() {
+    const g = new Group();
+    mk(g, CYL(0.22, 0.27, 0.07, 18), 0x6d4a33, { pos: [0, 0.035, 0], outline: 0.008 });
+    mk(g, CYL(0.032, 0.032, 1.52, 8), 0xc08a58, { pos: [0, 0.82, 0], outline: 0.004 });
+    mk(g, CYL(0.3, 0.16, 0.32, 18), 0xf0c48c, { pos: [0, 1.7, 0], outline: 0.008, emissive: 0x4a2a12 });
+    const bulb = mk(g, SPH(0.09, 10), 0xffe6b8, { pos: [0, 1.58, 0], basic: true, outline: 0 });
+    const light = new PointLight(0xffa860, 6.5, 4.5, 2);
+    light.position.set(0, 1.6, 0);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.bulb = bulb;
+    return g;
+  }
+
+  function buildPlant() {
+    const g = new Group();
+    mk(g, CYL(0.26, 0.2, 0.34, 14), 0xc97c5a, { pos: [0, 0.17, 0], outline: 0.008 });
+    mk(g, CYL(0.29, 0.29, 0.04, 14), 0x9a5a42, { pos: [0, 0.34, 0], outline: 0 });
+    for (let i = 0; i < 7; i++) {
+      const a = i / 7 * Math.PI * 2;
+      const y = 0.5 + (i % 3) * 0.2;
+      const r = 0.14 + (i % 2) * 0.08;
+      mk(g, SPH(0.2, 10), i % 2 ? 0x6e9c6b : 0x7fae79, {
+        pos: [Math.cos(a) * r, y, Math.sin(a) * r],
+        scale: [1.15, 0.22, 0.7], rot: [0.2, -a, 0.3], outline: 0.004
+      });
+    }
+    return g;
+  }
+
+  function buildRug() {
+    const g = new Group();
+    const m = new Mesh(new PlaneGeometry(2.4, 1.7), new MeshToonMaterial({ map: rugTex, gradientMap: GRAD }));
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.022;
+    m.receiveShadow = true;
+    g.add(m);
+    return g;
+  }
+
+  function buildStool() {
+    const g = new Group();
+    mk(g, CYL(0.34, 0.34, 0.1, 18), 0xb9744f, { pos: [0, 0.42, 0], outline: 0.008 });
+    mk(g, CYL(0.3, 0.3, 0.08, 18), 0xe0b394, { pos: [0, 0.5, 0], outline: 0.004 });
+    for (let i = 0; i < 3; i++) {
+      const a = i / 3 * Math.PI * 2;
+      mk(g, CYL(0.03, 0.045, 0.44, 8), 0x6d4a33, { pos: [Math.cos(a) * 0.22, 0.21, Math.sin(a) * 0.22], outline: 0.004 });
+    }
+    return g;
+  }
+
+  function buildShelf() {
+    const g = new Group();
+    mk(g, B(1.55, 1.9, 0.1), 0x8a5a3c, { pos: [0, 0.98, -0.24], outline: 0.008, cast: false });
+    mk(g, B(0.1, 1.9, 0.56), 0x9a6848, { pos: [-0.74, 0.95, 0], outline: 0.008 });
+    mk(g, B(0.1, 1.9, 0.56), 0x9a6848, { pos: [0.74, 0.95, 0], outline: 0.008 });
+    for (let k = 0; k < 4; k++) {
+      const y = 0.12 + k * 0.52;
+      mk(g, B(1.5, 0.07, 0.54), 0x9a6848, { pos: [0, y, 0], outline: 0.006 });
+      for (let i = 0; i < 7; i++) {
+        const h = 0.24 + ((i * 7 + k * 3) % 4) * 0.03;
+        mk(g, B(0.09, h, 0.3), [0xb9744f, 0x7d9d7b, 0xd9a08a, 0xa798c9, 0xe0b394][i % 5], {
+          pos: [-0.62 + i * 0.13, y + h / 2 + 0.04, 0.02], outline: 0.002
+        });
+      }
+    }
+    mk(g, SPH(0.1, 8), 0x7d9d7b, { pos: [0.55, 1.72, 0.12], scale: [1, 0.8, 1], outline: 0.003 });
+    mk(g, CYL(0.07, 0.06, 0.1, 8), 0xc97c5a, { pos: [0.55, 1.63, 0.12], outline: 0.002 });
+    return g;
+  }
+
+  function buildEasel() {
+    const g = new Group();
+    tube(g, [-0.36, 0.02, 0.3], [-0.14, 1.62, 0], 0.03, 0x9a6848);
+    tube(g, [0.36, 0.02, 0.3], [-0.14, 1.62, 0], 0.03, 0x9a6848);
+    tube(g, [0, 0.02, -0.32], [-0.14, 1.62, 0], 0.03, 0x8a5a3c);
+    mk(g, B(0.82, 0.06, 0.16), 0x9a6848, { pos: [-0.1, 0.72, 0.12], outline: 0.005 });
+    const canvas = new Group();
+    canvas.position.set(-0.12, 1.12, 0.1);
+    canvas.rotation.x = -0.08;
+    g.add(canvas);
+    mk(canvas, B(0.86, 0.74, 0.04), 0xf3e4d1, { pos: [0, 0, 0], outline: 0.006 });
+    mk(canvas, new PlaneGeometry(0.76, 0.64), 0xffffff, { pos: [0, 0, 0.026], map: artTexB, outline: 0, cast: false, receive: false });
+    mk(g, B(0.5, 0.06, 0.18), 0x8a5a3c, { pos: [0.36, 0.1, 0.3], rot: [0, 0.3, 0], outline: 0.004 });
+    for (let i = 0; i < 3; i++) {
+      mk(g, CYL(0.025, 0.02, 0.16, 6), [0xd9a45b, 0xc97c5a, 0x7d9d7b][i], {
+        pos: [0.28 + i * 0.07, 0.16, 0.3], rot: [0, 0, 1.2], outline: 0
+      });
+    }
+    return g;
+  }
+
+  function buildPlayer() {
+    const g = new Group();
+    mk(g, B(0.9, 0.26, 0.62), 0x8a5a3c, { pos: [0, 0.15, 0], outline: 0.008 });
+    mk(g, B(0.84, 0.05, 0.56), 0x6d4a33, { pos: [0, 0.3, 0], outline: 0 });
+    mk(g, CYL(0.27, 0.27, 0.04, 20), 0x2e2a30, { pos: [-0.14, 0.33, 0], outline: 0.004 });
+    mk(g, CYL(0.09, 0.09, 0.02, 16), 0xd9a45b, { pos: [-0.14, 0.36, 0], outline: 0 });
+    mk(g, B(0.03, 0.02, 0.22), 0xd9a45b, { pos: [0.12, 0.4, -0.12], rot: [0, 0.5, 0], outline: 0 });
+    mk(g, B(0.3, 0.18, 0.2), 0x5c4a3e, { pos: [0.38, 0.2, 0.18], outline: 0.005 });
+    mk(g, B(0.28, 0.04, 0.18), 0x3a2a24, { pos: [0.38, 0.3, 0.18], outline: 0 });
+    for (const [x, z] of [[-0.34, -0.22], [0.34, -0.22], [-0.34, 0.22], [0.34, 0.22]]) {
+      mk(g, CYL(0.03, 0.035, 0.12, 6), 0x3a2a24, { pos: [x, 0.05, z], outline: 0 });
+    }
+    return g;
+  }
+
+  function buildTable() {
+    const g = new Group();
+    mk(g, CYL(0.6, 0.6, 0.08, 24), 0xb9744f, { pos: [0, 0.46, 0], outline: 0.01 });
+    for (let i = 0; i < 3; i++) {
+      const a = i / 3 * Math.PI * 2;
+      mk(g, CYL(0.035, 0.05, 0.44, 8), 0x8a5a3c, { pos: [Math.cos(a) * 0.32, 0.22, Math.sin(a) * 0.32], outline: 0.004 });
+    }
+    mk(g, CYL(0.08, 0.065, 0.18, 12), 0x7d9d7b, { pos: [0.06, 0.58, 0.06], outline: 0.004 });
+    mk(g, SPH(0.1, 10), 0xe0b0c8, { pos: [0.06, 0.72, 0.06], scale: [1, 0.8, 1], outline: 0 });
+    mk(g, B(0.26, 0.04, 0.34), 0xf0e0c8, { pos: [-0.2, 0.53, -0.05], rot: [0, 0.4, 0], outline: 0 });
+    return g;
+  }
+
+  function buildCushion() {
+    const g = new Group();
+    mk(g, SPH(0.62, 16), 0xc98b7b, { pos: [0, 0.5, 0], scale: [1.1, 0.72, 1], outline: 0.012 });
+    mk(g, SPH(0.5, 14), 0xe0b394, { pos: [0, 0.55, 0.34], scale: [0.9, 0.5, 0.7], outline: 0.008 });
+    mk(g, SPH(0.4, 12), 0x8a5a3c, { pos: [0, 0.72, -0.32], scale: [0.9, 0.8, 0.55], outline: 0.008 });
+    mk(g, B(0.34, 0.3, 0.12), 0xd9a08a, { pos: [-0.28, 0.72, 0.05], rot: [0.2, 0.3, 0.2], outline: 0.006 });
+    return g;
+  }
+
+  /* ============================================================
+   * 7. Periwinkle Row 社区
+   * ============================================================ */
+  function makeCottage(o) {
+    const g = new Group();
+    g.position.set(o.x, 0, o.z);
+    g.rotation.y = o.rot || 0;
+    const wall = o.wall, roof = o.roof, accent = o.accent;
+
+    mk(g, B(4.0, 0.34, 3.2), 0x6b5a52, { pos: [0, 0.17, 0], outline: 0.02 });
+    mk(g, B(3.6, 2.5, 2.9), wall, { pos: [0, 1.55, 0], outline: 0.022 });
+    mk(g, B(3.74, 0.16, 3.02), accent, { pos: [0, 0.38, 0], outline: 0.008 });
+    mk(g, CYL(0.02, 2.72, 1.52, 4), roof, { pos: [0, 3.55, 0], rot: [0, Math.PI / 4, 0], outline: 0.02 });
+    mk(g, B(0.16, 0.5, 2.96), roof, { pos: [0, 4.28, 0], outline: 0.006 });
+    if (o.chimney) {
+      mk(g, B(0.42, 1.0, 0.42), 0x8a6a5a, { pos: [1.0, 4.0, -0.5], outline: 0.008 });
+      mk(g, B(0.5, 0.08, 0.5), 0x6d4a3c, { pos: [1.0, 4.52, -0.5], outline: 0.004 });
+    }
+    // door
+    mk(g, B(0.98, 1.9, 0.1), accent, { pos: [0, 1.05, 1.47], outline: 0.008 });
+    mk(g, B(0.86, 0.72, 0.03), 0x6d4a33, { pos: [0, 1.42, 1.53], outline: 0 });
+    mk(g, B(0.86, 0.5, 0.03), 0x6d4a33, { pos: [0, 0.72, 1.53], outline: 0 });
+    mk(g, SPH(0.045, 8), 0xd9a45b, { pos: [0.32, 1.0, 1.56], outline: 0 });
+    mk(g, B(1.4, 0.18, 0.7), 0x9a8a76, { pos: [0, 0.09, 1.68], outline: 0.006 });
+    // windows
+    for (const wx of [-1.12, 1.12]) {
+      mk(g, B(0.92, 0.86, 0.06), 0xf3e4d1, { pos: [wx, 1.55, 1.47], outline: 0.006 });
+      mk(g, B(0.76, 0.7, 0.02), 0xffd3a0, { pos: [wx, 1.55, 1.51], basic: true, outline: 0 });
+      mk(g, B(0.02, 0.7, 0.03), 0xf3e4d1, { pos: [wx, 1.55, 1.53], outline: 0 });
+      mk(g, B(0.76, 0.02, 0.03), 0xf3e4d1, { pos: [wx, 1.55, 1.53], outline: 0 });
+      mk(g, B(0.8, 0.16, 0.3), 0x8a5a44, { pos: [wx, 1.04, 1.58], outline: 0.004 });
+      for (let i = 0; i < 4; i++) {
+        mk(g, SPH(0.07, 8), [0xe8a17e, 0xd9b0d0, 0xf3d08a, 0xd98d76][i], {
+          pos: [wx - 0.28 + i * 0.18, 1.16, 1.66], outline: 0
+        });
+      }
+      glowSprite(g, wx, 1.55, 1.6, 1.6, 1.3, 0xffb46e, 0.3);
+    }
+    // sign
+    const sign = new Mesh(new PlaneGeometry(1.15, 0.58), new MeshToonMaterial({ map: signTex(o.sign, o.signBg || '#f3e0c6'), gradientMap: GRAD }));
+    sign.position.set(0, 2.32, 1.54);
+    g.add(sign);
+    // porch lamp
+    mk(g, B(0.1, 0.18, 0.1), 0x4a3428, { pos: [0.72, 2.3, 1.56], outline: 0 });
+    mk(g, SPH(0.07, 8), 0xffd9a0, { pos: [0.72, 2.2, 1.62], basic: true, outline: 0 });
+    glowSprite(g, 0.72, 2.2, 1.64, 0.6, 0.6, 0xffb46e, 0.4);
+
+    pick(g, { type: 'house', note: o.note });
+    return g;
+  }
+
+  function buildHood() {
+    const g = new Group();
+    hoodWorld.add(g);
+
+    mk(g, B(15.8, 0.5, 15.8), 0x3c382d, { pos: [0, -0.3, 0], outline: 0.04 });
+    const grass = new Mesh(new PlaneGeometry(15, 15), new MeshToonMaterial({ map: grassTex, gradientMap: GRAD }));
+    grass.rotation.x = -Math.PI / 2;
+    grass.receiveShadow = true;
+    g.add(grass);
+
+    // plaza & path
+    mk(g, CYL(2.65, 2.65, 0.1, 28), 0xd3bd9d, { pos: [0, 0.04, 3.0], outline: 0.012 });
+    mk(g, CYL(2.3, 2.3, 0.03, 28), 0xc3aa88, { pos: [0, 0.09, 3.0], outline: 0 });
+    for (let i = 0; i < 5; i++) {
+      mk(g, B(2.0, 0.09, 0.76), 0xd8c2a2, { pos: [0, 0.02, 6.3 - i * 0.78], outline: 0.006 });
+    }
+    for (let i = 0; i < 3; i++) {
+      mk(g, B(0.8, 0.09, 1.4), 0xd8c2a2, { pos: [-2.4 - i * 0.85, 0.02, 2.4 - i * 0.55], rot: [0, -0.5, 0], outline: 0.006 });
+      mk(g, B(0.8, 0.09, 1.4), 0xd8c2a2, { pos: [2.4 + i * 0.85, 0.02, 2.4 - i * 0.55], rot: [0, 0.5, 0], outline: 0.006 });
+    }
+
+    // cottages
+    const houses = [
+      { key: 'juniper', x: -4.5, z: -1.6, wall: 0xa9c09a, roof: 0xc97c5a, accent: 0x7f9a72, sign: '花房', signBg: '#e6efdc', note: '花房小屋的窗台上摆满了小盆栽。' },
+      { key: 'otto', x: 0.2, z: -4.6, wall: 0xf0dfc6, roof: 0xc98a5a, accent: 0xa97a5e, sign: '面包房', signBg: '#f7e6c9', chimney: true, note: '面包房飘出黄油和麦子的香气。' },
+      { key: 'nell', x: 4.5, z: -1.6, wall: 0xc3aed2, roof: 0x8a6a86, accent: 0x9a7aa8, sign: '画室', signBg: '#efe4f2', note: '画室的门口支着一块旧画板。' }
+    ];
+    for (const h of houses) g.add(makeCottage(h));
+
+    // trees
+    function tree(x, z, s = 1) {
+      mk(g, CYL(0.18, 0.26, 1.5, 10), 0x6d4a33, { pos: [x, 0.75 * s, z], outline: 0.012, scale: [s, s, s] });
+      mk(g, SPH(1.05, 14), 0x4f7248, { pos: [x, 1.9 * s, z], scale: [s, s * 0.92, s], outline: 0.014 });
+      mk(g, SPH(0.8, 12), 0x5e8554, { pos: [x + 0.5 * s, 2.3 * s, z + 0.2 * s], scale: [s, s, s], outline: 0.012 });
+      mk(g, SPH(0.7, 12), 0x5e8554, { pos: [x - 0.55 * s, 2.2 * s, z - 0.25 * s], scale: [s, s, s], outline: 0.012 });
+    }
+    tree(-6.4, 3.6, 1.05);
+    tree(6.4, 3.6, 1.15);
+    tree(-6.5, -4.6, 0.95);
+    tree(6.4, -4.6, 1.0);
+    tree(-2.2, -6.2, 0.75);
+    tree(2.5, -6.4, 0.7);
+
+    // bushes
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * Math.PI * 2;
+      const x = Math.cos(a) * 6.4;
+      const z = Math.sin(a) * 6.4;
+      if (Math.abs(x) < 2.2 && z > 4) continue;
+      mk(g, SPH(0.5, 10), i % 2 ? 0x54794c : 0x618a56, { pos: [x, 0.28, z], scale: [1.3, 0.7, 1], outline: 0.008 });
+    }
+
+    // fence
+    for (let i = 0; i < 12; i++) {
+      const x = -6.8 + i * 1.22;
+      if (Math.abs(x) < 1.4) continue;
+      mk(g, B(0.12, 1.2, 0.12), 0x8a5a44, { pos: [x, 0.6, 7.25], outline: 0.006 });
+      mk(g, B(1.16, 0.09, 0.07), 0x9a6848, { pos: [x + 0.55, 0.88, 7.25], outline: 0 });
+      mk(g, B(1.16, 0.09, 0.07), 0x9a6848, { pos: [x + 0.55, 0.5, 7.25], outline: 0 });
+    }
+
+    // gate
+    const gate = new Group();
+    gate.position.set(0, 0, 7.05);
+    g.add(gate);
+    pick(gate, { type: 'gate' });
+    mk(gate, B(0.18, 2.5, 0.18), 0x8a5a44, { pos: [-1.5, 1.25, 0], outline: 0.008 });
+    mk(gate, B(0.18, 2.5, 0.18), 0x8a5a44, { pos: [1.5, 1.25, 0], outline: 0.008 });
+    mk(gate, B(3.3, 0.16, 0.2), 0x9a6848, { pos: [0, 2.5, 0], outline: 0.008 });
+    const gateSign = new Mesh(new PlaneGeometry(2.0, 0.55), new MeshToonMaterial({ map: signTex('PERIWINKLE ROW', '#f3e0c6'), gradientMap: GRAD }));
+    gateSign.position.set(0, 2.12, 0.12);
+    gate.add(gateSign);
+    const homeLabel = labelSprite('回家', '#ffd2a0', 1.3);
+    homeLabel.position.set(0, 3.0, 0);
+    g.add(homeLabel);
+    mk(gate, SPH(0.07, 8), 0xffd9a0, { pos: [-1.5, 2.5, 0.12], basic: true, outline: 0 });
+    mk(gate, SPH(0.07, 8), 0xffd9a0, { pos: [1.5, 2.5, 0.12], basic: true, outline: 0 });
+
+    // lamp posts
+    function lampPost(x, z) {
+      mk(g, CYL(0.07, 0.1, 2.7, 10), 0x3f3a33, { pos: [x, 1.35, z], outline: 0.008 });
+      mk(g, CYL(0.32, 0.32, 0.06, 14), 0x3f3a33, { pos: [x, 0.06, z], outline: 0.004 });
+      mk(g, B(0.07, 0.07, 0.6), 0x3f3a33, { pos: [x, 2.62, z - 0.2], outline: 0 });
+      mk(g, CYL(0.16, 0.22, 0.3, 8), 0xffc98a, { pos: [x, 2.45, z - 0.5], basic: true, outline: 0 });
+      mk(g, CYL(0.24, 0.1, 0.12, 8), 0x3f3a33, { pos: [x, 2.62, z - 0.5], outline: 0.004 });
+      glowSprite(g, x, 2.42, z - 0.5, 1.6, 1.6, 0xffb46e, 0.6);
+      const l = new PointLight(0xffb46e, 9, 7, 2);
+      l.position.set(x, 2.4, z - 0.5);
+      g.add(l);
+    }
+    lampPost(-2.9, 5.0);
+    lampPost(2.9, 5.0);
+
+    // community board
+    const board = new Group();
+    board.position.set(-5.6, 0, 4.6);
+    board.rotation.y = 0.5;
+    g.add(board);
+    pick(board, { type: 'flavor', note: '公告板上贴着：周五傍晚在小广场交换自制点心。' });
+    mk(board, B(1.5, 1.1, 0.1), 0x8a5a44, { pos: [0, 1.5, 0], outline: 0.008 });
+    mk(board, B(1.3, 0.9, 0.03), 0xd9c2a4, { pos: [0, 1.5, 0.06], outline: 0 });
+    for (let i = 0; i < 4; i++) {
+      mk(board, B(0.34, 0.26, 0.02), [0xf3e4d1, 0xf0c48c, 0xd9b0d0, 0xc9d8b8][i], {
+        pos: [-0.4 + i * 0.27, 1.55 + (i % 2) * 0.1, 0.09], rot: [0, 0, (i - 1.5) * 0.06], outline: 0
+      });
+    }
+    mk(board, B(0.12, 1.1, 0.12), 0x6d4a33, { pos: [-0.6, 0.55, 0], outline: 0.004 });
+    mk(board, B(0.12, 1.1, 0.12), 0x6d4a33, { pos: [0.6, 0.55, 0], outline: 0.004 });
+
+    // bench
+    const bench = new Group();
+    bench.position.set(3.7, 0, 3.9);
+    bench.rotation.y = -0.6;
+    g.add(bench);
+    pick(bench, { type: 'flavor', note: '木椅上晒着太阳，坐一会儿很舒服。' });
+    mk(bench, B(1.5, 0.1, 0.5), 0x9a6848, { pos: [0, 0.52, 0], outline: 0.006 });
+    mk(bench, B(1.5, 0.5, 0.09), 0x9a6848, { pos: [0, 0.85, -0.2], rot: [-0.15, 0, 0], outline: 0.006 });
+    for (const x of [-0.6, 0.6]) {
+      mk(bench, B(0.1, 0.52, 0.44), 0x6d4a33, { pos: [x, 0.26, 0], outline: 0.004 });
+    }
+
+    // flower cart
+    const cart = new Group();
+    cart.position.set(4.9, 0, 5.2);
+    cart.rotation.y = -0.5;
+    g.add(cart);
+    mk(cart, B(1.3, 0.5, 0.7), 0xa97a5e, { pos: [0, 0.55, 0], outline: 0.008 });
+    for (const x of [-0.62, 0.62]) {
+      mk(cart, CYL(0.24, 0.24, 0.08, 14), 0x4a3428, { pos: [x, 0.26, 0.35], rot: [Math.PI / 2, 0, 0], outline: 0.004 });
+    }
+    mk(cart, B(1.2, 0.06, 0.6), 0x8a5a44, { pos: [0, 0.82, 0], outline: 0 });
+    for (let i = 0; i < 6; i++) {
+      mk(cart, SPH(0.12, 8), [0xe8a17e, 0xd9b0d0, 0xf3d08a, 0xd98d76, 0xffe0b0][i % 5], {
+        pos: [-0.45 + i * 0.18, 0.95, (i % 2) * 0.16 - 0.08], outline: 0.003
+      });
+    }
+
+    // mailbox
+    mk(g, B(0.16, 1.1, 0.16), 0x6d4a33, { pos: [2.2, 0.55, 6.2], outline: 0.006 });
+    mk(g, B(0.42, 0.34, 0.3), 0xd98d76, { pos: [2.2, 1.2, 6.2], outline: 0.006 });
+    mk(g, B(0.3, 0.05, 0.02), 0xf3e4d1, { pos: [2.2, 1.24, 6.36], basic: true, outline: 0 });
+
+    // string lights
+    for (let i = 0; i < 7; i++) {
+      const t = i / 6;
+      const x1 = -2.9 + t * 5.8;
+      const y1 = 2.6 + Math.sin(t * Math.PI) * 0.45;
+      const x2 = -2.9 + (i + 1) / 6 * 5.8;
+      const y2 = 2.6 + Math.sin((t + 1 / 6) * Math.PI) * 0.45;
+      if (i < 6) wire(g, [x1, y1 + 0.5, 4.4 - t * 0.5], [x2, y2 + 0.5, 4.4 - (t + 1 / 6) * 0.5], 0.18, 0.008, 0x3a2a24);
+      mk(g, SPH(0.04, 8), 0xffe0a8, { pos: [x1, y1, 4.4 - t * 0.5], basic: true, outline: 0 });
+      glowSprite(g, x1, y1, 4.4 - t * 0.5, 0.3, 0.3, 0xffb46e, 0.3);
+    }
+
+    // neighbours
+    const outfits = {
+      juniper: { hair: 0x6d4a2f, top: 0x9dbb8f, bottom: 0x6f8a63, hat: 'straw', apron: 0xf0e2c8 },
+      otto: { hair: 0xd8c4ae, top: 0xf0e3d0, bottom: 0x6b5a48, hat: 'baker', apron: 0xf7efe1 },
+      nell: { hair: 0x4a3a44, top: 0xb89ac9, bottom: 0x7a5a70, hat: 'beret', apron: null }
+    };
+    for (const n of NEIGHBORS) {
+      const p = buildPerson({ ...outfits[n.key], skin: 0xf3caa6 });
+      p.position.set(n.x, 0, n.z);
+      p.rotation.y = 0.1;
+      pick(p, { type: 'neighbor', key: n.key });
+      g.add(p);
+      const lbl = labelSprite(n.name + ' · ' + n.role, '#ffe0b8', 2.4);
+      lbl.position.set(n.x, 2.15, n.z);
+      g.add(lbl);
+    }
+
+    // Miri in the neighbourhood
+    hoodMiri = buildPerson({ satchel: true, pencil: true, top: 0xb79dd6, bottom: 0xe2a07f, hair: 0x8a5a3a });
+    hoodMiri.position.set(0.55, 0, 4.2);
+    hoodMiri.rotation.y = -0.3;
+    addSelfPick(hoodMiri);
+    g.add(hoodMiri);
+
+    // fireflies
+    for (let i = 0; i < 16; i++) {
+      const s = new Sprite(new SpriteMaterial({
+        map: GLOW_TEX, color: 0xffcf8a, transparent: true, opacity: 0.55,
+        blending: AdditiveBlending, depthWrite: false
+      }));
+      const x = rr(-6.4, 6.4);
+      const y = rr(0.6, 3.2);
+      const z = rr(-5.4, 6.2);
+      s.position.set(x, y, z);
+      s.scale.setScalar(rr(0.05, 0.13));
+      s.raycast = () => {};
+      g.add(s);
+      fireflies.push({ s, x, y, z, ph: rr(0, 6.28), sp: rr(0.25, 0.6) });
+    }
+
+    // warm horizon glow
+    glowSprite(g, 0, 5.6, -9.5, 20, 9, 0xff9d6a, 0.16);
+
+    // lights
+    hoodWorld.add(new HemisphereLight(0x7a5f76, 0x2b211b, 1.05));
+    const dusk = new DirectionalLight(0xffb47e, 1.9);
+    dusk.position.set(8, 11, 7);
+    dusk.target.position.set(0, 1, 0);
+    hoodWorld.add(dusk, dusk.target);
+    dusk.castShadow = true;
+    dusk.shadow.mapSize.set(isNarrow() ? 1024 : 1536, isNarrow() ? 1024 : 1536);
+    dusk.shadow.camera.left = -12;
+    dusk.shadow.camera.right = 12;
+    dusk.shadow.camera.top = 12;
+    dusk.shadow.camera.bottom = -12;
+    dusk.shadow.camera.near = 1;
+    dusk.shadow.camera.far = 40;
+    dusk.shadow.bias = -0.0008;
+    dusk.shadow.normalBias = 0.02;
+  }
+
+  /* ============================================================
+   * 8. UI 引用与渲染
+   * ============================================================ */
+  const ui = {
+    whoSub: document.getElementById('whoSub'),
+    moodTag: document.getElementById('moodTag'),
+    coinChip: document.getElementById('coinChip'),
+    coinText: document.getElementById('coinText'),
+    saveChip: document.getElementById('saveChip'),
+    saveText: document.getElementById('saveText'),
+    needsBody: document.getElementById('needsBody'),
+    sidePanel: document.getElementById('sidePanel'),
+    panelToggle: document.getElementById('panelToggle'),
+    goalCount: document.getElementById('goalCount'),
+    goalList: document.getElementById('goalList'),
+    skillList: document.getElementById('skillList'),
+    relList: document.getElementById('relList'),
+    buildBlock: document.getElementById('buildBlock'),
+    shopList: document.getElementById('shopList'),
+    decorOps: document.getElementById('decorOps'),
+    hint: document.getElementById('hint'),
+    actionCard: document.getElementById('actionCard'),
+    acIcon: document.getElementById('acIcon'),
+    acTitle: document.getElementById('acTitle'),
+    acNote: document.getElementById('acNote'),
+    acFx: document.getElementById('acFx'),
+    acActions: document.getElementById('acActions'),
+    acClose: document.getElementById('acClose'),
+    buildHint: document.getElementById('buildHint'),
+    buildName: document.getElementById('buildName'),
+    buildCancel: document.getElementById('buildCancel'),
+    tip: document.getElementById('tip'),
+    tipIcon: document.getElementById('tipIcon'),
+    tipText: document.getElementById('tipText'),
+    toasts: document.getElementById('toasts'),
+    resetBtn: document.getElementById('resetBtn'),
+    modeBtns: Array.from(document.querySelectorAll('.mode')),
+    bar: document.getElementById('actionBar')
+  };
+  const needRows = new Map();
+
+  function buildNeedRows() {
+    ui.needsBody.innerHTML = NEEDS.map((n) =>
+      `<div class="need" data-need="${n.key}" title="${n.label}：${n.hint}">` +
+      `<span class="ico" aria-hidden="true">${n.icon}</span>` +
+      `<span class="name">${n.label}</span><span class="val">--</span>` +
+      `<span class="track"><span class="fill"></span></span></div>`
+    ).join('');
+    for (const n of NEEDS) needRows.set(n.key, ui.needsBody.querySelector(`[data-need="${n.key}"]`));
+  }
+
+  function updateNeedBars() {
+    for (const n of NEEDS) {
+      const row = needRows.get(n.key);
+      if (!row) continue;
+      const v = clamp(S.needs[n.key], 0, 100);
+      row.querySelector('.fill').style.width = v.toFixed(1) + '%';
+      row.querySelector('.val').textContent = Math.round(v);
+      row.dataset.level = v < 20 ? 'low' : v < 48 ? 'mid' : 'high';
+      row.classList.toggle('low', v < 20);
+      row.setAttribute('aria-label', `${n.label} ${Math.round(v)}`);
+    }
+  }
+
+  function clockText() {
+    const total = Math.floor(S.clock) % 1440;
+    return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+  }
+
+  function moodInfo() {
+    const vals = NEEDS.map((n) => S.needs[n.key]);
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const min = Math.min(...vals);
+    if (min < 18) return { label: '需要照顾自己', avg, min };
+    if (avg >= 78) return { label: '元气满满', avg, min };
+    if (avg >= 60) return { label: '心情不错', avg, min };
+    if (avg >= 42) return { label: '有点疲惫', avg, min };
+    return { label: '想歇一歇', avg, min };
+  }
+
+  function renderHUD() {
+    ui.coinText.textContent = Math.round(S.coins);
+    ui.moodTag.textContent = moodInfo().label;
+    ui.whoSub.textContent = `Periwinkle Row · 第 ${S.day} 天 · ${clockText()}`;
+  }
+
+  function relLevel(v) {
+    if (v >= 75) return '挚友';
+    if (v >= 45) return '朋友';
+    if (v >= 20) return '点头之交';
+    return '初识';
+  }
+
+  function renderGoals() {
+    ui.goalList.innerHTML = S.goals.ids.map((id) => {
+      const g = GOALS.find((x) => x.id === id);
+      if (!g) return '';
+      const done = S.goals.done.includes(id);
+      return `<li class="goal ${done ? 'done' : ''}"><span class="tick" aria-hidden="true">${done ? '✓' : ''}</span>` +
+        `<span class="g-label">${g.icon} ${g.label}</span><span class="g-reward">+${g.reward}</span></li>`;
+    }).join('');
+    ui.goalCount.textContent = `${S.goals.done.length}/${S.goals.ids.length}`;
+  }
+
+  function renderSkills() {
+    ui.skillList.innerHTML = Object.keys(SKILLS).map((key) => {
+      const total = S.skills[key] || 0;
+      const lv = 1 + Math.floor(total / 100);
+      const pct = total % 100;
+      return `<div class="skill"><span aria-hidden="true">${SKILLS[key].icon}</span>` +
+        `<span>${SKILLS[key].name}</span><span class="lvl">Lv.${lv}</span>` +
+        `<span class="mini"><i style="width:${pct}%"></i></span></div>`;
+    }).join('');
+  }
+
+  function renderRelations() {
+    ui.relList.innerHTML = NEIGHBORS.map((n) => {
+      const v = clamp(S.rel[n.key] || 0, 0, 100);
+      return `<button class="rel" data-visit="${n.key}">` +
+        `<span class="rel-avatar" style="--tint:${n.tint}" aria-hidden="true">${n.name[0]}</span>` +
+        `<span class="rel-main"><b>${n.name}</b><small>${n.role} · ${relLevel(v)}</small>` +
+        `<span class="mini"><i style="width:${v}%"></i></span></span><em>${Math.round(v)}</em></button>`;
+    }).join('');
+  }
+
+  function renderShop() {
+    ui.shopList.innerHTML = Object.keys(CATALOG).map((kind) => {
+      const c = CATALOG[kind];
+      const owned = S.placed.filter((p) => p.kind === kind).length;
+      const active = placing && placing.kind === kind ? ' active' : '';
+      const poor = S.coins < c.price ? ' poor' : '';
+      return `<button class="shop-item${active}${poor}" data-kind="${kind}" title="${c.name} · ${c.price} 金币">` +
+        `<span class="si-ico" aria-hidden="true">${c.icon}</span><span class="si-name">${c.name}</span>` +
+        `<span class="si-price">${c.price} 金币${owned ? ` <i>×${owned}</i>` : ''}</span></button>`;
+    }).join('');
+  }
+
+  function renderDecorOps() {
+    const entry = selectedId ? S.placed.find((p) => p.id === selectedId) : null;
+    if (!entry) {
+      ui.decorOps.hidden = true;
+      ui.decorOps.innerHTML = '';
+      return;
+    }
+    const c = CATALOG[entry.kind];
+    const refund = Math.floor(c.price * 0.6);
+    ui.decorOps.hidden = false;
+    ui.decorOps.innerHTML = `<span class="do-name">已选中 · ${c.icon} ${c.name}</span>` +
+      `<div class="do-btns"><button data-decor="move">移动</button>` +
+      `<button data-decor="sell" class="danger">回收 +${refund}</button></div>`;
+  }
+
+  function renderAll() {
+    renderHUD();
+    renderGoals();
+    renderSkills();
+    renderRelations();
+    renderShop();
+    updateNeedBars();
+    updateSaveChip();
+  }
+
+  /* ============================================================
+   * 9. 保存 / 提示 / 反馈
+   * ============================================================ */
+  function updateSaveChip() {
+    if (!S.savedAt) {
+      ui.saveText.textContent = '自动保存已开启';
+      return;
+    }
+    const d = new Date(S.savedAt);
+    ui.saveText.textContent = `已保存 ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+
+  let saveFlashTimer = 0;
+  function flashSave() {
+    ui.saveChip.classList.add('flash');
+    clearTimeout(saveFlashTimer);
+    saveFlashTimer = setTimeout(() => ui.saveChip.classList.remove('flash'), 820);
+  }
+
+  function saveState(reason = 'action') {
+    if (resetting) return;
+    S.savedAt = Date.now();
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(S));
+      updateSaveChip();
+      flashSave();
+    } catch (e) {
+      ui.saveText.textContent = '无法保存';
+      console.warn('[periwinkle] save failed', e);
+    }
+    if (reason === 'auto' && performance.now() - lastSaveToast > 60000) {
+      lastSaveToast = performance.now();
+      toast('☁️ 进度已自动保存', 'save');
+    }
+  }
+
+  function toast(msg, type = 'info') {
+    const t = document.createElement('div');
+    t.className = 'toast ' + type;
+    t.textContent = msg;
+    ui.toasts.append(t);
+    while (ui.toasts.children.length > 3) ui.toasts.firstElementChild.remove();
+    setTimeout(() => {
+      t.classList.add('out');
+      setTimeout(() => t.remove(), 320);
+    }, 3300);
+  }
+
+  function floatAt(pos, text) {
+    if (!text) return;
+    const v = new Vector3(pos[0], pos[1], pos[2]).project(camera);
+    if (v.z > 1) return;
+    const el = document.createElement('div');
+    el.className = 'float';
+    el.textContent = text;
+    el.style.left = ((v.x * 0.5 + 0.5) * window.innerWidth) + 'px';
+    el.style.top = ((-v.y * 0.5 + 0.5) * window.innerHeight) + 'px';
+    document.body.append(el);
+    setTimeout(() => el.remove(), 1450);
+  }
+
+  function burstAt(pos, color = 0xffca8a) {
+    const origin = new Vector3(pos[0], pos[1], pos[2]);
+    for (let i = 0; i < 8; i++) {
+      const s = new Sprite(new SpriteMaterial({
+        map: GLOW_TEX, color, transparent: true, opacity: 0.9,
+        blending: AdditiveBlending, depthWrite: false
+      }));
+      s.position.copy(origin);
+      s.scale.setScalar(rr(0.09, 0.2));
+      scene.add(s);
+      effects.push({
+        s, t: 0, life: rr(0.55, 0.95),
+        v: new Vector3(rr(-0.55, 0.55), rr(0.4, 1.25), rr(-0.55, 0.55))
+      });
+    }
+  }
+
+  function lookMiri(at) {
+    if (mode === 'hood' || !at) return;
+    homeActor.look = new Vector3(at[0], 0, at[2]);
+  }
+
+  /* ============================================================
+   * 10. 生活动作
+   * ============================================================ */
+  function addCoins(n, silent = true) {
+    S.coins = Math.max(0, Math.round(S.coins + n));
+    ui.coinText.textContent = S.coins;
+    ui.coinChip.classList.remove('coin-pop');
+    void ui.coinChip.offsetWidth;
+    ui.coinChip.classList.add('coin-pop');
+    if (!silent && n > 0) toast(`🪙 +${n} 金币`);
+  }
+
+  function need(key, delta) {
+    S.needs[key] = clamp((S.needs[key] || 0) + delta, 0, 100);
+    updateNeedBars();
+    renderHUD();
+  }
+
+  function xp(key, amount) {
+    const before = 1 + Math.floor((S.skills[key] || 0) / 100);
+    S.skills[key] = (S.skills[key] || 0) + amount;
+    const after = 1 + Math.floor(S.skills[key] / 100);
+    if (after > before) {
+      addCoins(15, true);
+      toast(`✨ ${SKILLS[key].name}升到 Lv.${after} · +15 金币`, 'goal');
+    }
+    renderSkills();
+  }
+
+  const ACTIONS = {
+    stove: {
+      icon: '🍳', name: '做一顿热饭', note: '炖一小锅蔬菜汤，让厨房暖起来。',
+      cost: 6, fx: ['饥饿 +38', '烹饪 +14 XP', '花费 6 金币'], anchor: [-3.3, 1.05, -1.85], stand: [-2.95, 0, -1.85], gain: '+38 饥饿',
+      run() {
+        need('hunger', 38); need('fun', 5); xp('cooking', 14); S.today.cook++;
+        return '🍲 蔬菜汤咕嘟咕嘟，厨房暖起来了';
+      }
+    },
+    fridge: {
+      icon: '🥛', name: '找点零食', note: '冰箱里还留着一小盒布丁。',
+      cost: 3, fx: ['饥饿 +14', '娱乐 +4', '花费 3 金币'], anchor: [-3.7, 1.2, -0.3], stand: [-3.05, 0, -0.35], gain: '+14 饥饿',
+      run() {
+        need('hunger', 14); need('fun', 4);
+        return '🥛 布丁冰冰凉凉，心情好了一点';
+      }
+    },
+    desk: {
+      icon: '🎨', name: '画画接稿', note: '把窗边的光画进画里，也许能卖个好价钱。',
+      fx: ['金币 +18~30', '创作 +12 XP', '精力 -6'], anchor: [0.5, 1.2, -3.45], stand: [1.65, 0, -2.85], gain: '+金币',
+      run() {
+        const gain = 18 + Math.floor(Math.random() * 13);
+        addCoins(gain, true); need('fun', 8); need('energy', -6); xp('creativity', 12); S.today.create++;
+        return `🎨 画稿卖出去了，金币 +${gain}`;
+      }
+    },
+    bed: {
+      icon: '🛏️', name: '小睡一会儿', note: '午后打个小盹，时间会向前走两个小时。',
+      fx: ['精力 +36', '饥饿 -5', '时间 +2 小时'], anchor: [3.0, 0.9, -2.4], stand: [1.65, 0, -2.35], gain: '+36 精力',
+      run() {
+        need('energy', 36); need('hunger', -5); advanceTime(120);
+        return '🛏️ 小睡片刻，精力回来了';
+      }
+    },
+    shower: {
+      icon: '🚿', name: '冲个热水澡', note: '热水冲走一整天的疲惫。',
+      fx: ['卫生 +58', '精力 -3'], anchor: [-3.4, 1.3, 2.6], stand: [-2.25, 0, 2.6], gain: '+58 卫生',
+      run() {
+        need('hygiene', 58); need('energy', -3); S.today.shower++;
+        return '🚿 热水澡，整个人都清爽了';
+      }
+    },
+    armchair: {
+      icon: '📖', name: '窝着读几页', note: '窗边的扶手椅是米莉最喜欢的位置。',
+      fx: ['娱乐 +24', '创作 +4 XP', '精力 -2'], anchor: [3.0, 1.0, 2.4], stand: [2.55, 0, 1.2], gain: '+24 娱乐',
+      run() {
+        need('fun', 24); need('energy', -2); xp('creativity', 4); S.today.read++;
+        return '📖 读了几页，心里松下来';
+      }
+    },
+    window: {
+      icon: '☀️', name: '晒晒太阳', note: 'Periwinkle Row 的午后阳光正好。',
+      fx: ['娱乐 +10', '精力 +4'], anchor: [0.55, 2.4, -4.1], stand: [1.65, 0, -2.85], gain: '+10 娱乐',
+      run() { need('fun', 10); need('energy', 4); return '☀️ 晒了会儿太阳，暖洋洋的'; }
+    },
+    plant: {
+      icon: '🪴', name: '给绿植浇水', note: '叶子在阳光里亮晶晶的。',
+      fx: ['娱乐 +7'], anchor: [-2.6, 1.2, 3.7], stand: [-2.2, 0, 3.55], gain: '+7 娱乐',
+      run() { need('fun', 7); return '🪴 给龟背竹浇了水，叶子更亮了'; }
+    },
+    cat: {
+      icon: '🐈', name: '摸摸摩奇', note: '摩奇正蜷在床脚打呼噜。',
+      fx: ['娱乐 +9', '社交 +4'], anchor: [2.95, 0.9, -1.9], stand: [1.65, 0, -2.0], gain: '+9 娱乐',
+      run() { need('fun', 9); need('social', 4); S.today.play++; return '🐈 摩奇发出呼噜呼噜的声音'; }
+    },
+    door: {
+      icon: '🚪', name: '去邻里走走', note: '推开门，面包香和花香一起涌进来。',
+      fx: ['切换到邻里模式'], anchor: null, stand: [-2.6, 0, -3.15],
+      run() { setMode('hood'); return '🚪 出门去 Periwinkle Row 走走'; }
+    },
+    shelf: {
+      icon: '📚', name: '翻翻书架', note: '手工书架上有旧画册和诗集。',
+      fx: ['娱乐 +20', '创作 +6 XP', '精力 -2'], gain: '+20 娱乐',
+      run() {
+        need('fun', 20); xp('creativity', 6); need('energy', -2); S.today.read++;
+        return '📚 翻到一页喜欢的老画册';
+      }
+    },
+    easel: {
+      icon: '🖌️', name: '画一张小画', note: '画架支在窗边，颜料还没干。',
+      fx: ['金币 +14~24', '创作 +10 XP', '精力 -5'], gain: '+创作',
+      run() {
+        const gain = 14 + Math.floor(Math.random() * 11);
+        addCoins(gain, true); xp('creativity', 10); need('energy', -5); need('fun', 6); S.today.create++;
+        return `🖌️ 画完一张小画，金币 +${gain}`;
+      }
+    },
+    player: {
+      icon: '💿', name: '听一张唱片', note: '旧唱片机转起来，房间有了旋律。',
+      fx: ['娱乐 +18', '精力 +2'], gain: '+18 娱乐',
+      run() { need('fun', 18); need('energy', 2); S.today.play++; return '💿 旧唱片沙沙转，房间有了旋律'; }
+    },
+    cushion: {
+      icon: '🧸', name: '窝一会儿', note: '软软的懒人沙发会把人吸进去。',
+      fx: ['娱乐 +16', '精力 +6'], gain: '+16 娱乐',
+      run() { need('fun', 16); need('energy', 6); return '🧸 窝在懒人沙发里，不想动了'; }
+    }
+  };
+
+  function advanceTime(minutes) {
+    S.clock += minutes;
+    while (S.clock >= 1440) {
+      S.clock -= 1440;
+      newDay();
+    }
+  }
+
+  function newDay() {
+    S.day++;
+    S.today = { cook: 0, social: 0, create: 0, tidy: 0, shower: 0, read: 0, play: 0 };
+    ensureGoals(S);
+    S.coins += 10;
+    renderGoals();
+    renderHUD();
+    toast(`☀️ 第 ${S.day} 天开始了 · 收到 10 金币零花`, 'goal');
+    saveState('day');
+  }
+
+  function checkGoals() {
+    let changed = false;
+    for (const id of S.goals.ids) {
+      if (S.goals.done.includes(id)) continue;
+      const goal = GOALS.find((g) => g.id === id);
+      if (goal && goal.done(S)) {
+        S.goals.done.push(id);
+        addCoins(goal.reward, true);
+        toast(`✓ 小目标完成：${goal.label} · +${goal.reward} 金币`, 'goal');
+        changed = true;
+      }
+    }
+    if (!S.goals.bonus && S.goals.done.length === S.goals.ids.length) {
+      S.goals.bonus = true;
+      addCoins(25, true);
+      toast('🌟 今日小目标全部完成！额外 +25 金币', 'goal');
+      changed = true;
+    }
+    renderGoals();
+    if (changed) renderHUD();
+  }
+
+  function doAction(key, anchorOverride) {
+    const a = ACTIONS[key];
+    if (!a) return;
+    if (a.cost && S.coins < a.cost) {
+      toast(`🪙 金币不够啦，还差 ${a.cost - S.coins} 金币`, 'warn');
+      return;
+    }
+    if (a.cost) addCoins(-a.cost, true);
+    let msg = '';
+    try {
+      msg = a.run ? a.run(anchorOverride) : '';
+    } catch (err) {
+      console.error('[periwinkle] action failed', err);
+      toast('这个动作暂时没做成', 'warn');
+      return;
+    }
+    const at = anchorOverride || a.anchor;
+    if (at && mode !== 'hood') {
+      lookMiri(at);
+      burstAt(at, 0xffca8a);
+      if (a.gain) floatAt(at, a.gain);
+    }
+    closeCard();
+    checkGoals();
+    renderHUD();
+    renderSkills();
+    updateNeedBars();
+    renderRelations();
+    saveState('action');
+    if (msg) toast(msg, 'info');
+  }
+
+  function openCard({ icon, title, note, fx = [], actions = [] }) {
+    ui.acIcon.textContent = icon;
+    ui.acTitle.textContent = title;
+    ui.acNote.textContent = note;
+    ui.acFx.innerHTML = fx.map((t) => `<span>${t}</span>`).join('');
+    ui.acFx.hidden = fx.length === 0;
+    ui.acActions.replaceChildren(...actions.map((a) => {
+      const b = document.createElement('button');
+      b.className = 'ac-btn' + (a.primary ? ' primary' : '');
+      b.disabled = !!a.disabled;
+      const left = document.createElement('span');
+      left.textContent = a.label;
+      const right = document.createElement('em');
+      right.textContent = a.meta || '';
+      b.append(left, right);
+      b.addEventListener('click', a.onclick);
+      return b;
+    }));
+    ui.actionCard.hidden = false;
+    requestAnimationFrame(() => ui.actionCard.classList.add('in'));
+  }
+
+  function closeCard() {
+    if (ui.actionCard.hidden) return;
+    ui.actionCard.classList.remove('in');
+    setTimeout(() => { if (!ui.actionCard.classList.contains('in')) ui.actionCard.hidden = true; }, 180);
+  }
+
+  function openAction(key) {
+    const a = ACTIONS[key];
+    if (!a) return;
+    const affordable = !a.cost || S.coins >= a.cost;
+    openCard({
+      icon: a.icon, title: a.name, note: a.note, fx: a.fx || [],
+      actions: [{
+        label: '现在做', meta: a.cost ? `${a.cost} 金币` : '免费',
+        disabled: !affordable, primary: true, onclick: () => doAction(key)
+      }]
+    });
+    walkToInteraction(a.stand || a.anchor, a.anchor || a.stand);
+  }
+
+  function openSelf() {
+    const summary = NEEDS.map((n) => `${n.label} ${Math.round(S.needs[n.key])}`).join(' · ');
+    openCard({
+      icon: '🌿', title: 'Miri',
+      note: '住在 Periwinkle Row 的年轻创作者。今天也在认真地生活。',
+      fx: [summary],
+      actions: [{ label: '继续今天', meta: '', primary: true, onclick: closeCard }]
+    });
+  }
+
+  function openNeighbor(key) {
+    const n = NEIGHBORS.find((x) => x.key === key);
+    if (!n) return;
+    const v = S.rel[key] || 0;
+    const helped = S.helped[key] === S.day;
+    openCard({
+      icon: n.icon, title: n.name,
+      note: `${n.line} 目前：${relLevel(v)}（${Math.round(v)}/100）`,
+      fx: [`友谊 ${Math.round(v)}/100`, n.house],
+      actions: [
+        { label: '聊聊天', meta: '社交 +11 · 友谊 +7', onclick: () => social(key, 'chat') },
+        { label: `送${n.gift}`, meta: '12 金币 · 友谊 +18', disabled: S.coins < 12, onclick: () => social(key, 'gift') },
+        { label: '搭把手', meta: helped ? '今天已经帮过啦' : '精力 -4 · 友谊 +12', disabled: helped, onclick: () => social(key, 'help') }
+      ]
+    });
+    if (mode === 'hood' && navHood) walkActorTo(hoodActor, navHood, n.x, n.z + 0.9, [n.x, 0, n.z]);
+  }
+
+  function social(key, type) {
+    const n = NEIGHBORS.find((x) => x.key === key);
+    if (!n) return;
+    let gain = 7, socialGain = 11, msg = '';
+    if (type === 'gift') {
+      if (S.coins < 12) { toast('🪙 金币不够买礼物', 'warn'); return; }
+      addCoins(-12, true); gain = 18; socialGain = 8;
+      msg = `🎁 ${n.name} 收下了${n.gift}，笑得很开心 · 友谊 +${gain}`;
+    } else if (type === 'help') {
+      if (S.helped[key] === S.day) return;
+      S.helped[key] = S.day; gain = 12; socialGain = 6;
+      need('energy', -4);
+      msg = `🤝 你帮 ${n.name} 搭了把手 · 友谊 +${gain}`;
+    } else {
+      msg = `${pickOne(n.talk)} · 友谊 +${gain}`;
+    }
+    S.rel[key] = clamp((S.rel[key] || 0) + gain, 0, 100);
+    need('social', socialGain);
+    xp('social', 5);
+    S.today.social++;
+    closeCard();
+    renderRelations();
+    renderHUD();
+    updateNeedBars();
+    checkGoals();
+    saveState('social');
+    toast(msg, 'info');
+    const p = new Vector3(n.x, 1.4, n.z).add(hoodWorld.position);
+    burstAt(p.toArray(), 0xffd2a0);
+    floatAt(p.toArray(), `+${gain} 友谊`);
+  }
+
+  /* ============================================================
+   * 11. 建造 / 选购 / 布置
+   * ============================================================ */
+  const fixedObstacles = [
+    { id: 'desk', x: 0.5, z: -3.7, w: 2.7, d: 1.1 },
+    { id: 'bed', x: 3.0, z: -2.6, w: 1.95, d: 2.55 },
+    { id: 'counter', x: -4.0, z: -2.3, w: 1.1, d: 2.45 },
+    { id: 'fridge', x: -3.98, z: -0.35, w: 1.05, d: 1.0 },
+    { id: 'shower', x: -3.62, z: 2.55, w: 1.65, d: 1.65 },
+    { id: 'chair', x: 0.55, z: -2.95, w: 0.75, d: 0.75 },
+    { id: 'armchair', x: 3.0, z: 2.35, w: 1.6, d: 1.55 },
+    { id: 'table', x: 1.25, z: 1.85, w: 1.3, d: 1.3 },
+    { id: 'door', x: -2.75, z: -3.95, w: 1.4, d: 0.8 }
+  ];
+  const groundPlane = new Plane(new Vector3(0, 1, 0), 0);
+  const raycaster = new THREE.Raycaster();
+  const pointer = new Vector2();
+  const scratch = new Vector3();
+
+  /* ---------- 可行走网格 + A* 寻路 ---------- */
+  const HOME_BOUNDS = { minX: -3.85, maxX: 3.85, minZ: -3.85, maxZ: 3.85 };
+  const HOOD_BOUNDS = { minX: -6.9, maxX: 6.9, minZ: -6.9, maxZ: 6.9 };
+  const hoodObstacles = [
+    { x: -4.5, z: -1.6, w: 4.2, d: 3.4 },
+    { x: 0.2, z: -4.6, w: 4.2, d: 3.4 },
+    { x: 4.5, z: -1.6, w: 4.2, d: 3.4 },
+    { x: -6.4, z: 3.6, w: 1.0, d: 1.0 },
+    { x: 6.4, z: 3.6, w: 1.0, d: 1.0 },
+    { x: -6.5, z: -4.6, w: 0.9, d: 0.9 },
+    { x: 6.4, z: -4.6, w: 0.9, d: 0.9 },
+    { x: -2.2, z: -6.2, w: 0.8, d: 0.8 },
+    { x: 2.5, z: -6.4, w: 0.8, d: 0.8 },
+    { x: -2.9, z: 5.0, w: 0.4, d: 0.4 },
+    { x: 2.9, z: 5.0, w: 0.4, d: 0.4 },
+    { x: -5.6, z: 4.6, w: 1.7, d: 1.1 },
+    { x: 3.7, z: 3.9, w: 1.9, d: 1.1 },
+    { x: 4.9, z: 5.2, w: 1.6, d: 1.1 },
+    { x: 2.2, z: 6.2, w: 0.6, d: 0.5 },
+    ...NEIGHBORS.map((n) => ({ x: n.x, z: n.z, w: 0.55, d: 0.55 }))
+  ];
+
+  function createNav(bounds, list, radius = 0.3, step = 0.25) {
+    const cols = Math.round((bounds.maxX - bounds.minX) / step) + 1;
+    const rows = Math.round((bounds.maxZ - bounds.minZ) / step) + 1;
+    const walk = new Uint8Array(cols * rows);
+    const cx = (i) => bounds.minX + i * step;
+    const cz = (j) => bounds.minZ + j * step;
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        const x = cx(i), z = cz(j);
+        let ok = 1;
+        for (const o of list) {
+          if (Math.abs(x - o.x) < o.w / 2 + radius && Math.abs(z - o.z) < o.d / 2 + radius) {
+            ok = 0;
+            break;
+          }
+        }
+        walk[j * cols + i] = ok;
+      }
+    }
+    const idx = (i, j) => j * cols + i;
+    const inside = (i, j) => i >= 0 && j >= 0 && i < cols && j < rows;
+    const cellOf = (x, z) => ({
+      i: clamp(Math.round((x - bounds.minX) / step), 0, cols - 1),
+      j: clamp(Math.round((z - bounds.minZ) / step), 0, rows - 1)
+    });
+    function nearest(x, z) {
+      let best = null;
+      let bd = Infinity;
+      for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < cols; i++) {
+          if (!walk[idx(i, j)]) continue;
+          const dx = cx(i) - x, dz = cz(j) - z;
+          const d = dx * dx + dz * dz;
+          if (d < bd) {
+            bd = d;
+            best = { i, j, x: cx(i), z: cz(j) };
+          }
+        }
+      }
+      return best;
+    }
+    function lineClear(a, b) {
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const n = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.1));
+      for (let k = 0; k <= n; k++) {
+        const c = cellOf(a.x + dx * k / n, a.z + dz * k / n);
+        if (!walk[idx(c.i, c.j)]) return false;
+      }
+      return true;
+    }
+    function findPath(start, goal) {
+      if (!walk[idx(start.i, start.j)] || !walk[idx(goal.i, goal.j)]) return null;
+      const N = cols * rows;
+      const gScore = new Float32Array(N).fill(Infinity);
+      const fScore = new Float32Array(N).fill(Infinity);
+      const came = new Int32Array(N).fill(-1);
+      const closed = new Uint8Array(N);
+      const sIdx = idx(start.i, start.j);
+      const tIdx = idx(goal.i, goal.j);
+      const heur = (i, j) => {
+        const dx = Math.abs(i - goal.i), dz = Math.abs(j - goal.j);
+        return step * (dx + dz + (Math.SQRT2 - 2) * Math.min(dx, dz));
+      };
+      gScore[sIdx] = 0;
+      fScore[sIdx] = heur(start.i, start.j);
+      const open = [sIdx];
+      const dirs = [
+        [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
+        [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]
+      ];
+      while (open.length) {
+        let bi = 0;
+        for (let k = 1; k < open.length; k++) if (fScore[open[k]] < fScore[open[bi]]) bi = k;
+        const cur = open.splice(bi, 1)[0];
+        if (cur === tIdx) {
+          const cells = [];
+          let c = cur;
+          while (c !== -1) {
+            const ci = c % cols, cj = (c / cols) | 0;
+            cells.push({ x: cx(ci), z: cz(cj), i: ci, j: cj });
+            c = came[c];
+          }
+          cells.reverse();
+          const out = [cells[0]];
+          let at = 0;
+          while (at < cells.length - 1) {
+            let next = cells.length - 1;
+            while (next > at + 1 && !lineClear(cells[at], cells[next])) next--;
+            out.push(cells[next]);
+            at = next;
+          }
+          return out;
+        }
+        closed[cur] = 1;
+        const ci = cur % cols, cj = (cur / cols) | 0;
+        for (const [di, dj, cost] of dirs) {
+          const ni = ci + di, nj = cj + dj;
+          if (!inside(ni, nj)) continue;
+          const nIdx = idx(ni, nj);
+          if (!walk[nIdx] || closed[nIdx]) continue;
+          if (di && dj && (!walk[idx(ci + di, cj)] || !walk[idx(ci, cj + dj)])) continue;
+          const tentative = gScore[cur] + step * cost;
+          if (tentative < gScore[nIdx]) {
+            gScore[nIdx] = tentative;
+            fScore[nIdx] = tentative + heur(ni, nj);
+            came[nIdx] = cur;
+            if (!open.includes(nIdx)) open.push(nIdx);
+          }
+        }
+      }
+      return null;
+    }
+    return {
+      bounds, cols, rows, walk, cellOf, nearest, findPath, lineClear,
+      walkableAt: (i, j) => inside(i, j) && !!walk[idx(i, j)],
+      contains: (x, z) => x >= bounds.minX && x <= bounds.maxX && z >= bounds.minZ && z <= bounds.maxZ
+    };
+  }
+
+  function ensureActorWalkable(actor, nav) {
+    if (!actor || !actor.group || !nav) return;
+    const p = actor.group.position;
+    const cell = nav.cellOf(p.x, p.z);
+    if (nav.walkableAt(cell.i, cell.j)) return;
+    const near = nav.nearest(p.x, p.z);
+    if (near) {
+      p.x = near.x;
+      p.z = near.z;
+    }
+    actor.path.length = 0;
+  }
+
+  function rebuildHomeNav() {
+    navHome = createNav(HOME_BOUNDS, obstacles, 0.3);
+    homeActor.path.length = 0;
+    ensureActorWalkable(homeActor, navHome);
+  }
+
+  function walkActorTo(actor, nav, x, z, lookAt = null) {
+    if (!actor || !actor.group || !nav) return null;
+    actor.path.length = 0;
+    const start = nav.nearest(actor.group.position.x, actor.group.position.z);
+    const goal = nav.nearest(x, z);
+    if (!start || !goal) return null;
+    if (lookAt) actor.look = new Vector3(lookAt[0], 0, lookAt[2]);
+    if (start.i === goal.i && start.j === goal.j) {
+      actor.path.length = 0;
+      return { x: goal.x, z: goal.z };
+    }
+    const cells = nav.findPath(start, goal);
+    if (!cells || cells.length < 2) return null;
+    actor.path = cells.slice(1).map((c) => ({ x: c.x, z: c.z }));
+    return { x: goal.x, z: goal.z };
+  }
+
+  function floorPoint(cxPos, cyPos) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.set(((cxPos - rect.left) / rect.width) * 2 - 1, -((cyPos - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    return raycaster.ray.intersectPlane(groundPlane, new Vector3());
+  }
+
+  function spawnMoveMarker(world, x, z) {
+    const ring = new Mesh(new RingGeometry(0.16, 0.23, 28), new MeshBasicMaterial({
+      color: 0xffca8a, transparent: true, opacity: 0.9, side: DoubleSide, depthWrite: false
+    }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, 0.035, z);
+    world.add(ring);
+    effects.push({ ring, t: 0, life: 0.55 });
+  }
+
+  function moveToPoint(cxPos, cyPos) {
+    const world = mode === 'hood' ? hoodWorld : homeWorld;
+    const nav = mode === 'hood' ? navHood : navHome;
+    const actor = mode === 'hood' ? hoodActor : homeActor;
+    if (!nav || !actor.group) return false;
+    const hit = floorPoint(cxPos, cyPos);
+    if (!hit) return false;
+    const local = world.worldToLocal(hit.clone());
+    if (!nav.contains(local.x, local.z)) return false;
+    const dest = walkActorTo(actor, nav, local.x, local.z);
+    if (!dest) return false;
+    actor.look = null;
+    spawnMoveMarker(world, dest.x, dest.z);
+    closeCard();
+    return true;
+  }
+
+  function walkToInteraction(at, faceAt = null) {
+    if (!at || mode === 'hood' || !navHome) return;
+    walkActorTo(homeActor, navHome, at[0], at[2], faceAt || [at[0], 0, at[2]]);
+  }
+
+  function canPlace(kind, x, z, ignoreId) {
+    const c = CATALOG[kind];
+    if (!c) return false;
+    const hw = c.w / 2, hd = c.d / 2;
+    if (x - hw < -3.5 || x + hw > 3.5 || z - hd < -3.5 || z + hd > 3.5) return false;
+    if (c.walkable) return true;
+    for (const o of obstacles) {
+      if (ignoreId && o.id === ignoreId) continue;
+      if (Math.abs(x - o.x) < hw + o.w / 2 + 0.05 && Math.abs(z - o.z) < hd + o.d / 2 + 0.05) return false;
+    }
+    return true;
+  }
+
+  function spawnPlaced(entry) {
+    const c = CATALOG[entry.kind];
+    if (!c) return;
+    const group = c.make();
+    group.position.set(entry.x, 0, entry.z);
+    group.userData.pick = { type: 'decor', id: entry.id };
+    homeWorld.add(group);
+    const rt = { group, light: group.userData.light, bulb: group.userData.bulb, on: true };
+    if (rt.light) rt.light.intensity = 6.5;
+    placedRuntime.set(entry.id, rt);
+    if (!c.walkable) {
+      obstacles.push({ id: entry.id, x: entry.x, z: entry.z, w: c.w, d: c.d });
+    }
+  }
+
+  function startPlacing(kind, moveId = null) {
+    const c = CATALOG[kind];
+    if (!c) return;
+    if (placing) cancelPlacing();
+    if (mode !== 'build') setMode('build');
+    if (moveId) {
+      const rt = placedRuntime.get(moveId);
+      if (rt) rt.group.visible = false;
+    }
+    const ghost = c.make();
+    ghost.traverse((o) => {
+      if (o.isMesh) {
+        if (o.material && o.material.isShaderMaterial) {
+          o.visible = false;
+          return;
+        }
+        o.castShadow = false;
+        o.receiveShadow = false;
+        o.material = o.material.clone();
+        o.material.transparent = true;
+        o.material.opacity = 0.42;
+        o.material.depthWrite = false;
+      }
+    });
+    ghost.position.set(0, -10, 0);
+    homeWorld.add(ghost);
+    const ring = new Mesh(new RingGeometry(0.5, 0.62, 32), new MeshBasicMaterial({
+      color: 0x9fe0a8, transparent: true, opacity: 0.85, side: DoubleSide, depthWrite: false
+    }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.02;
+    homeWorld.add(ring);
+    placing = { kind, moveId, ghost, ring, valid: false, x: 0, z: 0 };
+    ui.buildName.textContent = c.name;
+    ui.buildHint.hidden = false;
+    ui.tip.hidden = true;
+    closeCard();
+    deselect();
+    if (isNarrow()) closeSheet();
+    renderShop();
+  }
+
+  function cancelPlacing() {
+    if (!placing) return;
+    homeWorld.remove(placing.ghost);
+    homeWorld.remove(placing.ring);
+    placing.ghost.traverse((o) => {
+      if (o.isMesh) {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+      }
+    });
+    if (placing.moveId) {
+      const rt = placedRuntime.get(placing.moveId);
+      if (rt) rt.group.visible = true;
+    }
+    placing = null;
+    ui.buildHint.hidden = true;
+    renderShop();
+  }
+
+  function updateGhost(cx, cy) {
+    if (!placing) return;
+    const rect = canvas.getBoundingClientRect();
+    pointer.set(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.ray.intersectPlane(groundPlane, scratch);
+    if (!hit) return;
+    const cat = CATALOG[placing.kind];
+    const x = clamp(Math.round(hit.x * 4) / 4, -3.45, 3.45);
+    const z = clamp(Math.round(hit.z * 4) / 4, -3.45, 3.45);
+    placing.x = x;
+    placing.z = z;
+    placing.valid = canPlace(placing.kind, x, z, placing.moveId);
+    placing.ghost.position.set(x, 0.01, z);
+    placing.ring.position.set(x, 0.025, z);
+    placing.ring.scale.set(Math.max(0.4, cat.w / 1.24), Math.max(0.4, cat.d / 1.24), 1);
+    placing.ring.material.color.set(placing.valid ? 0x9fe0a8 : 0xff8a7a);
+  }
+
+  function tryPlaceAt(cx, cy) {
+    if (!placing) return;
+    updateGhost(cx, cy);
+    const p = placing;
+    const c = CATALOG[p.kind];
+    if (!p.valid) {
+      toast('这里放不下，换个位置试试', 'warn');
+      return;
+    }
+    const x = p.x, z = p.z;
+    if (p.moveId) {
+      const entry = S.placed.find((it) => it.id === p.moveId);
+      if (entry) {
+        entry.x = x;
+        entry.z = z;
+        const rt = placedRuntime.get(entry.id);
+        if (rt) {
+          rt.group.position.set(x, 0, z);
+          rt.group.visible = true;
+        }
+        const ob = obstacles.find((o) => o.id === entry.id);
+        if (ob) { ob.x = x; ob.z = z; }
+        rebuildHomeNav();
+        toast(`已移动「${c.name}」`);
+      }
+    } else {
+      if (S.coins < c.price) {
+        toast(`🪙 金币不够，还差 ${c.price - S.coins}`, 'warn');
+        cancelPlacing();
+        return;
+      }
+      addCoins(-c.price, true);
+      const id = uid();
+      S.placed.push({ id, kind: p.kind, x, z });
+      spawnPlaced({ id, kind: p.kind, x, z });
+      rebuildHomeNav();
+      S.today.tidy++;
+      toast(`🪑 买下并摆放了「${c.name}」`);
+    }
+    cancelPlacing();
+    burstAt([x, 0.7, z], 0xffca8a);
+    renderShop();
+    renderHUD();
+    checkGoals();
+    saveState('build');
+  }
+
+  function selectDecor(id) {
+    if (mode !== 'build') return;
+    if (selectedId === id) {
+      deselect();
+      return;
+    }
+    const entry = S.placed.find((p) => p.id === id);
+    if (!entry) return;
+    selectedId = id;
+    const c = CATALOG[entry.kind];
+    selRing.visible = true;
+    selRing.position.set(entry.x, 0.03, entry.z);
+    selRing.scale.set(Math.max(0.5, c.w / 1.2), Math.max(0.5, c.d / 1.2), 1);
+    renderDecorOps();
+    closeCard();
+  }
+
+  function deselect() {
+    selectedId = null;
+    if (selRing) selRing.visible = false;
+    renderDecorOps();
+  }
+
+  function sellSelected() {
+    const entry = S.placed.find((p) => p.id === selectedId);
+    if (!entry) return;
+    const c = CATALOG[entry.kind];
+    const refund = Math.floor(c.price * 0.6);
+    S.placed = S.placed.filter((p) => p.id !== entry.id);
+    const rt = placedRuntime.get(entry.id);
+    if (rt) {
+      homeWorld.remove(rt.group);
+      placedRuntime.delete(entry.id);
+    }
+    const i = obstacles.findIndex((o) => o.id === entry.id);
+    if (i >= 0) obstacles.splice(i, 1);
+    rebuildHomeNav();
+    addCoins(refund, true);
+    deselect();
+    renderShop();
+    renderHUD();
+    saveState('build');
+    toast(`♻️ 回收了「${c.name}」 · +${refund} 金币`);
+  }
+
+  function runDecorAction(id) {
+    const entry = S.placed.find((p) => p.id === id);
+    if (!entry) return;
+    const c = CATALOG[entry.kind];
+    const rt = placedRuntime.get(id);
+    if (c.action === 'lamp') {
+      walkToInteraction([entry.x, 1.0, entry.z]);
+      if (rt && rt.light) {
+        rt.on = !rt.on;
+        rt.light.intensity = rt.on ? 6.5 : 0;
+        if (rt.bulb) rt.bulb.material.color.set(rt.on ? 0xffe6b8 : 0x6b5a44);
+      }
+      burstAt([entry.x, 1.55, entry.z], 0xffca8a);
+      toast(rt && rt.on ? '💡 暖灯亮起来了' : '💡 灯关上了');
+      saveState('action');
+      return;
+    }
+    const a = c.action ? ACTIONS[c.action] : null;
+    if (!a) {
+      toast('这是米莉喜欢的小角落。');
+      return;
+    }
+    openCard({
+      icon: a.icon, title: a.name, note: a.note, fx: a.fx || [],
+      actions: [{
+        label: '现在做', meta: a.cost ? `${a.cost} 金币` : '免费',
+        disabled: !!(a.cost && S.coins < a.cost), primary: true,
+        onclick: () => doAction(c.action, [entry.x, 1.05, entry.z])
+      }]
+    });
+    walkToInteraction([entry.x, 1.05, entry.z]);
+  }
+
+  /* ============================================================
+   * 12. 模式 / 镜头
+   * ============================================================ */
+  function openSheet() {
+    ui.sidePanel.classList.add('open');
+    ui.panelToggle.textContent = '✕';
+    ui.panelToggle.setAttribute('aria-expanded', 'true');
+    ui.panelToggle.setAttribute('aria-label', '关闭面板');
+  }
+
+  function closeSheet() {
+    ui.sidePanel.classList.remove('open');
+    ui.panelToggle.textContent = '☰';
+    ui.panelToggle.setAttribute('aria-expanded', 'false');
+    ui.panelToggle.setAttribute('aria-label', '打开面板');
+  }
+
+  function camPreset(m) {
+    const portrait = window.innerWidth / window.innerHeight < 0.9;
+    const off = m === 'hood' ? new Vector3(0, 0, -46) : new Vector3(0, 0, 0);
+    if (m === 'hood') {
+      if (portrait) {
+        return { pos: new Vector3(10.5, 15.5, 26).add(off), target: new Vector3(0, 1.2, 0.5).add(off) };
+      }
+      const scale = window.innerHeight < 560 ? 1.18 : 1;
+      return {
+        pos: new Vector3(10.5 * scale, 15.2 * scale, 25.5 * scale).add(off),
+        target: new Vector3(0, 1.2, 0.5).add(off)
+      };
+    }
+    if (portrait) {
+      return { pos: new Vector3(15.7, 16.5, 24.5), target: new Vector3(0, 1.5, 0) };
+    }
+    if (window.innerHeight < 560) {
+      return { pos: new Vector3(13.7, 12.3, 17.2), target: new Vector3(0, 1.5, 0) };
+    }
+    return { pos: new Vector3(10.5, 9.4, 13.2), target: new Vector3(0, 1.5, 0) };
+  }
+
+  function flyTo(dest, dur = 880) {
+    camTween = {
+      fromPos: camera.position.clone(), toPos: dest.pos.clone(),
+      fromTgt: controls.target.clone(), toTgt: dest.target.clone(),
+      start: performance.now(), dur
+    };
+    controls.enabled = false;
+  }
+
+  function finishTween() {
+    if (!camTween) return;
+    camera.position.copy(camTween.toPos);
+    controls.target.copy(camTween.toTgt);
+    camTween = null;
+    controls.enabled = true;
+    controls.update();
+  }
+
+  function updateCamera() {
+    if (camTween) {
+      const k = Math.min(1, (performance.now() - camTween.start) / camTween.dur);
+      const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      camera.position.lerpVectors(camTween.fromPos, camTween.toPos, e);
+      controls.target.lerpVectors(camTween.fromTgt, camTween.toTgt, e);
+      if (k >= 1) finishTween();
+    } else {
+      controls.update();
+    }
+  }
+
+  function orbit(rad) {
+    const tgt = controls.target.clone();
+    const off = camera.position.clone().sub(tgt).applyAxisAngle(new Vector3(0, 1, 0), rad);
+    flyTo({ pos: tgt.clone().add(off), target: tgt }, 420);
+  }
+
+  function zoomBy(factor) {
+    if (camTween) finishTween();
+    const tgt = controls.target.clone();
+    const off = camera.position.clone().sub(tgt);
+    const dist = clamp(off.length() * factor, controls.minDistance, controls.maxDistance);
+    flyTo({ pos: tgt.clone().add(off.normalize().multiplyScalar(dist)), target: tgt }, 300);
+  }
+
+  function setMode(next) {
+    if (!['life', 'build', 'hood'].includes(next)) return;
+    if (mode === next) {
+      if (next === 'build' && isNarrow()) openSheet();
+      return;
+    }
+    cancelPlacing();
+    deselect();
+    closeCard();
+    mode = next;
+    document.body.dataset.mode = next;
+    homeWorld.visible = next !== 'hood';
+    hoodWorld.visible = next === 'hood';
+    ui.modeBtns.forEach((b) => {
+      const on = b.dataset.mode === next;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    ui.buildBlock.hidden = next !== 'build';
+    ui.hint.textContent = next === 'hood'
+      ? '点击地板走动 · 点击邻居聊聊 · 点「回家」返回'
+      : next === 'build'
+        ? '选一件家具，再点地板放置 · Esc 取消'
+        : '点击地板走动 · 点击物件互动 · 拖动旋转';
+    if (next === 'build') renderShop();
+    controls.minDistance = next === 'hood' ? 12 : 8;
+    controls.maxDistance = next === 'hood' ? 46 : 38;
+    flyTo(camPreset(next), 900);
+    if (isNarrow()) {
+      if (next === 'build') openSheet(); else closeSheet();
+    }
+    if (next === 'hood' && !hoodSeen) {
+      hoodSeen = true;
+      setTimeout(() => toast('🌿 邻里模式：点邻居聊聊，点「回家」的路牌返回', 'info'), 1000);
+    }
+  }
+
+  /* ============================================================
+   * 13. 拾取 / 点击 / 悬停
+   * ============================================================ */
+  function pickAt(cx, cy) {
+    const rect = canvas.getBoundingClientRect();
+    pointer.set(((cx - rect.left) / rect.width) * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, camera);
+    const world = mode === 'hood' ? hoodWorld : homeWorld;
+    const hits = raycaster.intersectObjects(world.children, true);
+    for (const h of hits) {
+      let o = h.object;
+      while (o && o !== world) {
+        if (o.userData && o.userData.pick) return { pick: o.userData.pick, point: h.point };
+        o = o.parent;
+      }
+    }
+    return null;
+  }
+
+  function pickLabel(p) {
+    if (!p) return null;
+    if (p.type === 'action') {
+      const a = ACTIONS[p.key];
+      if (a) return { icon: a.icon, text: a.name };
+      if (p.key === 'door') return { icon: '🚪', text: '去邻里' };
+    }
+    if (p.type === 'decor') {
+      const entry = S.placed.find((x) => x.id === p.id);
+      const c = entry ? CATALOG[entry.kind] : null;
+      if (c) return { icon: c.icon, text: c.name + (mode === 'build' ? ' · 点击选中' : '') };
+    }
+    if (p.type === 'neighbor') {
+      const n = NEIGHBORS.find((x) => x.key === p.key);
+      if (n) return { icon: n.icon, text: n.name + ' · 聊聊' };
+    }
+    if (p.type === 'self') return { icon: '🌿', text: 'Miri' };
+    if (p.type === 'gate') return { icon: '🏠', text: '回家' };
+    if (p.type === 'house') return { icon: '🏡', text: '小屋' };
+    if (p.type === 'flavor') return { icon: '📌', text: '看看' };
+    return null;
+  }
+
+  let hoverRaf = 0;
+  let lastHover = null;
+  function updateHover(cx, cy) {
+    if (isNarrow() || placing) {
+      ui.tip.hidden = true;
+      return;
+    }
+    const hit = pickAt(cx, cy);
+    let info = hit ? pickLabel(hit.pick) : null;
+    if (!info && mode !== 'build') {
+      const pt = floorPoint(cx, cy);
+      const world = mode === 'hood' ? hoodWorld : homeWorld;
+      const nav = mode === 'hood' ? navHood : navHome;
+      if (pt && nav) {
+        const local = world.worldToLocal(pt.clone());
+        if (nav.contains(local.x, local.z)) info = { icon: '🐾', text: '走到这里' };
+      }
+    }
+    if (!info) {
+      ui.tip.hidden = true;
+      canvas.style.cursor = 'grab';
+      return;
+    }
+    ui.tipIcon.textContent = info.icon;
+    ui.tipText.textContent = info.text;
+    ui.tip.hidden = false;
+    const tw = ui.tip.offsetWidth || 120;
+    const th = ui.tip.offsetHeight || 28;
+    ui.tip.style.left = Math.min(window.innerWidth - tw - 10, cx + 14) + 'px';
+    ui.tip.style.top = Math.max(8, cy - th - 13) + 'px';
+    canvas.style.cursor = 'pointer';
+  }
+
+  function handleClick(cx, cy) {
+    if (placing) {
+      tryPlaceAt(cx, cy);
+      return;
+    }
+    const hit = pickAt(cx, cy);
+    if (!hit) {
+      if (mode !== 'build') {
+        if (!moveToPoint(cx, cy)) closeCard();
+        return;
+      }
+      closeCard();
+      deselect();
+      return;
+    }
+    const p = hit.pick;
+    if (mode === 'build') {
+      if (p.type === 'decor') {
+        selectDecor(p.id);
+      } else if (p.type === 'action' || p.type === 'gate' || p.type === 'door') {
+        toast('建造模式下先专心布置房间吧');
+      }
+      return;
+    }
+    if (p.type === 'action') {
+      if (p.key === 'door') openAction('door');
+      else openAction(p.key);
+    } else if (p.type === 'decor') {
+      runDecorAction(p.id);
+    } else if (p.type === 'neighbor') {
+      openNeighbor(p.key);
+    } else if (p.type === 'self') {
+      openSelf();
+    } else if (p.type === 'gate') {
+      setMode('life');
+      toast('🏠 回到家，暖灯还亮着');
+    } else if (p.type === 'house' || p.type === 'flavor') {
+      toast(p.note || '这里很安静。');
+    }
+  }
+
+  /* ============================================================
+   * 14. 事件绑定
+   * ============================================================ */
+  let downPoint = null;
+
+  function bindEvents() {
+    ui.modeBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+    ui.bar.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-cam]');
+      if (!b) return;
+      const act = b.dataset.cam;
+      if (act === 'left') orbit(Math.PI / 4);
+      else if (act === 'right') orbit(-Math.PI / 4);
+      else if (act === 'in') zoomBy(0.85);
+      else if (act === 'out') zoomBy(1.18);
+      else if (act === 'reset') flyTo(camPreset(mode), 650);
+      else if (act === 'panel') {
+        if (ui.sidePanel.classList.contains('open')) closeSheet(); else openSheet();
+      }
+    });
+
+    ui.saveChip.addEventListener('click', () => {
+      saveState('manual');
+      toast('已保存到本地', 'save');
+    });
+
+    const identity = document.getElementById('miriIdentity');
+    if (identity) {
+      identity.addEventListener('click', () => openSelf());
+      identity.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openSelf();
+        }
+      });
+    }
+
+    ui.acClose.addEventListener('click', closeCard);
+    ui.buildCancel.addEventListener('click', cancelPlacing);
+
+    ui.relList.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-visit]');
+      if (!b) return;
+      const key = b.dataset.visit;
+      if (mode !== 'hood') {
+        setMode('hood');
+        closeSheet();
+        setTimeout(() => openNeighbor(key), 950);
+      } else {
+        openNeighbor(key);
+      }
+    });
+
+    ui.shopList.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-kind]');
+      if (!b) return;
+      const kind = b.dataset.kind;
+      const c = CATALOG[kind];
+      if (placing && placing.kind === kind && !placing.moveId) {
+        cancelPlacing();
+        return;
+      }
+      if (S.coins < c.price) {
+        toast(`🪙 金币不够，还差 ${c.price - S.coins}`, 'warn');
+        return;
+      }
+      startPlacing(kind);
+    });
+
+    ui.decorOps.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-decor]');
+      if (!b) return;
+      if (b.dataset.decor === 'move') {
+        const entry = S.placed.find((p) => p.id === selectedId);
+        if (entry) startPlacing(entry.kind, entry.id);
+      } else if (b.dataset.decor === 'sell') {
+        sellSelected();
+      }
+    });
+
+    let resetArmed = false;
+    let resetTimer = 0;
+    ui.resetBtn.addEventListener('click', () => {
+      if (!resetArmed) {
+        resetArmed = true;
+        ui.resetBtn.textContent = '再点一次，确认重置';
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          resetArmed = false;
+          ui.resetBtn.textContent = '重置存档';
+        }, 4200);
+        return;
+      }
+      resetting = true;
+      try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+      window.location.reload();
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (camTween) {
+        camTween = null;
+        controls.enabled = true;
+        controls.update();
+      }
+      if (ui.sidePanel.classList.contains('open') && isNarrow()) closeSheet();
+      downPoint = { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId };
+      ui.tip.hidden = true;
+      if (placing) updateGhost(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (placing) {
+        updateGhost(e.clientX, e.clientY);
+        return;
+      }
+      if (e.pointerType !== 'mouse') return;
+      lastHover = { x: e.clientX, y: e.clientY };
+      if (!hoverRaf) {
+        hoverRaf = requestAnimationFrame(() => {
+          hoverRaf = 0;
+          if (lastHover) updateHover(lastHover.x, lastHover.y);
+        });
+      }
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (!downPoint || e.pointerId !== downPoint.id) return;
+      const dx = e.clientX - downPoint.x;
+      const dy = e.clientY - downPoint.y;
+      const quick = performance.now() - downPoint.t < 600;
+      downPoint = null;
+      if (!quick || Math.hypot(dx, dy) > 8) return;
+      handleClick(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      downPoint = null;
+      ui.tip.hidden = true;
+      canvas.style.cursor = 'grab';
+    });
+
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (placing) cancelPlacing();
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (placing) cancelPlacing();
+        else if (!ui.actionCard.hidden) closeCard();
+        else deselect();
+        return;
+      }
+      if (e.key === '1') setMode('life');
+      else if (e.key === '2') setMode('build');
+      else if (e.key === '3') setMode('hood');
+      else if (e.key === 'r' || e.key === 'R') orbit(Math.PI / 4);
+      else if (e.key === 'b' || e.key === 'B') setMode('build');
+    });
+
+    let wasLandscape = window.innerWidth > window.innerHeight;
+    window.addEventListener('resize', () => {
+      const w = window.innerWidth, h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.fov = w / h < 0.9 ? 46 : 36;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isNarrow() ? 1.75 : 2));
+      const landscape = w > h;
+      if (landscape !== wasLandscape) {
+        wasLandscape = landscape;
+        setTimeout(() => flyTo(camPreset(mode), 600), 80);
+      }
+    });
+
+    if (narrowQuery.addEventListener) {
+      narrowQuery.addEventListener('change', () => setTimeout(() => flyTo(camPreset(mode), 600), 80));
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) saveState('hidden');
+    });
+    window.addEventListener('pagehide', () => saveState('pagehide'));
+  }
+
+  /* ============================================================
+   * 15. 循环与初始化
+   * ============================================================ */
+  const gameClock = new Clock();
+  const DECAY = { hunger: 0.11, energy: 0.075, fun: 0.09, social: 0.05, hygiene: 0.045 };
+
+  function tickNeeds(dt) {
+    for (const k of Object.keys(DECAY)) {
+      S.needs[k] = Math.max(0, S.needs[k] - DECAY[k] * dt);
+    }
+    const now = performance.now();
+    for (const n of NEEDS) {
+      const v = S.needs[n.key];
+      if (v < 20 && (!lastWarn[n.key] || now - lastWarn[n.key] > 90000)) {
+        lastWarn[n.key] = now;
+        toast(`${n.icon} ${n.label}有点低了 · ${n.hint}`, 'warn');
+      }
+    }
+  }
+
+  function updateMotes() {
+    for (const m of motes) {
+      m.s.position.x = m.x + Math.sin(elapsed * m.sp + m.ph) * 0.16;
+      m.s.position.y = m.y + Math.sin(elapsed * m.sp * 0.8 + m.ph) * 0.1;
+      m.s.material.opacity = 0.28 + 0.22 * (0.5 + 0.5 * Math.sin(elapsed * 0.9 + m.ph));
+    }
+    for (const f of fireflies) {
+      f.s.position.x = f.x + Math.sin(elapsed * f.sp + f.ph) * 0.6;
+      f.s.position.y = f.y + Math.sin(elapsed * f.sp * 0.7 + f.ph * 1.3) * 0.3;
+      f.s.material.opacity = 0.18 + 0.42 * (0.5 + 0.5 * Math.sin(elapsed * 1.4 + f.ph));
+    }
+  }
+
+  function shortestAngle(from, to) {
+    return ((to - from + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  }
+
+  function updateActor(actor, dt) {
+    const g = actor.group;
+    if (!g) return;
+    let moving = false;
+    if (actor.path.length) {
+      const p = actor.path[0];
+      const dx = p.x - g.position.x;
+      const dz = p.z - g.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.06) {
+        actor.path.shift();
+      } else {
+        moving = true;
+        const step = Math.min(dist, actor.speed * dt);
+        g.position.x += dx / dist * step;
+        g.position.z += dz / dist * step;
+        const yaw = Math.atan2(dx, dz);
+        g.rotation.y += shortestAngle(g.rotation.y, yaw) * Math.min(1, dt * 10);
+      }
+    }
+    if (moving) actor.walkPhase += dt * 9;
+    const swing = moving ? Math.sin(actor.walkPhase) * 0.55 : 0;
+    const limbs = g.userData.limbs;
+    if (limbs) {
+      const k = Math.min(1, dt * 12);
+      limbs.legL.rotation.x += (swing - limbs.legL.rotation.x) * k;
+      limbs.legR.rotation.x += (-swing - limbs.legR.rotation.x) * k;
+      limbs.armL.rotation.x += (-swing * 0.8 - limbs.armL.rotation.x) * k;
+      limbs.armR.rotation.x += (swing * 0.8 - limbs.armR.rotation.x) * k;
+    }
+    if (moving) {
+      g.position.y = Math.abs(Math.sin(actor.walkPhase * 2)) * 0.03;
+    } else {
+      g.position.y = Math.sin(elapsed * 2.1 + (g.userData.phase || 0)) * 0.012;
+      if (actor.look) {
+        const dx = actor.look.x - g.position.x;
+        const dz = actor.look.z - g.position.z;
+        if (Math.hypot(dx, dz) > 0.05) {
+          const yaw = Math.atan2(dx, dz);
+          g.rotation.y += shortestAngle(g.rotation.y, yaw) * Math.min(1, dt * 3.2);
+        }
+      }
+    }
+  }
+
+  function updateMiri(dt) {
+    updateActor(homeActor, dt);
+    updateActor(hoodActor, dt);
+  }
+
+  function updateEffects(dt) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const e = effects[i];
+      e.t += dt;
+      if (e.ring) {
+        const k = Math.min(1, e.t / e.life);
+        e.ring.scale.setScalar(1 + k * 1.8);
+        e.ring.material.opacity = 0.9 * (1 - k);
+        if (k >= 1) {
+          if (e.ring.parent) e.ring.parent.remove(e.ring);
+          e.ring.geometry.dispose();
+          e.ring.material.dispose();
+          effects.splice(i, 1);
+        }
+        continue;
+      }
+      e.s.position.addScaledVector(e.v, dt);
+      e.v.y -= 0.6 * dt;
+      e.s.material.opacity = Math.max(0, 0.9 * (1 - e.t / e.life));
+      if (e.t >= e.life) {
+        scene.remove(e.s);
+        e.s.material.dispose();
+        effects.splice(i, 1);
+      }
+    }
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const rawDt = gameClock.getDelta();
+    const dt = Math.min(rawDt, 0.05);
+    elapsed += dt;
+    if (!document.hidden) {
+      advanceTime(dt * 1.0);
+      tickNeeds(dt);
+    }
+    updateCamera();
+    updateMiri(Math.min(rawDt, 0.25));
+    updateEffects(dt);
+    updateMotes();
+    uiTimer += dt;
+    if (uiTimer > 0.25) {
+      uiTimer = 0;
+      updateNeedBars();
+      renderHUD();
+    }
+    renderer.render(scene, camera);
+  }
+
+  function initCamera() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.fov = camera.aspect < 0.9 ? 46 : 36;
+    camera.updateProjectionMatrix();
+    const p = camPreset('life');
+    camera.position.copy(p.pos);
+    controls.target.copy(p.target);
+    controls.update();
+  }
+
+  /* ============================================================
+   * 16. 启动
+   * ============================================================ */
+  buildHome();
+  buildHood();
+  homeActor.group = miri;
+  hoodActor.group = hoodMiri;
+
+  obstacles.push(...fixedObstacles);
+
+  selRing = new Mesh(new RingGeometry(0.42, 0.52, 36), new MeshBasicMaterial({
+    color: 0xffc07a, transparent: true, opacity: 0.9, side: DoubleSide, depthWrite: false
+  }));
+  selRing.rotation.x = -Math.PI / 2;
+  selRing.visible = false;
+  homeWorld.add(selRing);
+
+  for (const p of S.placed) spawnPlaced(p);
+  rebuildHomeNav();
+  navHood = createNav(HOOD_BOUNDS, hoodObstacles, 0.3);
+  ensureActorWalkable(hoodActor, navHood);
+
+  buildNeedRows();
+  renderAll();
+  bindEvents();
+  initCamera();
+
+  window.__miri = {
+    get state() { return S; },
+    get mode() { return mode; },
+    setMode,
+    doAction,
+    social,
+    save: () => saveState('manual'),
+    cancelPlacing,
+    camera,
+    controls,
+    renderer,
+    scene,
+    homeWorld,
+    hoodWorld,
+    homeActor,
+    hoodActor,
+    get navHome() { return navHome; },
+    get navHood() { return navHood; },
+    THREE
+  };
+
+  animate();
+
+  setInterval(() => {
+    if (!document.hidden) saveState('auto');
+  }, 20000);
+
+  if (!hadSave) {
+    setTimeout(() => toast('☀️ 点击地板让米莉走动 · 点床/灶台/书桌互动 · 右下角 ☰ 查看目标', 'info'), 900);
+  } else {
+    setTimeout(() => toast('☁️ 已读取上次的自动保存', 'save'), 700);
+  }
+}
+</script>
+</body>
+</html>

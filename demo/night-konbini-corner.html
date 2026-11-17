@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="description" content="雨夜便利店街角微缩模型：Three.js 纯代码生成，三渲二卡通渲染，可自由拖拽旋转缩放观看。" />
+<title>雨夜便利店 · 街角微缩模型</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #05070d;
+  }
+  #scene {
+    display: block;
+    width: 100%;
+    height: 100%;
+    outline: none;
+    touch-action: none;
+    cursor: grab;
+  }
+  #scene:active { cursor: grabbing; }
+  /* 左下角提示词卡片：半透明磨砂玻璃 */
+  .prompt-card {
+    box-sizing: border-box;
+    position: fixed;
+    left: 24px;
+    bottom: 24px;
+    z-index: 10;
+    width: min(392px, calc(100vw - 40px));
+    max-height: min(60vh, 480px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 18px 20px 16px;
+    border-radius: 16px;
+    background: rgba(13, 19, 32, 0.4);
+    border: 1px solid rgba(168, 198, 240, 0.16);
+    box-shadow:
+      0 20px 52px rgba(0, 0, 0, 0.46),
+      0 2px 10px rgba(0, 0, 0, 0.3),
+      inset 0 1px 0 rgba(255, 255, 255, 0.09);
+    -webkit-backdrop-filter: blur(20px) saturate(135%);
+    backdrop-filter: blur(20px) saturate(135%);
+    color: rgba(226, 235, 249, 0.87);
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 12px;
+    line-height: 1.82;
+    letter-spacing: 0.012em;
+    text-align: justify;
+    animation: cardIn 900ms cubic-bezier(0.22, 0.8, 0.3, 1) both;
+  }
+  .prompt-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 44px;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(180deg, rgba(190, 220, 255, 0.09), transparent);
+    pointer-events: none;
+  }
+  .prompt-card p { margin: 0 0 10px; }
+  .prompt-card p:last-child { margin-bottom: 0; }
+  .prompt-card .divide {
+    height: 1px;
+    margin: 13px 0;
+    border: 0;
+    background: linear-gradient(90deg, transparent, rgba(170, 200, 240, 0.34), transparent);
+  }
+  .prompt-card .req {
+    color: rgba(255, 227, 182, 0.9);
+    font-size: 12px;
+  }
+  .prompt-card::-webkit-scrollbar { width: 6px; }
+  .prompt-card::-webkit-scrollbar-track { background: transparent; }
+  .prompt-card::-webkit-scrollbar-thumb {
+    background: rgba(170, 200, 240, 0.26);
+    border-radius: 99px;
+  }
+  .prompt-card::-webkit-scrollbar-thumb:hover { background: rgba(170, 200, 240, 0.42); }
+  @keyframes cardIn {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (max-width: 640px) {
+    .prompt-card {
+      left: 14px;
+      bottom: 14px;
+      width: calc(100vw - 28px);
+      max-height: 42vh;
+      padding: 14px 15px 13px;
+      font-size: 11.5px;
+      line-height: 1.8;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .prompt-card { animation: none; }
+  }
+
+  #fatal {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    color: #cfd8e8;
+    font: 14px/1.7 -apple-system, "PingFang SC", system-ui, sans-serif;
+    text-align: center;
+    background: #05070d;
+  }
+  #fatal.show { display: flex; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<aside class="prompt-card" aria-label="场景提示词">
+  <p>制作一个雨夜便利店街角小场景，以第三视角观察整个场景，整体像一个可以自由拖拽、旋转、缩放观看的微缩三维模型 / 小型景观，没有任何UI界面元素。地面为一个完整的正方形底座，所有元素都搭建在这个底座上，构图紧凑、层次清晰，整体呈现出小巧、精致、可收藏的模型感。画面风格为三渲二，强调浓厚的日式二次元动画氛围，材质表现干净，轮廓明确，色彩柔和但富有夜景霓虹的层次感。</p>
+  <p>场景主体是一处日式便利店街角，便利店位于底座的视觉中心，外部有典型的日式街角元素：便利店招牌、玻璃橱窗、自动门、屋檐雨棚、门口地垫、自动贩卖机、自行车、雨伞架、垃圾桶、路灯、电线杆、电线、路牌、街角护栏、停车位、排水沟、积水路面、反光斑马线、小巷入口、空调外机、小型公告栏或海报栏等。街道不需要太大，但要有明确的街角转折感，像日本动画里常见的夜晚社区一角。</p>
+  <hr class="divide" />
+  <p class="req">要求：只能使用 HTML、Three.js、CSS、JavaScript，所有模型使用代码生成，不要使用任何外部模型文件</p>
+</aside>
+<div id="fatal">无法加载 Three.js（本页通过 CDN 引入）。请确认网络可用后刷新，或用本地服务器打开：<br /><code>python3 -m http.server</code></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+/* ==================================================================
+ * 雨夜便利店 · 街角微缩模型
+ * 全部几何体与贴图由代码生成，不加载任何外部模型 / 图片资源。
+ * ================================================================== */
+
+const canvas = document.getElementById('scene');
+
+try {
+  const THREE = await import('three');
+  const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
+  await start(THREE, OrbitControls);
+} catch (err) {
+  console.error('[konbini] boot failed', err);
+  const box = document.getElementById('fatal');
+  if (box) box.classList.add('show');
+}
+
+async function start(THREE, OrbitControls) {
+  const {
+    Scene, PerspectiveCamera, WebGLRenderer, Group, Mesh, Sprite, SpriteMaterial,
+    MeshToonMaterial, MeshBasicMaterial, ShaderMaterial, Color, Vector2, Vector3,
+    BoxGeometry, CylinderGeometry, PlaneGeometry, RingGeometry, TorusGeometry,
+    TubeGeometry, DataTexture, RedFormat, NearestFilter, CanvasTexture,
+    QuadraticBezierCurve3, Clock, FogExp2,
+    HemisphereLight, DirectionalLight, PointLight,
+    FrontSide, BackSide, DoubleSide, AdditiveBlending, NormalBlending,
+    ACESFilmicToneMapping, PCFSoftShadowMap, SRGBColorSpace,
+    LineSegments, LineBasicMaterial
+  } = THREE;
+
+  /* ============================================================
+   * 0. 渲染器 / 场景 / 相机 / 交互
+   * ============================================================ */
+  const renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = PCFSoftShadowMap;
+  renderer.toneMapping = ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.12;
+
+  const scene = new Scene();
+  scene.background = canvasTexA(4, 256, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#0a1020');
+    g.addColorStop(0.55, '#080c17');
+    g.addColorStop(1, '#05070e');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  });
+  scene.fog = new FogExp2(0x0c1220, 0.0155);
+
+  const camera = new PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.5, 220);
+
+  const home = (() => {
+    const aspect = window.innerWidth / window.innerHeight;
+    if (aspect < 0.8) return { pos: new Vector3(1.5, 21, 37), target: new Vector3(0.6, 1.8, -1.8) };
+    if (aspect < 1.25) return { pos: new Vector3(12.5, 15.6, 25.4), target: new Vector3(0.6, 1.9, -1.8) };
+    return { pos: new Vector3(16.8, 13.6, 21.2), target: new Vector3(0.7, 2.0, -2.0) };
+  })();
+  camera.position.copy(home.pos);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.copy(home.target);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.065;
+  controls.enablePan = false;
+  controls.rotateSpeed = 0.82;
+  controls.zoomSpeed = 0.85;
+  controls.minDistance = 17;
+  controls.maxDistance = 72;
+  controls.minPolarAngle = 0.12;
+  controls.maxPolarAngle = Math.PI * 0.492;
+  controls.update();
+
+  /* ============================================================
+   * 1. 通用工具
+   * ============================================================ */
+  let seed = 20260311;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+  const rr = (a, b) => a + (b - a) * rnd();
+  const pick = (arr) => arr[Math.floor(rnd() * arr.length) % arr.length];
+
+  // 三渲二：4 阶卡通明暗渐变
+  const GRAD = (() => {
+    const steps = new Uint8Array([64, 124, 190, 255]);
+    const t = new DataTexture(steps, steps.length, 1, RedFormat);
+    t.needsUpdate = true;
+    t.minFilter = NearestFilter;
+    t.magFilter = NearestFilter;
+    t.generateMipmaps = false;
+    return t;
+  })();
+
+  // 轮廓线：背面外扩壳（视角空间沿法线偏移，粗细不随缩放变化）
+  const OUTLINE_CACHE = new Map();
+  function outlineMaterial(thickness) {
+    const key = thickness.toFixed(3);
+    let mat = OUTLINE_CACHE.get(key);
+    if (!mat) {
+      mat = new ShaderMaterial({
+        uniforms: {
+          uThickness: { value: thickness },
+          uColor: { value: new Color(0x090b12) }
+        },
+        vertexShader: [
+          'uniform float uThickness;',
+          'void main() {',
+          '  vec3 n = normalize(normalMatrix * normal);',
+          '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+          '  mv.xyz += n * uThickness;',
+          '  gl_Position = projectionMatrix * mv;',
+          '}'
+        ].join('\n'),
+        fragmentShader: [
+          'uniform vec3 uColor;',
+          'void main() { gl_FragColor = vec4(uColor, 1.0); }'
+        ].join('\n'),
+        side: BackSide
+      });
+      OUTLINE_CACHE.set(key, mat);
+    }
+    return mat;
+  }
+
+  const B = (w, h, d) => new BoxGeometry(w, h, d);
+  const CYL = (rt, rb, h, seg = 16) => new CylinderGeometry(rt, rb, h, seg);
+
+  function mk(parent, geo, color, opts = {}) {
+    const {
+      pos = [0, 0, 0], rot = [0, 0, 0], scale = null,
+      outline = 0.022, emissive = 0x000000, emissiveIntensity = 1,
+      basic = false, opacity = 1, transparent = false, map = null,
+      side = FrontSide, blending = NormalBlending, depthWrite = true,
+      cast, receive = true, hdr = 1
+    } = opts;
+
+    const isTrans = transparent || opacity < 1;
+    let mat;
+    if (basic) {
+      mat = new MeshBasicMaterial({
+        color: color, map: map, side: side, transparent: isTrans,
+        opacity: opacity, blending: blending, depthWrite: depthWrite
+      });
+    } else {
+      mat = new MeshToonMaterial({
+        color: color, map: map, gradientMap: GRAD, side: side,
+        emissive: emissive, emissiveIntensity: emissiveIntensity,
+        transparent: isTrans, opacity: opacity, blending: blending, depthWrite: depthWrite
+      });
+    }
+    if (hdr !== 1) mat.color.multiplyScalar(hdr);
+
+    const m = new Mesh(geo, mat);
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.rotation.set(rot[0], rot[1], rot[2]);
+    if (scale !== null) {
+      if (Array.isArray(scale)) m.scale.set(scale[0], scale[1], scale[2]);
+      else m.scale.setScalar(scale);
+    }
+    m.castShadow = cast === undefined ? !basic : cast;
+    m.receiveShadow = receive && !basic;
+    if (outline > 0) m.add(new Mesh(geo, outlineMaterial(outline)));
+    if (parent) parent.add(m);
+    return m;
+  }
+
+  function tube(parent, a, b, r, color, outline = 0.012) {
+    const va = new Vector3(a[0], a[1], a[2]);
+    const vb = new Vector3(b[0], b[1], b[2]);
+    const dir = vb.clone().sub(va);
+    const len = dir.length();
+    if (len < 1e-4) return null;
+    const m = mk(parent, new CylinderGeometry(r, r, len, 8), color, { outline: outline, cast: false });
+    m.position.copy(va).add(vb).multiplyScalar(0.5);
+    m.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), dir.normalize());
+    return m;
+  }
+
+  function wire(parent, a, b, sag = 0.5, r = 0.028, color = 0x171b26) {
+    const va = new Vector3(a[0], a[1], a[2]);
+    const vb = new Vector3(b[0], b[1], b[2]);
+    const mid = va.clone().add(vb).multiplyScalar(0.5);
+    mid.y -= sag * 2;
+    const curve = new QuadraticBezierCurve3(va, mid, vb);
+    const geo = new TubeGeometry(curve, 16, r, 4, false);
+    return mk(parent, geo, color, { outline: 0, cast: false, receive: false });
+  }
+
+  function canvasTexA(w, h, draw) {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    draw(ctx, w, h);
+    const t = new CanvasTexture(c);
+    t.colorSpace = SRGBColorSpace;
+    t.anisotropy = 4;
+    t.needsUpdate = true;
+    return t;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rad = Math.min(r, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+
+  const GLOW_TEX = canvasTexA(128, 128, (ctx, w, h) => {
+    const g = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.32, 'rgba(255,255,255,0.62)');
+    g.addColorStop(0.68, 'rgba(255,255,255,0.2)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  });
+
+  function glowSprite(parent, x, y, z, sx, sy, color, opacity = 0.85) {
+    const s = new Sprite(new SpriteMaterial({
+      map: GLOW_TEX, color: color, transparent: true, opacity: opacity,
+      blending: AdditiveBlending, depthWrite: false
+    }));
+    s.position.set(x, y, z);
+    s.scale.set(sx, sy, 1);
+    parent.add(s);
+    return s;
+  }
+
+  const softPlane = (parent, x, y, z, w, d, rotZ, color, opacity, additive) => {
+    const p = new Mesh(new PlaneGeometry(w, d), new MeshBasicMaterial({
+      map: GLOW_TEX, color: color, transparent: true, opacity: opacity,
+      blending: additive ? AdditiveBlending : NormalBlending, depthWrite: false
+    }));
+    p.rotation.set(-Math.PI / 2, 0, rotZ);
+    p.position.set(x, y, z);
+    parent.add(p);
+    return p;
+  };
+
+  /* ============================================================
+   * 2. 调色板
+   * ============================================================ */
+  const C = {
+    asphalt: 0x353c4a,
+    concrete: 0x767f92,
+    concreteLight: 0x8b93a4,
+    curb: 0x9aa2b3,
+    paint: 0xc9d4e3,
+    storeWall: 0xf1ebdd,
+    storeShade: 0xd2cabb,
+    metal: 0x9aa5b8,
+    pipe: 0x707a8c,
+    pink: 0xff5d9e,
+    cyan: 0x62e6ff,
+    lamp: 0xffc978,
+    binGreen: 0x4d9070,
+    binBlue: 0x3f6f9e,
+    binGray: 0x7b8493,
+    brick: 0x6f655d,
+    wood: 0x8a6a4e,
+    green: 0x2f8f6b
+  };
+
+  const diorama = new Group();
+  scene.add(diorama);
+
+  /* ============================================================
+   * 3. 灯光
+   * ============================================================ */
+  scene.add(new HemisphereLight(0x3c4a78, 0x171c26, 1.25));
+
+  const moon = new DirectionalLight(0x9dc3ff, 1.35);
+  moon.position.set(15, 23, 13);
+  moon.castShadow = true;
+  moon.shadow.mapSize.set(2048, 2048);
+  moon.shadow.camera.left = -20;
+  moon.shadow.camera.right = 20;
+  moon.shadow.camera.top = 20;
+  moon.shadow.camera.bottom = -20;
+  moon.shadow.camera.near = 1;
+  moon.shadow.camera.far = 70;
+  moon.shadow.bias = -0.0006;
+  moon.shadow.normalBias = 0.03;
+  scene.add(moon);
+
+  const inLight1 = new PointLight(0xfff0cf, 11, 14, 2);
+  inLight1.position.set(1, 2.9, -4.2);
+  scene.add(inLight1);
+
+  const inLight2 = new PointLight(0xffe9c2, 9, 13, 2);
+  inLight2.position.set(1, 2.9, -8.2);
+  scene.add(inLight2);
+
+  const signLight = new PointLight(0xfff3d6, 11, 11, 2);
+  signLight.position.set(1, 4.4, -0.2);
+  scene.add(signLight);
+
+  const lampLight = new PointLight(0xffcf94, 40, 26, 2);
+  lampLight.position.set(-4.4, 5.2, 2.2);
+  scene.add(lampLight);
+
+  const vendLight = new PointLight(0xd6f0ff, 9, 5, 2);
+  vendLight.position.set(-3.3, 1.5, -0.4);
+  scene.add(vendLight);
+
+  const alleyLight = new PointLight(0xff6aa8, 12, 8, 2);
+  alleyLight.position.set(-6.3, 2.3, -3.0);
+  scene.add(alleyLight);
+
+  /* ============================================================
+   * 4. 正方形微缩底座
+   * ============================================================ */
+  mk(diorama, B(26, 0.5, 26), C.asphalt, { pos: [0, -0.25, 0], outline: 0.06 });
+  mk(diorama, B(26.6, 0.5, 26.6), 0x1c202a, { pos: [0, -0.75, 0], outline: 0.05 });
+  mk(diorama, B(27.3, 0.55, 27.3), 0x2f3648, { pos: [0, -1.28, 0], outline: 0.045 });
+  mk(diorama, B(27.45, 0.08, 27.45), 0x8c98ae, { pos: [0, -1.6, 0], basic: true, outline: 0, cast: false });
+
+  // 沥青补丁
+  [
+    [-6.2, 5.4, 5.2, 2.4, 0.4],
+    [3.4, 8.6, 6.4, 2.0, -0.2],
+    [8.2, 4.2, 3.2, 3.0, 0.9],
+    [-2.0, 10.8, 5.0, 1.8, 0.1],
+    [-10.2, 8.0, 3.4, 2.6, -0.6]
+  ].forEach(([x, z, w, d, r]) => {
+    softPlane(diorama, x, 0.008, z, w, d, r, 0x1a1e27, 0.5, false);
+  });
+
+  /* ============================================================
+   * 5. 人行道 / 路缘 / 排水沟 / 路面标线
+   * ============================================================ */
+  const walk = new Group();
+  diorama.add(walk);
+
+  // 临街人行道（抬高 0.3）
+  mk(walk, B(20.5, 0.3, 3.3), C.concrete, { pos: [2.75, 0.15, 0.15], outline: 0.04 });
+  for (let i = 0; i < 10; i++) {
+    mk(walk, B(0.05, 0.02, 3.2), 0x656d7d, { pos: [-7.2 + i * 2.1, 0.305, 0.15], outline: 0, cast: false });
+  }
+  mk(walk, B(20.5, 0.02, 0.05), 0x656d7d, { pos: [2.75, 0.305, 0.4], outline: 0, cast: false });
+
+  // 路缘石
+  mk(walk, B(20.9, 0.14, 0.34), C.curb, { pos: [2.75, 0.31, 1.86], outline: 0.02 });
+  mk(walk, B(0.34, 0.14, 14.9), C.curb, { pos: [-7.6, 0.31, -5.6], outline: 0.02 });
+
+  // 排水沟
+  mk(diorama, B(20.4, 0.04, 0.36), 0x15181f, { pos: [2.75, 0.02, 1.62], outline: 0, basic: true, cast: false });
+  for (let i = 0; i < 22; i++) {
+    mk(diorama, B(0.62, 0.05, 0.3), 0x4d566a, { pos: [-7.0 + i * 0.95, 0.045, 1.62], outline: 0, cast: false });
+  }
+  // 街角雨水篦子
+  mk(diorama, B(1.2, 0.05, 0.7), 0x39414f, { pos: [-6.6, 0.03, 1.35], outline: 0.01, cast: false });
+  for (let i = 0; i < 5; i++) {
+    mk(diorama, B(0.09, 0.06, 0.62), 0x11151d, { pos: [-7.02 + i * 0.22, 0.06, 1.35], outline: 0, cast: false, basic: true });
+  }
+
+  // 反光斑马线
+  for (let i = 0; i < 8; i++) {
+    mk(diorama, B(5.6, 0.02, 0.62), C.paint, {
+      pos: [-0.4, 0.022, 2.9 + i * 1.28], outline: 0, cast: false,
+      emissive: 0x24344d, emissiveIntensity: 0.75
+    });
+  }
+
+  // 停车位框线
+  [[8.3, 3.0, 0.14, 4.8], [8.3, 7.4, 0.14, 4.8], [6.0, 5.2, 4.8, 0.14], [10.6, 5.2, 4.8, 0.14]]
+    .forEach(([x, z, w, d]) => {
+      mk(diorama, B(w, 0.02, d), C.paint, { pos: [x, 0.02, z], outline: 0, cast: false });
+    });
+
+  // 中心虚线
+  for (let i = 0; i < 9; i++) {
+    mk(diorama, B(1.6, 0.02, 0.16), 0xbfcadb, { pos: [-11.2 + i * 2.9, 0.02, 9.8], outline: 0, cast: false, opacity: 0.85 });
+  }
+
+  // 小巷地面
+  mk(diorama, B(2.5, 0.1, 12.4), 0x3b414f, { pos: [-6.25, 0.05, -7.3], outline: 0.02 });
+  // 右侧后院地面
+  mk(diorama, B(6, 0.16, 9.5), 0x656d7d, { pos: [10, 0.08, -6.25], outline: 0.03 });
+
+  /* ============================================================
+   * 6. 积水与湿地反光
+   * ============================================================ */
+  [
+    [-1.8, 6.2, 4.6, 2.6, 0.35],
+    [5.6, 9.4, 3.8, 2.2, -0.5],
+    [-5.2, 4.4, 3.0, 1.6, 0.15],
+    [2.2, 11.2, 4.4, 1.8, -0.15],
+    [9.0, 3.0, 2.4, 1.4, 0.6],
+    [-6.4, 0.4, 2.6, 1.8, 0.2],
+    [3.6, 0.2, 2.4, 1.4, -0.3]
+  ].forEach(([x, z, w, d, r]) => {
+    const onWalk = Math.abs(x) < 7.5 && z < 1.7;
+    const y = onWalk ? 0.312 : 0.03;
+    softPlane(diorama, x, y, z, w, d, r, 0x1b2b42, 0.9, false);
+    softPlane(diorama, x + rr(-0.3, 0.3), y + 0.004, z + rr(-0.2, 0.2), w * 0.72, d * 0.2, r,
+      pick([0xffb15e, 0xff7fb0, 0x7fe3ff, 0xfff0c8]), 0.36, true);
+  });
+
+  // 招牌落在门口的暖色光带
+  softPlane(diorama, 1, 0.316, -0.15, 13, 5.0, 0, 0xffd79a, 0.3, true);
+
+  /* ============================================================
+   * 7. 便利店主体
+   * ============================================================ */
+  const store = new Group();
+  store.position.set(1, 0.3, -6.25);
+  diorama.add(store);
+
+  const W = 12, D = 9.5, H = 4.3, T = 0.32;
+  const FZ = D / 2;
+
+  // 墙体与屋顶
+  mk(store, B(W, H, T), C.storeWall, { pos: [0, H / 2, -FZ + T / 2], outline: 0.05 });
+  mk(store, B(T, H, D), C.storeWall, { pos: [-W / 2 + T / 2, H / 2, 0], outline: 0.05 });
+  mk(store, B(T, H, D), C.storeWall, { pos: [W / 2 - T / 2, H / 2, 0], outline: 0.05 });
+  mk(store, B(W, 0.26, D), C.storeShade, { pos: [0, H - 0.13, 0], outline: 0.05 });
+
+  // 女儿墙
+  mk(store, B(W, 0.42, 0.2), C.storeShade, { pos: [0, H + 0.2, FZ - 0.1], outline: 0.03 });
+  mk(store, B(W, 0.42, 0.2), C.storeShade, { pos: [0, H + 0.2, -FZ + 0.1], outline: 0.03 });
+  mk(store, B(0.2, 0.42, D), C.storeShade, { pos: [-W / 2 + 0.1, H + 0.2, 0], outline: 0.03 });
+  mk(store, B(0.2, 0.42, D), C.storeShade, { pos: [W / 2 - 0.1, H + 0.2, 0], outline: 0.03 });
+
+  // 屋顶设备
+  mk(store, B(1.5, 0.8, 1.2), 0xb9c1cf, { pos: [-2.6, H + 0.4, -1.6], outline: 0.025 });
+  mk(store, B(0.9, 0.55, 0.9), 0x98a3b4, { pos: [2.4, H + 0.28, -2.4], outline: 0.02 });
+  mk(store, CYL(0.34, 0.34, 0.75, 12), 0x9aa5b8, { pos: [3.9, H + 0.38, 0.8], outline: 0.02 });
+  mk(store, CYL(0.05, 0.05, 2.4, 6), C.pipe, { pos: [-4.6, H + 1.2, 1.2], outline: 0.012 });
+  mk(store, B(1.1, 0.06, 0.06), C.pipe, { pos: [-4.6, H + 1.9, 1.2], outline: 0.01 });
+  mk(store, B(0.7, 0.06, 0.06), C.pipe, { pos: [-4.6, H + 2.2, 1.2], outline: 0.01 });
+
+  // 屋顶积水
+  softPlane(store, 1.2, H + 0.005, 1.6, 3.2, 2.0, 0.4, 0x24384f, 0.55, false);
+
+  /* ---------- 前立面：玻璃橱窗 ---------- */
+  const GZ = FZ - 0.06;
+  const glassStyle = {
+    basic: true, color: 0xbcdcea, transparent: true, opacity: 0.14,
+    depthWrite: false, outline: 0, cast: false, side: DoubleSide
+  };
+
+  mk(store, B(W - 0.4, 0.34, 0.16), 0x39414f, { pos: [0, 0.17, GZ], outline: 0.012 });
+  mk(store, B(4.55, 2.12, 0.05), 0xbcdcea, Object.assign({}, glassStyle, { pos: [-3.42, 1.5, GZ] }));
+  mk(store, B(4.55, 2.12, 0.05), 0xbcdcea, Object.assign({}, glassStyle, { pos: [3.42, 1.5, GZ] }));
+  mk(store, B(2.2, 2.12, 0.05), 0xbcdcea, Object.assign({}, glassStyle, { pos: [0, 1.5, GZ] }));
+  mk(store, B(W - 0.4, 0.3, 0.05), 0xbcdcea, Object.assign({}, glassStyle, { pos: [0, 2.75, GZ] }));
+
+  // 玻璃反光斜条
+  [-4.2, -2.4, 3.0, 4.6].forEach((x, i) => {
+    const s = new Mesh(new PlaneGeometry(0.5, 2.4), new MeshBasicMaterial({
+      map: GLOW_TEX, color: 0xcdeaff, transparent: true, opacity: 0.1,
+      blending: AdditiveBlending, depthWrite: false
+    }));
+    s.position.set(x, 1.6, GZ + 0.035);
+    s.rotation.z = i % 2 ? 0.32 : -0.28;
+    store.add(s);
+  });
+
+  // 竖挺 / 横梁
+  [-W / 2 + 0.12, -3.42, -1.18, 1.18, 3.42, W / 2 - 0.12].forEach((x) => {
+    mk(store, B(0.12, 2.62, 0.18), 0x5b6577, { pos: [x, 1.45, GZ + 0.02], outline: 0.012 });
+  });
+  mk(store, B(W, 0.16, 0.2), 0x5b6577, { pos: [0, 0.4, GZ + 0.02], outline: 0.012 });
+  mk(store, B(W, 0.2, 0.22), 0x5b6577, { pos: [0, 2.92, GZ + 0.02], outline: 0.012 });
+
+  // 自动门：滑轨 + 两扇门（一扇半开）
+  mk(store, B(2.6, 0.1, 0.26), 0x454e60, { pos: [0, 2.6, GZ + 0.05], outline: 0.01 });
+  mk(store, B(1.06, 2.16, 0.05), 0xbfe4f4, Object.assign({}, glassStyle, { opacity: 0.2, pos: [-0.55, 1.5, GZ + 0.07] }));
+  mk(store, B(1.06, 2.16, 0.05), 0xbfe4f4, Object.assign({}, glassStyle, { opacity: 0.2, pos: [0.82, 1.5, GZ + 0.13] }));
+  mk(store, B(1.08, 0.08, 0.07), 0x4a5265, { pos: [-0.55, 2.56, GZ + 0.07], outline: 0.008 });
+  mk(store, B(1.08, 0.08, 0.07), 0x4a5265, { pos: [-0.55, 0.44, GZ + 0.07], outline: 0.008 });
+  mk(store, B(0.07, 2.16, 0.07), 0x4a5265, { pos: [-1.06, 1.5, GZ + 0.07], outline: 0.008 });
+  mk(store, B(0.07, 2.16, 0.07), 0x4a5265, { pos: [-0.04, 1.5, GZ + 0.07], outline: 0.008 });
+  mk(store, B(1.08, 0.08, 0.07), 0x4a5265, { pos: [0.82, 2.56, GZ + 0.13], outline: 0.008 });
+  mk(store, B(0.07, 2.16, 0.07), 0x4a5265, { pos: [0.3, 1.5, GZ + 0.13], outline: 0.008 });
+  mk(store, B(0.07, 2.16, 0.07), 0x4a5265, { pos: [1.34, 1.5, GZ + 0.13], outline: 0.008 });
+
+  // 门上「自動ドア」提示小牌
+  mk(store, B(0.72, 0.2, 0.03), 0xf6f4ec, { pos: [0, 2.28, GZ + 0.16], outline: 0.006, cast: false });
+
+  /* ---------- 招牌 ---------- */
+  const texStoreSign = () => canvasTexA(2048, 224, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#fffdf6');
+    g.addColorStop(1, '#efe7d4');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.fillStyle = '#2f8f6b';
+    ctx.fillRect(0, 0, w, 12);
+    ctx.fillStyle = '#2f6fa8';
+    ctx.fillRect(0, h - 16, w, 8);
+    ctx.fillStyle = '#e2a13c';
+    ctx.fillRect(0, h - 8, w, 4);
+
+    ctx.fillStyle = '#2f8f6b';
+    roundRect(ctx, 44, 46, 214, 132, 18);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 82px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText('24H', 151, 114);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#22435c';
+    ctx.font = 'bold 102px "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif';
+    ctx.fillText('ひかりマート', 300, 98);
+    ctx.fillStyle = '#4d6c7a';
+    ctx.font = 'bold 32px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText('H I K A R I   M A R T     ·     O P E N   2 4   H O U R S', 304, 170);
+  });
+
+  const signTex = texStoreSign();
+
+  // 招牌箱体
+  mk(store, B(W + 0.3, 1.34, 0.44), 0xf7f3e8, { pos: [0, 3.66, FZ + 0.1], outline: 0.035, emissive: 0xfff4d8, emissiveIntensity: 0.55 });
+  const signFace = new Mesh(new PlaneGeometry(W - 0.1, 1.18), new MeshBasicMaterial({ map: signTex }));
+  signFace.material.color.setScalar(1.16);
+  signFace.position.set(0, 3.66, FZ + 0.325);
+  store.add(signFace);
+
+  // 后墙：服务门 / 通风口 / 立管
+  mk(store, B(0.98, 2.02, 0.08), 0x59616f, { pos: [-2.4, 1.01, -FZ - 0.03], outline: 0.012 });
+  mk(store, B(0.86, 1.9, 0.06), 0x6b7484, { pos: [-2.4, 1.0, -FZ - 0.07], outline: 0.008, cast: false });
+  mk(store, B(0.06, 2.06, 0.1), 0x8a93a1, { pos: [-1.9, 1.03, -FZ - 0.05], outline: 0.006, cast: false });
+  mk(store, B(0.78, 0.44, 0.06), 0x3f4858, { pos: [1.6, 2.55, -FZ - 0.04], outline: 0.008, cast: false });
+  [2.45, 2.55, 2.65].forEach((y) => mk(store, B(0.7, 0.04, 0.05), 0x8a93a1, { pos: [1.6, y, -FZ - 0.07], outline: 0, cast: false }));
+  mk(store, B(0.6, 0.34, 0.06), 0x3f4858, { pos: [3.4, 2.1, -FZ - 0.04], outline: 0.008, cast: false });
+  mk(store, CYL(0.06, 0.06, 3.9, 8), C.pipe, { pos: [4.3, 1.95, -FZ - 0.09], outline: 0.006, cast: false });
+  mk(store, B(0.5, 0.3, 0.2), 0x50596a, { pos: [-3.9, 2.5, -FZ - 0.12], outline: 0.006, cast: false });
+  mk(store, B(0.34, 0.06, 0.1), 0xffeccb, { pos: [-3.9, 2.34, -FZ - 0.16], basic: true, outline: 0, cast: false, hdr: 1.5 });
+  glowSprite(diorama, -2.9, 1.4, -11.3, 2.4, 2.4, 0xffe0b0, 0.22);
+
+  // 招牌下的品牌色条
+  mk(store, B(W + 0.3, 0.14, 0.46), C.green, { pos: [0, 2.98, FZ + 0.1], outline: 0.012, emissive: 0x1d5a45, emissiveIntensity: 0.6 });
+
+  // 招牌光晕
+  glowSprite(diorama, 1, 3.95, -1.0, 7.6, 2.4, 0xffe9bd, 0.16);
+  glowSprite(diorama, 1, 3.95, -1.0, 4.2, 1.5, 0xfff6e0, 0.14);
+
+  /* ---------- 雨棚 ---------- */
+  const canopy = mk(store, B(W + 0.5, 0.12, 1.5), 0xf4f0e6, { pos: [0, 2.86, FZ + 0.78], rot: [-0.05, 0, 0], outline: 0.02 });
+  mk(store, B(W + 0.5, 0.16, 0.1), C.green, { pos: [0, 2.78, FZ + 1.52], outline: 0.01 });
+  // 雨棚下的灯带
+  mk(store, B(W - 1.6, 0.03, 1.1), 0xfff2d4, { pos: [0, 2.78, FZ + 0.75], basic: true, outline: 0, cast: false, hdr: 1.6, rot: [-0.05, 0, 0] });
+  // 雨棚支撑
+  [-4.6, 0, 4.6].forEach((x) => {
+    tube(store, [x, 2.8, FZ + 0.2], [x, 2.4, FZ + 1.4], 0.035, C.pipe, 0.008);
+  });
+
+  /* ---------- 店内 ---------- */
+  // 地面
+  mk(store, B(W - 0.5, 0.16, D - 0.5), 0xefe6d3, { pos: [0, 0.08, 0], outline: 0.01, receive: false });
+  // 天花
+  mk(store, B(W - 0.5, 0.14, D - 0.5), 0xded6c6, { pos: [0, 2.9, 0], outline: 0.01, receive: false });
+  // 天花灯带
+  [-2.6, 0.2, 2.9].forEach((z) => {
+    mk(store, B(9.6, 0.06, 0.42), 0xfff8e6, { pos: [0, 2.82, z], basic: true, outline: 0, cast: false, receive: false, hdr: 1.5 });
+  });
+
+  // 背墙冷柜
+  [-3.0, 3.0].forEach((x) => {
+    mk(store, B(5.2, 2.24, 0.24), 0xdff0ff, { pos: [x, 1.3, -FZ + 0.5], basic: true, outline: 0, cast: false, hdr: 1.15 });
+    mk(store, B(5.2, 0.1, 0.3), 0x3c4a5e, { pos: [x, 2.44, -FZ + 0.5], outline: 0, cast: false });
+    for (let r = 0; r < 3; r++) {
+      for (let i = 0; i < 8; i++) {
+        mk(store, B(0.5, 0.2, 0.06), pick([0xff6b7a, 0xffd166, 0x69d2a8, 0x5bb8ff, 0xff9f5a, 0xc69bff, 0xf3efe2]), {
+          pos: [x - 2.35 + i * 0.68, 0.62 + r * 0.56, -FZ + 0.65], basic: true, outline: 0, cast: false, receive: false, hdr: 0.95
+        });
+      }
+    }
+  });
+
+  // 货架（两组，垂直于前窗形成进深）
+  const productColors = [0xff6b7a, 0xffd166, 0x69d2a8, 0x5bb8ff, 0xff9f5a, 0xc69bff, 0xf3efe2];
+  function shelfUnit(x, z, w, d, h) {
+    const g = new Group();
+    g.position.set(x, 0.16, z);
+    store.add(g);
+    mk(g, B(0.07, h, d), 0xd6cfc0, { pos: [-w / 2, h / 2, 0], outline: 0.008, cast: false });
+    mk(g, B(0.07, h, d), 0xd6cfc0, { pos: [w / 2, h / 2, 0], outline: 0.008, cast: false });
+    mk(g, B(w, h, 0.05), 0xcbc4b4, { pos: [0, h / 2, -d / 2], outline: 0.008, cast: false });
+    for (let r = 0; r < 4; r++) {
+      const y = 0.3 + r * 0.38;
+      mk(g, B(w, 0.05, d), 0xe6dfd0, { pos: [0, y, 0], outline: 0.005, cast: false });
+      for (let i = 0; i < 4; i++) {
+        const zz = -d / 2 + 0.35 + i * (d - 0.7) / 3;
+        for (let s = -1; s <= 1; s += 2) {
+          mk(g, B(0.17, 0.21, 0.13), pick(productColors), {
+            pos: [s * w * 0.22, y + 0.13, zz], outline: 0, cast: false, receive: false
+          });
+        }
+      }
+    }
+    mk(g, B(w + 0.08, 0.12, d + 0.08), 0x2f8f6b, { pos: [0, h + 0.06, 0], outline: 0.005, cast: false });
+    return g;
+  }
+  shelfUnit(-3.1, -0.7, 1.0, 3.2, 1.72);
+  shelfUnit(3.1, -0.7, 1.0, 3.2, 1.72);
+
+  // 收银台
+  mk(store, B(2.4, 1.0, 1.3), 0xcfc6b4, { pos: [4.3, 0.66, 2.6], outline: 0.015 });
+  mk(store, B(2.5, 0.08, 1.4), 0xe5ddca, { pos: [4.3, 1.2, 2.6], outline: 0.008, cast: false });
+  mk(store, B(0.5, 0.36, 0.36), 0x3f4c60, { pos: [4.9, 1.42, 2.6], outline: 0.008 });
+  mk(store, B(0.34, 0.24, 0.03), 0x8fe9ff, { pos: [4.9, 1.46, 2.8], basic: true, outline: 0, cast: false, receive: false, hdr: 1.4 });
+  // 收银员背柜
+  mk(store, B(2.4, 1.6, 0.3), 0xdcd4c2, { pos: [4.3, 1.1, -1.4], outline: 0.012 });
+
+  // 杂志架
+  mk(store, B(1.3, 0.72, 0.8), 0xc9c1b0, { pos: [-4.6, 0.52, 3.4], outline: 0.012 });
+  for (let i = 0; i < 4; i++) {
+    mk(store, B(0.26, 0.34, 0.05), pick(productColors), {
+      pos: [-5.1 + i * 0.32, 1.02, 3.55], outline: 0, cast: false, receive: false
+    });
+  }
+
+  // 橱窗上的 OPEN 霓虹
+  const neonOpen = new Mesh(new PlaneGeometry(1.9, 0.62), new MeshBasicMaterial({
+    map: canvasTexA(512, 168, (ctx, w, h) => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = '#ff6aa8';
+      ctx.shadowBlur = 34;
+      ctx.fillStyle = '#ffe3f0';
+      ctx.font = 'bold 96px "Helvetica Neue", Arial, sans-serif';
+      ctx.fillText('OPEN', w / 2, h / 2 - 6);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#ff9ac4';
+      ctx.font = 'bold 26px "Helvetica Neue", Arial, sans-serif';
+      ctx.fillText('2 4  H O U R S', w / 2, h - 16);
+    }),
+    transparent: true, blending: AdditiveBlending, depthWrite: false, side: DoubleSide
+  }));
+  neonOpen.position.set(-3.4, 2.3, FZ - 0.3);
+  store.add(neonOpen);
+
+  /* ============================================================
+   * 8. 街道道具
+   * ============================================================ */
+
+  /* ---------- 自动贩卖机 ---------- */
+  const texVending = (hue) => canvasTexA(512, 1024, (ctx, w, h) => {
+    ctx.fillStyle = '#eef3f9';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = hue;
+    ctx.fillRect(0, 0, w, 120);
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 58px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText('DRINK', w / 2, 64);
+
+    ctx.fillStyle = '#f7fbff';
+    ctx.fillRect(26, 142, w - 52, 556);
+
+    const palette = ['#ff5d6c', '#4ec3ff', '#ffd34e', '#7de08a', '#ff7ac2', '#9d8bff', '#ffa14e', '#59e0d0'];
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 5; c++) {
+        const x = 54 + c * 88;
+        const y = 172 + r * 132;
+        ctx.fillStyle = palette[(r * 5 + c) % palette.length];
+        roundRect(ctx, x, y, 64, 96, 10);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fillRect(x + 11, y + 14, 12, 58);
+        ctx.fillStyle = '#20304a';
+        ctx.font = 'bold 21px Arial, sans-serif';
+        ctx.fillText('¥' + (120 + ((r * 5 + c) % 7) * 10), x + 32, y + 118);
+      }
+    }
+
+    ctx.fillStyle = '#dbe5f0';
+    ctx.fillRect(0, 722, w, 302);
+    ctx.fillStyle = '#33445c';
+    ctx.fillRect(40, 754, 196, 118);
+    ctx.fillStyle = '#1b2432';
+    ctx.fillRect(268, 754, 84, 58);
+    ctx.fillStyle = '#ff8a3d';
+    ctx.fillRect(376, 754, 92, 58);
+    ctx.fillStyle = '#11161f';
+    ctx.fillRect(68, 892, w - 136, 86);
+  });
+
+  function vendingMachine(x, z, hue) {
+    const g = new Group();
+    g.position.set(x, 0.3, z);
+    diorama.add(g);
+    mk(g, B(1.1, 1.9, 0.82), 0xe9eef6, { pos: [0, 0.95, 0], outline: 0.018 });
+    const face = new Mesh(new PlaneGeometry(1.0, 1.76), new MeshBasicMaterial({ map: texVending(hue) }));
+    face.position.set(0, 0.95, 0.418);
+    g.add(face);
+    mk(g, B(1.16, 0.1, 0.88), 0xd3dce8, { pos: [0, 1.94, 0], outline: 0.01 });
+    glowSprite(g, 0, 1.45, 0.55, 2.6, 2.8, 0xbfe9ff, 0.2);
+    return g;
+  }
+  vendingMachine(-4.05, -0.78, '#2f6fa8');
+  vendingMachine(-2.85, -0.78, '#c0463f');
+
+  /* ---------- 门口地垫 ---------- */
+  mk(diorama, B(1.9, 0.05, 0.72), 0x4a5568, { pos: [1, 0.325, -0.92], outline: 0.008, cast: false });
+  mk(diorama, B(1.7, 0.055, 0.54), 0x6c7a8e, { pos: [1, 0.33, -0.92], outline: 0, cast: false });
+
+  /* ---------- 雨伞架 ---------- */
+  const umb = new Group();
+  umb.position.set(2.75, 0.3, -0.95);
+  diorama.add(umb);
+  mk(umb, CYL(0.21, 0.19, 0.56, 14), 0x9aa5b8, { pos: [0, 0.28, 0], outline: 0.01 });
+  mk(umb, CYL(0.22, 0.22, 0.03, 14), 0x6d7789, { pos: [0, 0.02, 0], outline: 0.006, cast: false });
+  [[0.05, 0.1, 0.16], [-0.08, -0.05, -0.12], [0.02, -0.1, 0.05], [-0.06, 0.09, -0.04]].forEach(([dx, dz, tilt], i) => {
+    const u = new Group();
+    u.position.set(dx, 0.3, dz);
+    u.rotation.set(tilt * 1.6, i * 0.9, tilt);
+    umb.add(u);
+    mk(u, CYL(0.018, 0.018, 1.0, 6), 0x3a4356, { pos: [0, 0.1, 0], outline: 0.006, cast: false });
+    mk(u, CYL(0.09, 0.02, 0.5, 8), pick([0x2f6fa8, 0x2f8f6b, 0xc0463f, 0xe8e2d4]), { pos: [0, 0.42, 0], outline: 0.006, cast: false });
+  });
+
+  /* ---------- 分类垃圾桶 ---------- */
+  [[4.4, C.binGreen, 0x2f8f6b], [5.15, C.binBlue, 0x3f6f9e], [5.9, C.binGray, 0x7b8493]].forEach(([x, body, lid]) => {
+    const g = new Group();
+    g.position.set(x, 0.3, -0.98);
+    diorama.add(g);
+    mk(g, CYL(0.27, 0.24, 0.78, 14), body, { pos: [0, 0.39, 0], outline: 0.01 });
+    mk(g, CYL(0.29, 0.29, 0.07, 14), lid, { pos: [0, 0.82, 0], outline: 0.008 });
+    mk(g, B(0.44, 0.12, 0.03), 0xf0efe6, { pos: [0, 0.6, 0.25], outline: 0.004, cast: false });
+  });
+
+  /* ---------- 自行车 ---------- */
+  function bicycle(x, z, rotY) {
+    const g = new Group();
+    g.position.set(x, 0.16, z);
+    g.rotation.set(0, rotY, -0.06);
+    diorama.add(g);
+
+    const frameColor = 0x3f7f8f;
+    const wheelGeo = new TorusGeometry(0.33, 0.042, 6, 20);
+
+    [0.62, -0.62].forEach((zz) => {
+      const w = mk(g, wheelGeo, 0x22262f, { pos: [0, 0.33, zz], rot: [0, Math.PI / 2, 0], outline: 0.01, cast: false });
+      w.renderOrder = 1;
+      for (let i = 0; i < 4; i++) {
+        mk(g, B(0.012, 0.62, 0.012), 0xa9b3c4, {
+          pos: [0, 0.33, zz], rot: [(i * Math.PI) / 4, 0, 0], outline: 0, cast: false
+        });
+      }
+    });
+
+    tube(g, [0, 0.33, -0.62], [0, 0.72, -0.18], 0.028, frameColor);
+    tube(g, [0, 0.33, -0.62], [0, 0.3, 0], 0.028, frameColor);
+    tube(g, [0, 0.3, 0], [0, 0.72, 0.42], 0.03, frameColor);
+    tube(g, [0, 0.72, -0.18], [0, 0.72, 0.42], 0.028, frameColor);
+    tube(g, [0, 0.3, 0], [0, 0.72, -0.18], 0.028, frameColor);
+    tube(g, [0, 0.72, 0.42], [0, 0.33, 0.62], 0.026, frameColor);
+    // 车把
+    mk(g, B(0.42, 0.035, 0.035), 0x30363f, { pos: [0, 0.95, 0.44], outline: 0.006, cast: false });
+    tube(g, [0, 0.72, 0.44], [0, 0.95, 0.44], 0.022, 0x30363f, 0.006);
+    // 鞍座
+    mk(g, B(0.18, 0.06, 0.3), 0x2a2f3a, { pos: [0, 0.82, -0.22], outline: 0.006 });
+    // 前车筐
+    mk(g, B(0.34, 0.24, 0.26), 0x9aa5b8, { pos: [0, 0.92, 0.6], outline: 0.008 });
+    for (let i = 0; i < 3; i++) {
+      mk(g, B(0.36, 0.02, 0.28), 0x6d7789, { pos: [0, 0.84 + i * 0.09, 0.6], outline: 0, cast: false });
+    }
+    // 后货架
+    mk(g, B(0.16, 0.03, 0.42), 0x6d7789, { pos: [0, 0.62, -0.5], outline: 0.006, cast: false });
+    return g;
+  }
+  bicycle(8.05, -2.7, 1.52);
+  bicycle(-6.55, -1.95, 1.62);
+
+  /* ---------- 门口路灯 ---------- */
+  const lamp = new Group();
+  lamp.position.set(-4.95, 0.3, 1.1);
+  diorama.add(lamp);
+  mk(lamp, CYL(0.08, 0.11, 5.0, 10), 0x6f7989, { pos: [0, 2.5, 0], outline: 0.012 });
+  mk(lamp, CYL(0.14, 0.16, 0.22, 10), 0x565f6e, { pos: [0, 0.11, 0], outline: 0.01 });
+  mk(lamp, B(0.1, 0.1, 1.7), 0x6f7989, { pos: [0, 4.98, 0.82], outline: 0.01 });
+  mk(lamp, B(0.56, 0.14, 0.34), 0x505a6b, { pos: [0, 4.9, 1.62], outline: 0.012 });
+  mk(lamp, B(0.48, 0.05, 0.28), 0xffe6b8, { pos: [0, 4.82, 1.62], basic: true, outline: 0, cast: false, hdr: 2.2 });
+  glowSprite(diorama, -4.95, 4.7, 2.72, 4.2, 4.2, 0xffcf94, 0.45);
+  softPlane(diorama, -4.95, 0.318, 2.9, 5.4, 4.6, 0, 0xffc978, 0.22, true);
+
+  /* ---------- 电线杆 + 电线 ---------- */
+  function utilityPole(x, y, z, h) {
+    const g = new Group();
+    g.position.set(x, y, z);
+    diorama.add(g);
+    mk(g, CYL(0.13, 0.2, h, 10), 0x6d7684, { pos: [0, h / 2, 0], outline: 0.012 });
+    mk(g, B(1.7, 0.09, 0.09), 0x555e6c, { pos: [0, h - 0.6, 0], outline: 0.008 });
+    mk(g, B(1.3, 0.09, 0.09), 0x555e6c, { pos: [0, h - 1.15, 0], outline: 0.008 });
+    [-0.72, 0, 0.72].forEach((dx) => {
+      mk(g, CYL(0.05, 0.05, 0.16, 8), 0xd6dbe4, { pos: [dx, h - 0.5, 0], outline: 0.005, cast: false });
+    });
+    // 变压器
+    mk(g, CYL(0.28, 0.28, 0.78, 12), 0x8a93a1, { pos: [0.34, h - 1.9, 0], outline: 0.012 });
+    mk(g, CYL(0.3, 0.3, 0.06, 12), 0x6d7684, { pos: [0.34, h - 1.49, 0], outline: 0.008, cast: false });
+    // 杆上编号牌
+    mk(g, B(0.22, 0.42, 0.03), 0xe9e6da, { pos: [0, 2.2, 0.2], outline: 0.004, cast: false });
+    // 爬杆脚钉
+    for (let i = 0; i < 5; i++) {
+      mk(g, B(0.26, 0.03, 0.03), 0x4a5260, { pos: [0.16, 1.6 + i * 0.55, 0], outline: 0, cast: false });
+    }
+    return g;
+  }
+  utilityPole(11.4, 0.3, 0.95, 7.4);
+  utilityPole(-6.6, 0.1, -3.4, 7.0);
+
+  // 电线：跨过街角上空
+  wire(diorama, [-6.6, 6.7, -3.4], [11.4, 7.2, 0.95], 0.95, 0.026);
+  wire(diorama, [-6.6, 6.4, -3.3], [11.4, 6.9, 1.05], 1.15, 0.024);
+  wire(diorama, [-6.6, 6.1, -3.5], [11.4, 6.6, 0.85], 1.05, 0.022);
+  // 引入到店招上方
+  wire(diorama, [11.4, 7.0, 0.95], [7.2, 4.85, -8.2], 0.5, 0.02);
+  wire(diorama, [11.4, 6.6, 0.95], [7.0, 4.6, -9.4], 0.35, 0.018);
+  // 引向底座外
+  wire(diorama, [-6.6, 6.3, -3.4], [-13.8, 5.2, -7.0], 1.4, 0.02);
+  wire(diorama, [-6.6, 5.9, -3.4], [-13.8, 4.6, -10.2], 1.2, 0.018);
+  wire(diorama, [11.4, 6.9, 0.95], [13.8, 6.2, 6.0], 0.8, 0.02);
+
+  /* ---------- 路牌 ---------- */
+  const signPost = new Group();
+  signPost.position.set(-3.55, 0.3, 1.3);
+  diorama.add(signPost);
+  mk(signPost, CYL(0.045, 0.05, 2.6, 8), 0x8a93a1, { pos: [0, 1.3, 0], outline: 0.008 });
+  const streetPlate = new Mesh(new PlaneGeometry(1.15, 0.36), new MeshBasicMaterial({
+    map: canvasTexA(512, 160, (ctx, w, h) => {
+      ctx.fillStyle = '#f4f7fb';
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = '#22435c';
+      ctx.lineWidth = 10;
+      ctx.strokeRect(8, 8, w - 16, h - 16);
+      ctx.fillStyle = '#22435c';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 62px "Hiragino Sans", "Noto Sans JP", sans-serif';
+      ctx.fillText('ひかり坂', w / 2 - 26, 58);
+      ctx.font = 'bold 27px "Helvetica Neue", Arial, sans-serif';
+      ctx.fillText('HIKARI-ZAKA', w / 2 - 26, 112);
+    })
+  }));
+  streetPlate.position.set(0.1, 2.46, 0.02);
+  signPost.add(streetPlate);
+  mk(signPost, B(1.18, 0.04, 0.04), 0x8a93a1, { pos: [0.1, 2.46, -0.02], outline: 0.004, cast: false });
+  // 下方停车指示小牌
+  const parkPlate = new Mesh(new PlaneGeometry(0.56, 0.56), new MeshBasicMaterial({
+    map: canvasTexA(256, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#2f6fa8';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 150px "Helvetica Neue", Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('P', w / 2, h / 2 + 6);
+    })
+  }));
+  parkPlate.position.set(0.1, 1.92, 0.02);
+  signPost.add(parkPlate);
+
+  /* ---------- 街角护栏 ---------- */
+  for (let x = 8.4; x <= 12.9; x += 1.5) {
+    mk(diorama, CYL(0.05, 0.05, 0.92, 8), 0xb8c0cf, { pos: [x, 0.76, 1.72], outline: 0.008 });
+  }
+  mk(diorama, B(4.7, 0.1, 0.08), 0xd7dde7, { pos: [10.65, 1.14, 1.72], outline: 0.008 });
+  mk(diorama, B(4.7, 0.07, 0.06), 0xa9b2c2, { pos: [10.65, 0.78, 1.72], outline: 0.006, cast: false });
+
+  /* ============================================================
+   * 9. 小巷 / 后院 / 围墙
+   * ============================================================ */
+  // 小巷侧墙（面向大街的矮墙）
+  mk(diorama, B(0.36, 1.5, 11.6), C.brick, { pos: [-7.52, 0.81, -7.3], outline: 0.03 });
+  mk(diorama, B(0.46, 0.1, 11.7), 0xa39a8c, { pos: [-7.52, 1.58, -7.3], outline: 0.012 });
+  // 墙上的小海报
+  [[-1.9, 1.15], [-4.6, 1.05], [-8.2, 1.2]].forEach(([z, y], i) => {
+    mk(diorama, B(0.02, 0.4, 0.3), pick([0xd9cba8, 0xe0b7c2, 0xbcd4c8]), {
+      pos: [-7.33, y, z], outline: 0.004, cast: false
+    });
+    mk(diorama, B(0.025, 0.22, 0.24), 0xf2ede0, { pos: [-7.32, y + 0.02, z], outline: 0, cast: false });
+  });
+
+  // 背街围墙
+  mk(diorama, B(20.8, 2.2, 0.4), 0x4c4a4a, { pos: [2.7, 1.1, -12.5], outline: 0.035 });
+  mk(diorama, B(20.9, 0.12, 0.5), 0x8d8880, { pos: [2.7, 2.24, -12.5], outline: 0.012 });
+  mk(diorama, B(2.2, 1.7, 0.1), 0x3a4048, { pos: [9.6, 0.95, -12.28], outline: 0.012 });
+  for (let i = 0; i < 6; i++) {
+    mk(diorama, B(0.06, 2.1, 0.06), 0x3a3838, { pos: [-6.2 + i * 3.6, 1.06, -12.28], outline: 0, cast: false });
+  }
+  [[-3.2, 1.3, 0xe3d7bd], [0.4, 1.1, 0xcbd8c8], [5.2, 1.35, 0xe0c3cb]].forEach(([x, y, col]) => {
+    mk(diorama, B(0.7, 0.52, 0.04), col, { pos: [x, y, -12.27], outline: 0.004, cast: false });
+  });
+  // 后门灯
+  mk(diorama, B(0.3, 0.16, 0.2), 0x3c4350, { pos: [8.2, 2.0, -12.28], outline: 0.006, cast: false });
+  glowSprite(diorama, 8.2, 1.9, -12.1, 1.4, 1.4, 0xffe0a8, 0.5);
+
+  /* ---------- 空调外机 ---------- */
+  function acUnit(x, y, z, rotY) {
+    const g = new Group();
+    g.position.set(x, y, z);
+    g.rotation.y = rotY;
+    diorama.add(g);
+    mk(g, B(0.34, 0.62, 0.95), 0xdfe3ea, { pos: [0, 0, 0], outline: 0.012 });
+    mk(g, B(0.05, 0.52, 0.5), 0x9aa2b0, { pos: [0.18, 0, 0.15], outline: 0.006, cast: false });
+    const fan = new Mesh(new TorusGeometry(0.19, 0.025, 6, 16), new MeshBasicMaterial({ color: 0x6d7789 }));
+    fan.position.set(0.19, 0, -0.18);
+    fan.rotation.y = Math.PI / 2;
+    g.add(fan);
+    for (let i = 0; i < 3; i++) {
+      mk(g, B(0.012, 0.3, 0.06), 0x555e6c, {
+        pos: [0.2, 0, -0.18], rot: [0, 0, (i * Math.PI) / 3], outline: 0, cast: false
+      });
+    }
+    // 支架
+    mk(g, B(0.4, 0.05, 0.1), 0x555e6c, { pos: [0, -0.34, 0.36], outline: 0.004, cast: false });
+    mk(g, B(0.4, 0.05, 0.1), 0x555e6c, { pos: [0, -0.34, -0.36], outline: 0.004, cast: false });
+    return g;
+  }
+  acUnit(-5.2, 0.95, -3.6, Math.PI / 2);
+  acUnit(-5.2, 1.05, -6.4, Math.PI / 2);
+  acUnit(7.2, 0.9, -4.4, -Math.PI / 2);
+  acUnit(-5.2, 0.5, -9.2, Math.PI / 2);
+
+  // 落水管
+  mk(diorama, CYL(0.07, 0.07, 4.2, 8), C.pipe, { pos: [-5.15, 2.4, -1.75], outline: 0.008, cast: false });
+  mk(diorama, CYL(0.07, 0.07, 4.2, 8), C.pipe, { pos: [7.15, 2.4, -10.4], outline: 0.008, cast: false });
+  mk(diorama, CYL(0.07, 0.07, 2.6, 8), C.pipe, { pos: [7.15, 1.3, -1.9], outline: 0.008, cast: false });
+
+  // 电表箱
+  mk(diorama, B(0.16, 0.5, 0.38), 0xb6bcc8, { pos: [7.2, 1.5, -6.2], outline: 0.008 });
+
+  // 右墙细节：小高窗 / 卷帘门 / 海报 / 壁灯
+  mk(diorama, B(0.06, 0.78, 1.1), 0xdff0ff, { pos: [7.02, 2.35, -7.6], basic: true, outline: 0, cast: false, hdr: 1.05 });
+  mk(diorama, B(0.09, 0.06, 1.24), 0x5b6577, { pos: [7.03, 2.77, -7.6], outline: 0.004, cast: false });
+  mk(diorama, B(0.09, 0.06, 1.24), 0x5b6577, { pos: [7.03, 1.93, -7.6], outline: 0.004, cast: false });
+  for (let i = 0; i < 3; i++) {
+    mk(diorama, B(0.09, 0.82, 0.05), 0x6d7789, { pos: [7.04, 2.35, -8.0 + i * 0.4], outline: 0.003, cast: false });
+  }
+  mk(diorama, B(0.08, 2.0, 1.5), 0x59616f, { pos: [7.03, 1.16, -9.9], outline: 0.008 });
+  for (let i = 0; i < 7; i++) {
+    mk(diorama, B(0.1, 0.05, 1.42), 0x6f7989, { pos: [7.05, 0.36 + i * 0.26, -9.9], outline: 0, cast: false });
+  }
+  mk(diorama, B(0.03, 0.66, 0.5), 0xe4d9bd, { pos: [7.03, 1.62, -6.7], outline: 0.004, cast: false });
+  mk(diorama, B(0.24, 0.14, 0.3), 0x3c4350, { pos: [7.14, 2.95, -5.2], outline: 0.005, cast: false });
+  mk(diorama, B(0.12, 0.05, 0.24), 0xffeccb, { pos: [7.24, 2.87, -5.2], basic: true, outline: 0, cast: false, hdr: 1.7 });
+  glowSprite(diorama, 7.4, 2.8, -5.2, 1.8, 1.8, 0xffe0b0, 0.28);
+
+  // 左墙（巷内）细节：小窗 / 海报 / 配电箱
+  mk(diorama, B(0.06, 0.62, 0.9), 0xdff0ff, { pos: [-5.02, 2.3, -8.1], basic: true, outline: 0, cast: false, hdr: 0.95 });
+  mk(diorama, B(0.09, 0.06, 1.04), 0x5b6577, { pos: [-5.03, 2.63, -8.1], outline: 0.004, cast: false });
+  mk(diorama, B(0.09, 0.06, 1.04), 0x5b6577, { pos: [-5.03, 1.96, -8.1], outline: 0.004, cast: false });
+  mk(diorama, B(0.03, 0.52, 0.4), 0xd9cba8, { pos: [-5.03, 1.7, -4.9], outline: 0.004, cast: false });
+  mk(diorama, B(0.14, 0.62, 0.5), 0xa9b2c0, { pos: [-5.05, 1.35, -10.4], outline: 0.006 });
+  mk(diorama, CYL(0.05, 0.05, 3.4, 8), C.pipe, { pos: [-5.1, 1.9, -10.9], outline: 0.006, cast: false });
+
+  /* ---------- 小巷霓虹招牌 ---------- */
+  const alleySign = new Mesh(new PlaneGeometry(0.34, 1.15), new MeshBasicMaterial({
+    map: canvasTexA(128, 440, (ctx, w, h) => {
+      ctx.fillStyle = '#20131c';
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = '#ff6aa8';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(6, 6, w - 12, h - 12);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = '#ff6aa8';
+      ctx.shadowBlur = 26;
+      ctx.fillStyle = '#ffd0e2';
+      ctx.font = 'bold 68px "Hiragino Sans", "Noto Sans JP", sans-serif';
+      ['ス', 'ナ', 'ッ', 'ク'].forEach((ch, i) => ctx.fillText(ch, w / 2, 70 + i * 88));
+    }),
+    transparent: false, side: DoubleSide
+  }));
+  alleySign.position.set(-7.2, 2.5, -2.9);
+  alleySign.rotation.y = Math.PI / 2;
+  diorama.add(alleySign);
+  mk(diorama, B(0.08, 1.25, 0.4), 0x2a2029, { pos: [-7.32, 2.5, -2.9], outline: 0.006 });
+  glowSprite(diorama, -7.0, 2.5, -2.9, 2.4, 3.4, 0xff6aa8, 0.4);
+
+  // 小巷杂物：垃圾桶 / 周转箱 / 纸箱
+  mk(diorama, B(1.3, 1.1, 0.9), 0x3f5c52, { pos: [-6.6, 0.65, -5.6], outline: 0.015 });
+  mk(diorama, B(1.34, 0.1, 0.94), 0x517465, { pos: [-6.6, 1.22, -5.6], outline: 0.008 });
+  mk(diorama, CYL(0.22, 0.22, 0.08, 10), 0x2a2f36, { pos: [-7.05, 0.14, -5.2], outline: 0.006, cast: false });
+  mk(diorama, CYL(0.22, 0.22, 0.08, 10), 0x2a2f36, { pos: [-6.15, 0.14, -5.9], outline: 0.006, cast: false });
+  [[-6.3, -8.2, 0x9a7f5c], [-6.7, -8.7, 0xb08d63]].forEach(([x, z, col]) => {
+    mk(diorama, B(0.6, 0.42, 0.5), col, { pos: [x, 0.32, z], outline: 0.008 });
+    mk(diorama, B(0.62, 0.06, 0.52), 0xc9b48f, { pos: [x, 0.56, z], outline: 0.004, cast: false });
+  });
+  for (let i = 0; i < 3; i++) {
+    mk(diorama, B(0.5, 0.3, 0.36), pick([0x4a7fa8, 0x8f5f5f, 0x5f8f6a]), { pos: [-6.4, 0.26 + i * 0.32, -10.2], outline: 0.006 });
+  }
+
+  // 巷内昏暗壁灯
+  mk(diorama, B(0.16, 0.12, 0.3), 0x4a5260, { pos: [-5.12, 2.9, -7.4], outline: 0.006, cast: false });
+  mk(diorama, B(0.1, 0.04, 0.24), 0xffeccb, { pos: [-5.04, 2.82, -7.4], basic: true, outline: 0, cast: false, hdr: 1.8 });
+  glowSprite(diorama, -5.0, 2.8, -7.4, 1.8, 1.8, 0xffe0b0, 0.35);
+
+  /* ---------- 公告栏 / 海报栏 ---------- */
+  const board = new Group();
+  board.position.set(-6.45, 0.3, -0.8);
+  diorama.add(board);
+  mk(board, B(0.09, 1.9, 0.09), 0x6f7989, { pos: [-0.6, 0.95, 0], outline: 0.008 });
+  mk(board, B(0.09, 1.9, 0.09), 0x6f7989, { pos: [0.6, 0.95, 0], outline: 0.008 });
+  mk(board, B(1.4, 0.9, 0.09), 0x7b6552, { pos: [0, 1.32, 0], outline: 0.012 });
+  const posterFace = new Mesh(new PlaneGeometry(1.28, 0.8), new MeshBasicMaterial({
+    map: canvasTexA(512, 320, (ctx, w, h) => {
+      ctx.fillStyle = '#e7dfcc';
+      ctx.fillRect(0, 0, w, h);
+      const cards = [
+        [18, 18, 220, 130, '#c2553f', '夏祭り', '8.12 SAT'],
+        [262, 18, 232, 130, '#3f6f9e', '求人募集', 'STAFF'],
+        [18, 168, 150, 134, '#4d8f70', '防犯', 'パトロール'],
+        [186, 168, 150, 134, '#c89a3f', '駐輪場', '利用案内'],
+        [354, 168, 140, 134, '#8f5f7f', '地域', 'お知らせ']
+      ];
+      cards.forEach(([x, y, cw, ch, col, t1, t2]) => {
+        ctx.fillStyle = col;
+        ctx.fillRect(x, y, cw, ch);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.font = 'bold 30px "Hiragino Sans", "Noto Sans JP", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(t1, x + cw / 2, y + 52);
+        ctx.font = 'bold 18px Arial, sans-serif';
+        ctx.fillText(t2, x + cw / 2, y + 92);
+      });
+    })
+  }));
+  posterFace.position.set(0, 1.32, 0.05);
+  board.add(posterFace);
+  mk(board, B(1.6, 0.1, 0.42), 0x5a4a3c, { pos: [0, 1.8, 0.06], outline: 0.008 });
+
+  /* ---------- 后院细节 ---------- */
+  // 周转箱堆
+  for (let i = 0; i < 4; i++) {
+    mk(diorama, B(0.62, 0.34, 0.44), pick([0x4a7fa8, 0x8f6a3f, 0x5f8f6a]), {
+      pos: [9.6, 0.38 + i * 0.36, -8.4], rot: [0, 0.12 * i, 0], outline: 0.008
+    });
+  }
+  // 自行车停放架
+  for (let i = 0; i < 3; i++) {
+    mk(diorama, B(0.06, 0.34, 0.5), 0x9aa5b8, { pos: [9.2 + i * 0.7, 0.34, -3.4], outline: 0.006, cast: false });
+  }
+  // 水桶 / 拖把
+  mk(diorama, CYL(0.2, 0.17, 0.42, 12), 0x5b7f8f, { pos: [8.1, 0.38, -9.6], outline: 0.008 });
+  mk(diorama, CYL(0.03, 0.03, 1.3, 6), 0x8a6a4e, { pos: [8.35, 0.8, -9.7], rot: [0.12, 0, 0.1], outline: 0.006, cast: false });
+  // 后门台阶
+  mk(diorama, B(1.6, 0.2, 0.7), 0x6d7585, { pos: [5.4, 0.26, -11.2], outline: 0.01 });
+
+  /* ============================================================
+   * 10. 雨
+   * ============================================================ */
+  const RAIN_N = 1500;
+  const rainX = new Float32Array(RAIN_N);
+  const rainZ = new Float32Array(RAIN_N);
+  const rainY = new Float32Array(RAIN_N);
+  const rainV = new Float32Array(RAIN_N);
+  const rainL = new Float32Array(RAIN_N);
+  const rainPos = new Float32Array(RAIN_N * 6);
+
+  for (let i = 0; i < RAIN_N; i++) {
+    rainX[i] = rr(-17, 17);
+    rainZ[i] = rr(-17, 17);
+    rainY[i] = rr(0, 23);
+    rainV[i] = rr(11, 18);
+    rainL[i] = rr(0.4, 0.95);
+  }
+
+  const rainGeo = new THREE.BufferGeometry();
+  rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+  const rain = new LineSegments(rainGeo, new LineBasicMaterial({
+    color: 0xc2d9ff, transparent: true, opacity: 0.4,
+    blending: AdditiveBlending, depthWrite: false
+  }));
+  rain.frustumCulled = false;
+  scene.add(rain);
+
+  const RAIN_WX = 0.2;
+  const RAIN_WZ = 0.05;
+
+  function updateRain(dt) {
+    for (let i = 0; i < RAIN_N; i++) {
+      let y = rainY[i] - rainV[i] * dt;
+      if (y < -1.2) y += 24;
+      rainY[i] = y;
+      const x = rainX[i];
+      const z = rainZ[i];
+      const len = rainL[i];
+      const i6 = i * 6;
+      rainPos[i6] = x;
+      rainPos[i6 + 1] = y;
+      rainPos[i6 + 2] = z;
+      rainPos[i6 + 3] = x + RAIN_WX * len;
+      rainPos[i6 + 4] = y - len;
+      rainPos[i6 + 5] = z + RAIN_WZ * len;
+    }
+    rainGeo.attributes.position.needsUpdate = true;
+  }
+
+  // 雨滴涟漪
+  const ripples = [];
+  const rippleGeo = new RingGeometry(0.78, 1.0, 18);
+  for (let i = 0; i < 32; i++) {
+    const mat = new MeshBasicMaterial({
+      color: 0xc9e2ff, transparent: true, opacity: 0,
+      blending: AdditiveBlending, depthWrite: false, side: DoubleSide
+    });
+    const m = new Mesh(rippleGeo, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.set(rr(-12, 12), 0.036, rr(2.0, 12.4));
+    diorama.add(m);
+    ripples.push({ mesh: m, phase: rnd() });
+  }
+
+  function updateRipples(elapsed) {
+    for (let i = 0; i < ripples.length; i++) {
+      const r = ripples[i];
+      const p = (elapsed * 0.9 + r.phase) % 1;
+      const s = 0.14 + p * 0.72;
+      r.mesh.scale.set(s, s, s);
+      r.mesh.material.opacity = (1 - p) * 0.42 * Math.min(1, p / 0.12);
+    }
+  }
+
+  /* ============================================================
+   * 11. 后期辉光（可选，失败则直接渲染）
+   * ============================================================ */
+  let composer = null;
+  try {
+    const mods = await Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+      import('three/addons/postprocessing/OutputPass.js')
+    ]);
+    composer = new mods[0].EffectComposer(renderer);
+    composer.addPass(new mods[1].RenderPass(scene, camera));
+    composer.addPass(new mods[2].UnrealBloomPass(
+      new Vector2(window.innerWidth, window.innerHeight), 0.42, 0.75, 1.0
+    ));
+    composer.addPass(new mods[3].OutputPass());
+    composer.setSize(window.innerWidth, window.innerHeight);
+  } catch (e) {
+    console.warn('[konbini] bloom disabled:', e);
+    composer = null;
+  }
+
+  /* ============================================================
+   * 12. 循环与自适应
+   * ============================================================ */
+  const clock = new Clock();
+  let elapsed = 0;
+
+  function flicker() {
+    const f = 0.78 + 0.22 * Math.sin(elapsed * 5.7) * Math.sin(elapsed * 2.1 + 1.3);
+    neonOpen.material.opacity = 0.55 + 0.45 * f;
+    alleyLight.intensity = 9 + 4 * f;
+    const g = 0.94 + 0.06 * Math.sin(elapsed * 3.3 + 0.7);
+    signLight.intensity = 11 * g;
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    elapsed += dt;
+    updateRain(dt);
+    updateRipples(elapsed);
+    flicker();
+    controls.update();
+    if (composer) composer.render();
+    else renderer.render(scene, camera);
+  }
+
+  window.addEventListener('resize', () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    if (composer) composer.setSize(w, h);
+  });
+
+  animate();
+}
+</script>
+</body>
+</html>
