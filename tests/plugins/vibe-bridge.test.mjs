@@ -79,6 +79,13 @@ async function readJsonLines(file) {
     .map((l) => JSON.parse(l));
 }
 
+/** Tool contract: `{ title?, output: string, metadata? }` — never a bare record. */
+function parseToolResult(res) {
+  assert.equal(typeof res, "object");
+  assert.equal(typeof res.output, "string", "host renders `output`, so it must be a string");
+  return JSON.parse(res.output);
+}
+
 before(async () => {
   tmp = await mkdtemp(path.join(os.tmpdir(), "vb-bridge-"));
   await mkdir(path.join(tmp, "runtime"));
@@ -238,6 +245,31 @@ test("inspection command with host exit metadata still does not extract error ma
   assert.deepEqual(last.errors, []);
 });
 
+test("mutating git subcommands are not inspection-only", async () => {
+  const p = await newPlugin();
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "g1", args: { command: "git branch -d feature" } },
+    { output: "error: branch 'feature' is not fully merged", metadata: { exitCode: 1 } }
+  );
+  const feeds = await readJsonLines(feedsFile);
+  const last = feeds[feeds.length - 1];
+  assert.equal(last.ok, false, "git branch -d can delete a branch, so it is not inspection-only");
+});
+
+test("host exit 0 wins over failure-looking output lines", async () => {
+  const p = await newPlugin();
+  await p["tool.execute.after"](
+    { tool: "bash", callID: "x0", args: { command: "node app.js" } },
+    {
+      output: "server ready\nerror: optional plugin missing\nFailed to parse optional field, using default",
+      metadata: { exit: 0 },
+    }
+  );
+  const feeds = await readJsonLines(feedsFile);
+  const last = feeds[feeds.length - 1];
+  assert.equal(last.ok, true, "a clean host exit must not be vetoed by log text");
+});
+
 test("green test summary '0 failed' is not a failure", async () => {
   const p = await newPlugin();
   await p["tool.execute.after"](
@@ -274,8 +306,9 @@ test("vc_transition rejects empty referenced_outputs without spawning", async ()
     },
     {}
   );
-  assert.equal(res.ok, false);
-  assert.equal(res.code, "CHECKLIST_INVALID");
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, false);
+  assert.equal(rec.code, "CHECKLIST_INVALID");
   const callsAfter = await readJsonLines(callsFile);
   assert.equal(callsAfter.length, callsBefore, "no CLI spawn when checklist invalid");
 });
@@ -295,7 +328,9 @@ test("vc_transition forwards --level and a valid checklist", async () => {
     },
     {}
   );
-  assert.equal(res.ok, true);
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, true);
+  assert.match(res.title, /vibe S1/);
   const calls = await readJsonLines(callsFile);
   const t = calls.find((c) => c.kind === "transition");
   assert.ok(t, "transition call logged");
@@ -315,10 +350,33 @@ test("vc_transition rejects unverifiable references without spawning", async () 
     },
     {}
   );
-  assert.equal(res.ok, false);
-  assert.equal(res.code, "CHECKLIST_INVALID");
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, false);
+  assert.equal(rec.code, "CHECKLIST_INVALID");
   const after = await readJsonLines(callsFile);
   assert.equal(after.length, before.length, "no CLI spawn when refs are unverifiable");
+});
+
+test("vc_transition rejects drive-absolute references (Windows) without spawning", async () => {
+  // core's `Path.is_absolute()` is true for `D:\...` on Windows, so the plugin
+  // pre-check must reject the same shapes it does — otherwise every Windows
+  // absolute ref spends a spawn only to fail inside the CLI.
+  const p = await newPlugin();
+  const before = await readJsonLines(callsFile);
+  const res = await p.tool.vc_transition.execute(
+    {
+      to: "S1",
+      stage: "S0",
+      referenced_outputs: ["D:\\repo\\plan.md", "D:/repo/plan.md"],
+      checked_items: ["done"],
+    },
+    {}
+  );
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, false);
+  assert.equal(rec.code, "CHECKLIST_INVALID");
+  const after = await readJsonLines(callsFile);
+  assert.equal(after.length, before.length, "no CLI spawn for absolute refs");
 });
 
 test("cold pointer is warmed in background without blocking the request", async () => {
@@ -352,4 +410,33 @@ test("deny list blocks the tool before execute", async () => {
     /SCOPE_DENIED/
   );
   delete process.env.VIBE_BRIDGE_DENY_TOOLS;
+});
+
+test("vc_state satisfies the host tool contract (string output, not a bare record)", async () => {
+  const p = await newPlugin();
+  const res = await p.tool.vc_state.execute({}, {});
+  const rec = parseToolResult(res);
+  assert.equal(rec.ok, true);
+  assert.equal(rec.phase, "S0");
+  assert.equal(rec.rev, 0);
+  // The raw record stays available for machine consumers.
+  assert.equal(res.metadata.phase, "S0");
+  assert.match(res.title, /vibe S0/);
+});
+
+test("vc_state degrades to a structured error when the CLI is unavailable", async () => {
+  const previous = process.env.VIBE_KERNEL_PYTHON;
+  // A missing interpreter makes the spawn fail, which is the real degraded path.
+  process.env.VIBE_KERNEL_PYTHON = path.join(tmp, "no-such-python");
+  try {
+    const p = await newPlugin();
+    const res = await p.tool.vc_state.execute({}, {});
+    const rec = parseToolResult(res);
+    assert.equal(rec.ok, false);
+    assert.equal(rec.code, "BRIDGE_CLI_UNAVAILABLE");
+    assert.match(res.title, /BRIDGE_CLI_UNAVAILABLE/);
+  } finally {
+    if (previous === undefined) delete process.env.VIBE_KERNEL_PYTHON;
+    else process.env.VIBE_KERNEL_PYTHON = previous;
+  }
 });

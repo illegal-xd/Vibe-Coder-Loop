@@ -336,12 +336,12 @@ test("the adapter projects runtime read metadata into the normalized record", ()
   assert.equal(read.metadata.truncated, false);
 });
 
-test("missing timings preserve the write (no happens-before proof)", () => {
+test("missing timings fall back to emission order by default", () => {
   const { result } = transform([
     { id: "a1", parts: [writePart({ time: null })] },
     { id: "a2", parts: [readPart({ time: { start: 3, end: 4 } })] },
   ]);
 
-  assert.equal(result.changed, false);
-  assert.equal(result.stats.supersedeWrites.skippedReasons.read_not_after_write, 1);
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.supersedeWrites.orderFallbackCount, 1);
 });

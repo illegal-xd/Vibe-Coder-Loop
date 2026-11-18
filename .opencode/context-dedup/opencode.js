@@ -63,6 +63,26 @@ function countDecisionKinds(decisions) {
   return result;
 }
 
+/**
+ * Why a later reference blocks this decision, or "" when it does not.
+ *
+ * Both strengths are always distinguished in the counters, so a `mode: "any"`
+ * run can still show whether the block came from a real dependency or from a
+ * sentence that merely quotes the id. `mode: "strong"` lets prose mentions
+ * through: the removed content is duplicated elsewhere by construction, so a
+ * mention without a structured link cannot make the removal lossy.
+ */
+function referenceSkipReason(index, callId, fromOrderExclusive, toOrderExclusive, mode) {
+  if (!index || typeof callId !== "string" || callId.length === 0) return "";
+  if (indexHasStrongReference(index, callId, fromOrderExclusive, toOrderExclusive)) {
+    return "referenced_later_strong";
+  }
+  if (mode === "strong") return "";
+  return indexHasReference(index, callId, fromOrderExclusive, toOrderExclusive)
+    ? "referenced_later_text"
+    : "";
+}
+
 function safeStringify(value) {
   try {
     return JSON.stringify(value);
@@ -99,14 +119,26 @@ export function extractToolRecords(messages) {
   const locations = new Map();
   const orderedParts = [];
   const skippedReasons = {};
+  // Orders of parts that repeat a call id. They cannot be addressed by any
+  // decision, but they may have touched state, so the strategies keep them as
+  // barriers instead of pretending the part never ran.
+  const unaddressableOrders = [];
   let structuralFailure = "";
   let order = 0;
   let userSegment = 0;
   // Assistant step counter (reference parity: `purgeErrors.turns` counts
   // `step-start` parts, not user messages). A long autonomous run is one user
   // segment but many steps, so step age is the useful "how old is this?"
-  // measure for stale-input pruning.
+  // measure for stale-input pruning. Hosts that emit no `step-start` part would
+  // leave every record at turn 0 and silently disable stale-input pruning, so
+  // the user-turn counter is used as the fallback age measure.
   let turn = 0;
+  const hasStepStart = Array.isArray(messages) && messages.some(
+    (message) =>
+      message &&
+      Array.isArray(message.parts) &&
+      message.parts.some((part) => part && part.type === "step-start"),
+  );
 
   if (!Array.isArray(messages)) {
     return {
@@ -115,6 +147,7 @@ export function extractToolRecords(messages) {
       orderedParts,
       skippedReasons,
       structuralFailure: "invalid_messages",
+      unaddressableOrders,
     };
   }
 
@@ -188,15 +221,17 @@ export function extractToolRecords(messages) {
         metadata,
         time,
         userSegment,
-        turn,
+        turn: hasStepStart ? turn : userSegment,
       };
-      records.push(record);
-
+      // A repeated call id makes that one part unaddressable, not the request:
+      // treating it as a structural failure would disable every strategy for
+      // the whole conversation because of one malformed part.
       if (locations.has(part.callID)) {
         increment(skippedReasons, "duplicate_call_id");
-        structuralFailure = "duplicate_call_id";
+        if (Number.isFinite(partOrder)) unaddressableOrders.push({ order: partOrder, tool: part.tool });
         continue;
       }
+      records.push(record);
       locations.set(part.callID, {
         messageIndex,
         partIndex,
@@ -213,7 +248,15 @@ export function extractToolRecords(messages) {
     }
   }
 
-  return { records, locations, orderedParts, skippedReasons, structuralFailure };
+  return {
+    records,
+    locations,
+    orderedParts,
+    skippedReasons,
+    structuralFailure,
+    unaddressableOrders,
+    turnFallback: !hasStepStart,
+  };
 }
 
 /**
@@ -244,11 +287,19 @@ function escapeRegex(text) {
   return text.replace(REGEX_ESCAPE, "\\$&");
 }
 
+/**
+ * Text a part contributes to the reference scan, tagged by provenance.
+ * `machine: true` means the text came from a structured field (tool input,
+ * metadata) rather than prose, so an exact id value there is a real
+ * machine-readable reference and not a quotation.
+ */
 function searchableStrings(part, skipPayloadTools) {
   if (!part || typeof part !== "object") return null;
   const candidates = [];
-  if (typeof part.text === "string") candidates.push(part.text);
-  if (part.type === "subtask" && typeof part.prompt === "string") candidates.push(part.prompt);
+  if (typeof part.text === "string") candidates.push({ text: part.text, machine: false });
+  if (part.type === "subtask" && typeof part.prompt === "string") {
+    candidates.push({ text: part.prompt, machine: false });
+  }
   if (part.type === TOOL_PART) {
     // Write payloads (file content / diffs) are data, not conversational
     // references. Serializing megabytes of content here is both expensive and
@@ -258,14 +309,18 @@ function searchableStrings(part, skipPayloadTools) {
       skipPayloadTools !== undefined &&
       typeof part.tool === "string" &&
       skipPayloadTools.has(part.tool);
-    if (part.metadata !== undefined && !skipPayload) candidates.push(safeStringify(part.metadata));
+    if (part.metadata !== undefined && !skipPayload) {
+      candidates.push({ text: safeStringify(part.metadata), machine: true });
+    }
     const state = part.state;
     if (state && typeof state === "object") {
-      if (typeof state.output === "string") candidates.push(state.output);
-      if (typeof state.error === "string") candidates.push(state.error);
-      if (state.input !== undefined && !skipPayload) candidates.push(safeStringify(state.input));
+      if (typeof state.output === "string") candidates.push({ text: state.output, machine: false });
+      if (typeof state.error === "string") candidates.push({ text: state.error, machine: false });
+      if (state.input !== undefined && !skipPayload) {
+        candidates.push({ text: safeStringify(state.input), machine: true });
+      }
       if (state.metadata !== undefined && !skipPayload) {
-        candidates.push(safeStringify(state.metadata));
+        candidates.push({ text: safeStringify(state.metadata), machine: true });
       }
     }
   }
@@ -278,27 +333,43 @@ function searchableStrings(part, skipPayloadTools) {
  * ever matter (no decision can be referenced before it is made). A single
  * alternation regex matches every id in one pass per part instead of one pass
  * per id per part.
+ *
+ * `strongById` holds only machine-readable references: the id appears as an
+ * exact quoted value (`"call_abc"`) inside a structured field. Prose mentions
+ * and log echoes stay in `refsById` only, so a strategy can tell a real
+ * dependency from a sentence.
  */
 export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive = -Infinity, options = {}) {
   const refsById = new Map();
+  const strongById = new Map();
   const skipPayloadTools =
     options && options.skipPayloadTools instanceof Set ? options.skipPayloadTools : null;
   if (!Array.isArray(orderedParts) || !Array.isArray(callIds) || callIds.length === 0) {
-    return { refsById };
+    return { refsById, strongById };
   }
   const unique = new Set();
   for (const id of callIds) {
     if (typeof id === "string" && id.length > 0) unique.add(id);
   }
-  if (unique.size === 0) return { refsById };
+  if (unique.size === 0) return { refsById, strongById };
 
-  const pattern = new RegExp([...unique].map(escapeRegex).join("|"), "g");
+  // Longest id first: an alternation is matched left-most-wins, so a shorter id
+  // that is a prefix of a longer one (`call_1` vs `call_10`) would otherwise
+  // swallow the longer match and silently drop that reference from the index.
+  const pattern = new RegExp(
+    [...unique]
+      .sort((left, right) => right.length - left.length)
+      .map(escapeRegex)
+      .join("|"),
+    "g",
+  );
 
   for (const item of orderedParts) {
     if (!item || !Number.isFinite(item.order) || item.order <= startOrderExclusive) continue;
     const strings = searchableStrings(item.part, skipPayloadTools);
     if (!strings) continue;
-    for (const text of strings) {
+    for (const source of strings) {
+      const text = source.text;
       if (typeof text !== "string" || text.length === 0) continue;
       pattern.lastIndex = 0;
       let match = pattern.exec(text);
@@ -309,17 +380,26 @@ export function buildReferenceIndex(orderedParts, callIds, startOrderExclusive =
           match = pattern.exec(text);
           continue;
         }
-        let orders = refsById.get(matched);
-        if (!orders) {
-          orders = [];
-          refsById.set(matched, orders);
+        pushOrder(refsById, matched, item.order);
+        // A structured field stores an id as exactly one value; only that is a
+        // machine reference. `includes` is checked once per (part, id) pair.
+        if (source.machine && text.includes(`"${matched}"`)) {
+          pushOrder(strongById, matched, item.order);
         }
-        if (orders[orders.length - 1] !== item.order) orders.push(item.order);
         match = pattern.exec(text);
       }
     }
   }
-  return { refsById };
+  return { refsById, strongById };
+}
+
+function pushOrder(map, key, order) {
+  let orders = map.get(key);
+  if (!orders) {
+    orders = [];
+    map.set(key, orders);
+  }
+  if (orders[orders.length - 1] !== order) orders.push(order);
 }
 
 function lowerBound(orders, target) {
@@ -342,11 +422,20 @@ export function indexHasReference(index, callId, fromOrderExclusive, toOrderExcl
   return position < orders.length && orders[position] < toOrderExclusive;
 }
 
+/** Same question restricted to machine-readable (structured-field) references. */
+export function indexHasStrongReference(index, callId, fromOrderExclusive, toOrderExclusive) {
+  if (!index || !index.strongById) return false;
+  const orders = index.strongById.get(callId);
+  if (!orders || orders.length === 0) return false;
+  const position = lowerBound(orders, fromOrderExclusive);
+  return position < orders.length && orders[position] < toOrderExclusive;
+}
+
 function sameValue(left, right) {
   return Object.is(left, right);
 }
 
-function validateStructure(before, after, appliedIds, field, replacements) {
+function validateStructure(before, after, appliedIds, field, replacements, locations = null) {
   const failures = [];
   if (before.length !== after.length) failures.push("message_count");
 
@@ -384,8 +473,22 @@ function validateStructure(before, after, appliedIds, field, replacements) {
     for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
       const beforePart = beforeParts[partIndex];
       const afterPart = afterParts[partIndex];
+      // Only the recorded location is the decision target. A part that merely
+      // repeats the same call id is not touched on purpose, so it must not be
+      // reported as an un-cloned target.
+      const located =
+        locations && typeof locations.get === "function"
+          ? locations.get(beforePart?.callID)
+          : null;
+      const isTarget =
+        beforePart?.type === TOOL_PART &&
+        typeof beforePart.callID === "string" &&
+        appliedIds.has(beforePart.callID) &&
+        (!located ||
+          (located.messageIndex === messageIndex && located.partIndex === partIndex));
+
       if (beforePart === afterPart) {
-        if (beforePart?.type === TOOL_PART && appliedIds.has(beforePart.callID)) {
+        if (isTarget) {
           failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
         }
         continue;
@@ -397,7 +500,7 @@ function validateStructure(before, after, appliedIds, field, replacements) {
         beforePart.type !== TOOL_PART ||
         afterPart.type !== TOOL_PART ||
         beforePart.callID !== afterPart.callID ||
-        !appliedIds.has(beforePart.callID)
+        !isTarget
       ) {
         failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
         continue;
@@ -530,7 +633,14 @@ function applyFieldDecisions(messages, decisions, locations, field) {
     return { messages, changed: false, applied, dropped, validation: null };
   }
 
-  const validation = validateStructure(messages, result, appliedIds, field, replacements);
+  const validation = validateStructure(
+    messages,
+    result,
+    appliedIds,
+    field,
+    replacements,
+    locations,
+  );
   if (!validation.ok) {
     return {
       messages,
@@ -564,7 +674,7 @@ export function applyDecisions(messages, decisions, locations, placeholder) {
  * replaces it) and `state.input` (when the decision redacts it) may differ on
  * target parts; every other field must be unchanged.
  */
-function validateErrorStructure(before, after, appliedIds, changes) {
+function validateErrorStructure(before, after, appliedIds, changes, locations = null) {
   const failures = [];
   if (before.length !== after.length) failures.push("message_count");
 
@@ -593,10 +703,16 @@ function validateErrorStructure(before, after, appliedIds, changes) {
     for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
       const beforePart = beforeParts[partIndex];
       const afterPart = afterParts[partIndex];
+      const located =
+        locations && typeof locations.get === "function"
+          ? locations.get(beforePart?.callID)
+          : null;
       const isTarget =
         beforePart?.type === TOOL_PART &&
         typeof beforePart.callID === "string" &&
-        appliedIds.has(beforePart.callID);
+        appliedIds.has(beforePart.callID) &&
+        (!located ||
+          (located.messageIndex === messageIndex && located.partIndex === partIndex));
 
       if (beforePart === afterPart) {
         if (isTarget) failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
@@ -609,7 +725,7 @@ function validateErrorStructure(before, after, appliedIds, changes) {
         beforePart.type !== TOOL_PART ||
         afterPart.type !== TOOL_PART ||
         beforePart.callID !== afterPart.callID ||
-        !appliedIds.has(beforePart.callID)
+        !isTarget
       ) {
         failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
         continue;
@@ -789,7 +905,7 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
     return { messages, changed: false, applied, dropped, validation: null };
   }
 
-  const validation = validateErrorStructure(messages, result, appliedIds, changes);
+  const validation = validateErrorStructure(messages, result, appliedIds, changes, locations);
   if (!validation.ok) {
     return { messages, changed: false, applied: [], dropped, validation };
   }
@@ -804,7 +920,7 @@ export function applyErrorPurgeDecisions(messages, decisions, locations) {
  * field — status, title, metadata, time, attachments, callID, tool, message
  * identity, message/part counts — must be byte-for-byte unchanged.
  */
-function validateSupersedeStructure(before, after, appliedIds, redactions) {
+function validateSupersedeStructure(before, after, appliedIds, redactions, locations = null) {
   const failures = [];
   if (before.length !== after.length) failures.push("message_count");
 
@@ -833,10 +949,16 @@ function validateSupersedeStructure(before, after, appliedIds, redactions) {
     for (let partIndex = 0; partIndex < beforeParts.length; partIndex += 1) {
       const beforePart = beforeParts[partIndex];
       const afterPart = afterParts[partIndex];
+      const located =
+        locations && typeof locations.get === "function"
+          ? locations.get(beforePart?.callID)
+          : null;
       const isTarget =
         beforePart?.type === TOOL_PART &&
         typeof beforePart.callID === "string" &&
-        appliedIds.has(beforePart.callID);
+        appliedIds.has(beforePart.callID) &&
+        (!located ||
+          (located.messageIndex === messageIndex && located.partIndex === partIndex));
 
       if (beforePart === afterPart) {
         if (isTarget) failures.push(`target_not_cloned:${messageIndex}:${partIndex}`);
@@ -849,7 +971,7 @@ function validateSupersedeStructure(before, after, appliedIds, redactions) {
         beforePart.type !== TOOL_PART ||
         afterPart.type !== TOOL_PART ||
         beforePart.callID !== afterPart.callID ||
-        !appliedIds.has(beforePart.callID)
+        !isTarget
       ) {
         failures.push(`unexpected_part_change:${messageIndex}:${partIndex}`);
         continue;
@@ -995,7 +1117,7 @@ export function applySupersedeWriteDecisions(messages, decisions, locations) {
     return { messages, changed: false, applied, dropped, validation: null };
   }
 
-  const validation = validateSupersedeStructure(messages, result, appliedIds, redactions);
+  const validation = validateSupersedeStructure(messages, result, appliedIds, redactions, locations);
   if (!validation.ok) {
     return { messages, changed: false, applied: [], dropped, validation };
   }
@@ -1175,6 +1297,9 @@ export function transformMessages(messages, config = {}) {
 
   const extraction = extractToolRecords(messages);
   mergeReasons(stats.skippedReasons, extraction.skippedReasons);
+  // Diagnostic flag (not a skip reason): stale-input pruning ages records by
+  // user turn here, because the host emits no `step-start` part.
+  stats.turnFallback = extraction.turnFallback === true;
   if (extraction.structuralFailure) {
     stats.error = extraction.structuralFailure;
     stats.errorPurge.error = extraction.structuralFailure;
@@ -1196,6 +1321,7 @@ export function transformMessages(messages, config = {}) {
   const errorPlan = planErrorPurge(extraction.records, {
     ...errorPurgeConfig,
     enabled: errorPurgeEnabled,
+    extraBarrierOrders: extraction.unaddressableOrders,
     readOnlyTools: config.tools,
     mutationTools: config.mutationTools,
     writeTools: supersedeConfig.writeTools ?? DEFAULT_WRITE_TOOLS,
@@ -1205,6 +1331,7 @@ export function transformMessages(messages, config = {}) {
   const supersedePlan = planSupersedeWrites(extraction.records, {
     ...supersedeConfig,
     enabled: supersedeEnabled,
+    extraBarrierOrders: extraction.unaddressableOrders,
     mutationTools: config.mutationTools,
     readOnlyTools: config.tools,
     protectedTools: config.protectedTools,
@@ -1232,11 +1359,17 @@ export function transformMessages(messages, config = {}) {
   stats.sameSignatureDifferentOutputCount = dedupPlan.stats.sameSignatureDifferentOutputCount;
   stats.sameSignatureDifferentOutputGroups = dedupPlan.stats.sameSignatureDifferentOutputGroups;
   stats.plannedPruneCount = dedupPlan.stats.plannedPruneCount;
+  // Dedup stats are copied field by field; the window-collapse funnel and the
+  // repeated-target aggregate must be copied too, or they read as 0/[] in logs.
+  stats.readWindowCandidateCount = dedupPlan.stats.readWindowCandidateCount;
+  stats.readWindowCollapseCount = dedupPlan.stats.readWindowCollapseCount;
+  stats.repeatedTargets = dedupPlan.stats.repeatedTargets;
   mergeReasons(stats.skippedReasons, dedupPlan.stats.skippedReasons);
 
   const protectCallIds = config.protectCallIdReferences !== false;
   const protectErrorReferences = errorPurgeConfig.protectReferences !== false;
   const protectSupersedeReferences = supersedeConfig.protectReferences !== false;
+  const referenceMode = config.referenceProtection === "strong" ? "strong" : "any";
 
   // One reference index for all three strategies. The scan starts at the
   // earliest decision order because nothing earlier can reference a decision.
@@ -1277,12 +1410,18 @@ export function transformMessages(messages, config = {}) {
   const attributedIds = new Set();
   const dedupDecisions = [];
   for (const decision of dedupPlan.decisions) {
-    if (
-      protectCallIds &&
-      indexHasReference(referenceIndex, decision.id, decision.order, decision.keeperOrder)
-    ) {
-      increment(stats.skippedReasons, "referenced_later");
-      continue;
+    if (protectCallIds) {
+      const reason = referenceSkipReason(
+        referenceIndex,
+        decision.id,
+        decision.order,
+        decision.keeperOrder,
+        referenceMode,
+      );
+      if (reason) {
+        increment(stats.skippedReasons, reason);
+        continue;
+      }
     }
     dedupDecisions.push(decision);
   }
@@ -1356,12 +1495,18 @@ export function transformMessages(messages, config = {}) {
       increment(stats.errorPurge.skippedReasons, "cross_strategy_conflict");
       continue;
     }
-    if (
-      protectErrorReferences &&
-      indexHasReference(referenceIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
-    ) {
-      increment(stats.errorPurge.skippedReasons, "referenced_later");
-      continue;
+    if (protectErrorReferences) {
+      const reason = referenceSkipReason(
+        referenceIndex,
+        decision.id,
+        decision.order,
+        Number.POSITIVE_INFINITY,
+        referenceMode,
+      );
+      if (reason) {
+        increment(stats.errorPurge.skippedReasons, reason);
+        continue;
+      }
     }
     errorDecisions.push(decision);
   }
@@ -1458,12 +1603,18 @@ export function transformMessages(messages, config = {}) {
       increment(stats.supersedeWrites.skippedReasons, "cross_strategy_conflict");
       continue;
     }
-    if (
-      protectSupersedeReferences &&
-      indexHasReference(referenceIndex, decision.id, decision.order, Number.POSITIVE_INFINITY)
-    ) {
-      increment(stats.supersedeWrites.skippedReasons, "referenced_later");
-      continue;
+    if (protectSupersedeReferences) {
+      const reason = referenceSkipReason(
+        referenceIndex,
+        decision.id,
+        decision.order,
+        Number.POSITIVE_INFINITY,
+        referenceMode,
+      );
+      if (reason) {
+        increment(stats.supersedeWrites.skippedReasons, reason);
+        continue;
+      }
     }
     supersedeDecisions.push(decision);
   }

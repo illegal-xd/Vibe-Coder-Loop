@@ -6,16 +6,20 @@
  *   ToolPart.state.status === "error" && typeof state.error === "string"
  *
  * It never classifies a completed result as an error just because its output
- * contains words like "error" or "failed". Shell hard-failure detection is an
- * opt-in exception: it defaults to `ambiguous` (never successful, never an
- * error) and only `shellFailureDetection: "error"` treats a match as a
- * confirmed error. Completed shell output is never assumed successful when the
- * host's exit status is unreliable.
+ * contains words like "error" or "failed". Shell hard-failure detection is the
+ * one text-based exception: it is on by default (`shellFailureDetection:
+ * "error"`) for commands whose output is a verdict (builds, tests, scripts),
+ * while inspection-only commands (`cat`, `grep`, `git log`, ...) are excluded
+ * because their output is data. Set `shellFailureDetection: "ambiguous"` to
+ * keep matches as "neither success nor error" (the old default). Completed
+ * shell output is never assumed successful when the host's exit status is
+ * unreliable.
  *
  * An earlier confirmed error is pruned only when:
  * - a later equivalent operation (same tool, canonical args, cwd/root)
  *   completed successfully; and
- * - the later success is in the same user turn (default); and
+ * - no user-turn boundary blocks it (default: cross-turn is allowed; set
+ *   `preserveAcrossUserTurns: true` for the old same-turn-only guard); and
  * - no state-changing tool ran between them (default); and
  * - the estimated error text is larger than the replacement placeholder.
  *
@@ -49,6 +53,7 @@ import {
   buildOperationSignature,
   estimateTokens,
   hasFailureMetadata,
+  hasHardFailureMetadata,
   increment,
   isConfirmedSuccess,
   isPlainObject,
@@ -57,6 +62,7 @@ import {
   textTokenUnits,
   validPlaceholder,
 } from "./core.js";
+import { isReadOnlyShellCommand } from "./supersede-writes.js";
 
 export const DEFAULT_ERROR_PLACEHOLDER =
   `${PRUNE_MARKER} Error output omitted: a later equivalent successful ` +
@@ -77,14 +83,15 @@ export const DEFAULT_STALE_INPUT_PLACEHOLDER =
 /** Shell tools whose completed state does not prove success in every host. */
 export const SHELL_TOOLS = Object.freeze(["bash"]);
 
-export const DEFAULT_SHELL_FAILURE_DETECTION = "ambiguous";
+export const DEFAULT_SHELL_FAILURE_DETECTION = "error";
 export const SHELL_FAILURE_DETECTION_MODES = Object.freeze(["off", "ambiguous", "error"]);
 
 /**
  * Conservative hard-failure markers for completed shell output. These are
  * evidence that the call did not succeed; they are never used for formatting
- * or wording. Detection is opt-in as an error (default: ambiguous) because the
- * output is still text, not structured state.
+ * or wording. Matches are treated as confirmed failures by default
+ * (`shellFailureDetection: "error"`), except for inspection-only commands
+ * whose output is data rather than a verdict (see `detectShellFailure`).
  */
 export const DEFAULT_SHELL_FAILURE_PATTERNS = Object.freeze([
   /(?:^|\r?\n)(?:\/bin\/)?(?:ba|z|k|fi)?sh: [^\n]*: command not found(?:\r?\n|$)/,
@@ -248,15 +255,23 @@ function normalizeOptions(config = {}) {
     Number.isInteger(config.staleInputAfterTurns) && config.staleInputAfterTurns > 0
       ? config.staleInputAfterTurns
       : 0;
-  // Host-neutral default is "trusted" for backward compatibility. The
-  // OpenCode adapter resolves `shellExitReliable: false` because that runtime
-  // reports exit 0 even for failed commands.
+  // Host-neutral default is "trusted": hosts report a real exit status. On
+  // OpenCode this was measured (docs/context-dedup.md §4.8: 1,633 bash records,
+  // 95 with a non-zero exit), so the adapter passes no override. Set false only
+  // for a host that masks failures as exit 0.
   const shellExitReliable = config.shellExitReliable !== false;
   const shellFailureDetection = SHELL_FAILURE_DETECTION_MODES.includes(
     config.shellFailureDetection,
   )
     ? config.shellFailureDetection
     : DEFAULT_SHELL_FAILURE_DETECTION;
+  // Orders of parts the adapter could not address (a repeated call id). A
+  // read-only one cannot change state, so only the others become barriers.
+  const extraBarrierOrders = Array.isArray(config.extraBarrierOrders)
+    ? config.extraBarrierOrders
+        .filter((item) => item && Number.isFinite(item.order) && !readOnlyTools.has(item.tool))
+        .map((item) => item.order)
+    : [];
 
   return {
     enabled,
@@ -276,7 +291,12 @@ function normalizeOptions(config = {}) {
     readOnlyTools,
     writeTools,
     barrierWriteTools: config.barrierWriteTools !== false,
-    preserveAcrossUserTurns: config.preserveAcrossUserTurns !== false,
+    // Rule 1 (a later success supersedes an earlier failure) may cross user
+    // turns by default, matching the config default (false). Set true to
+    // require the strict same-turn guard. Parsed with `=== true` so an omitted
+    // key means "don't preserve", consistent with
+    // `preserveRepeatedFailuresAcrossUserTurns` below and the config file.
+    preserveAcrossUserTurns: config.preserveAcrossUserTurns === true,
     // Rule 2 (repeated identical failures) keeps the newest identical failure,
     // so the error text and its arguments are still present later. Crossing a
     // user turn therefore loses nothing; only Rule 1 needs the turn guard
@@ -290,6 +310,7 @@ function normalizeOptions(config = {}) {
     staleInputAfterTurns,
     shellExitReliable,
     shellFailureDetection,
+    extraBarrierOrders,
     protectedTools,
     protectedFilePatterns,
   };
@@ -334,13 +355,18 @@ function isShellExitError(record) {
     isShellTool(record.tool) &&
     record.status === "completed" &&
     !hasCancellationMetadata(record) &&
-    hasFailureMetadata(record.metadata)
+    // Only structured failure state counts: a diagnostic string in `metadata`
+    // (stderr echo, warning note) is not an exit status.
+    hasHardFailureMetadata(record.metadata)
   );
 }
 
 /**
  * Detect a hard shell failure encoded only in output. Only completed shell
  * records are considered; structured errors are handled before this check.
+ * Inspection-only commands (`cat`, `grep`, `git log`, ...) print data, so a
+ * line that looks like an error in a log file is content, not a failed
+ * execution — they are never classified from output text.
  */
 function detectShellFailure(record) {
   if (!record || !isShellTool(record.tool) || record.status !== "completed") {
@@ -348,6 +374,7 @@ function detectShellFailure(record) {
   }
   const output = typeof record.output === "string" ? record.output : "";
   if (!output) return false;
+  if (isReadOnlyShellCommand(record.args?.command)) return false;
   return DEFAULT_SHELL_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
 }
 
@@ -386,6 +413,21 @@ function countBetween(sortedOrders, lowerExclusive, upperExclusive) {
 }
 
 /**
+ * A completed write changed the file even when metadata carries only
+ * diagnostic text (a warning note or an stderr echo). For writes the call
+ * status is the success authority; hard failure fields (exit, timeout,
+ * cancellation) still disqualify it. Without this, a warning on an otherwise
+ * successful write made it look like an unverifiable mutation instead of the
+ * repair action (`barrierReason` depends on this distinction for read-only
+ * candidates).
+ */
+function isVerifiedWriteSuccess(record) {
+  if (!record || record.status !== "completed") return false;
+  if (typeof record.error === "string" && record.error.trim().length > 0) return false;
+  return !hasHardFailureMetadata(record.metadata);
+}
+
+/**
  * Precompute the state-change timeline once. `stateChangeOrders` contains
  * every record that could block a supersession; `ordersBySignature` lets the
  * decision pass subtract retries of the candidate's own operation. This turns
@@ -394,6 +436,7 @@ function countBetween(sortedOrders, lowerExclusive, upperExclusive) {
  */
 function buildBarrierTimeline(records, options) {
   const stateChangeOrders = [];
+  const writeSuccessOrders = [];
   const ordersBySignature = new Map();
   let invalidRecord = false;
   for (const record of records) {
@@ -407,17 +450,22 @@ function buildBarrierTimeline(records, options) {
       continue;
     }
     if (options.readOnlyTools.has(record.tool)) continue;
-    if (
-      !options.barrierWriteTools &&
-      options.writeTools.has(record.tool) &&
-      isConfirmedSuccess(record)
-    ) {
-      continue;
+    if (options.writeTools.has(record.tool) && isVerifiedWriteSuccess(record)) {
+      // Kept separately as well: for a read-only candidate a recorded write is
+      // the repair action itself (see `barrierReason`), even though it still
+      // blocks candidates whose own state depends on the file content.
+      writeSuccessOrders.push(record.order);
+      if (!options.barrierWriteTools) continue;
     }
     stateChangeOrders.push(record.order);
   }
   stateChangeOrders.sort((left, right) => left - right);
-  return { stateChangeOrders, ordersBySignature, invalidRecord };
+  writeSuccessOrders.sort((left, right) => left - right);
+  for (const order of options.extraBarrierOrders ?? []) {
+    stateChangeOrders.push(order);
+  }
+  stateChangeOrders.sort((left, right) => left - right);
+  return { stateChangeOrders, writeSuccessOrders, ordersBySignature, invalidRecord };
 }
 
 function barrierReason(candidate, newer, options, timeline) {
@@ -426,7 +474,15 @@ function barrierReason(candidate, newer, options, timeline) {
   const all = countBetween(timeline.stateChangeOrders, candidate.order, newer.order);
   if (all === 0) return "";
   const retries = timeline.ordersBySignature.get(candidate.signature) ?? [];
-  const sameOperation = countBetween(retries, candidate.order, newer.order);
+  let sameOperation = countBetween(retries, candidate.order, newer.order);
+  // A read-only candidate failed because the target was not readable yet. A
+  // confirmed write in between is the repair itself (create/fix the file), and
+  // the later success proves the repair worked. Treating it as a barrier made
+  // the most common recovery path (read fails -> write -> read succeeds)
+  // impossible to prune.
+  if (options.readOnlyTools.has(candidate.record?.tool)) {
+    sameOperation += countBetween(timeline.writeSuccessOrders, candidate.order, newer.order);
+  }
   return all > sameOperation ? "intervening_state_change" : "";
 }
 
@@ -622,12 +678,44 @@ export function planErrorPurge(records, config = {}) {
   // Bounded by the tools that actually have a confirmed error.
   const successOrdersByTool = new Map();
 
+  /**
+   * Register a record's operation signature so `barrierReason` can subtract
+   * retries of the candidate's own command. `ambiguous` / `unverified_shell`
+   * records never become candidates, but they are still barriers, so they must
+   * be registered too: otherwise one retry whose exit status is unproven makes
+   * an unrelated "intervening state change" out of the candidate's own retry.
+   */
+  const registerSignature = (record) => {
+    if (
+      !Number.isFinite(record.order) ||
+      !isPlainObject(record.args) ||
+      !record.env ||
+      typeof record.env.cwd !== "string" ||
+      record.env.cwd.length === 0
+    ) {
+      return "";
+    }
+    let signature = "";
+    try {
+      signature = buildOperationSignature(record);
+    } catch {
+      return "";
+    }
+    if (signature && !options.readOnlyTools.has(record.tool)) {
+      const list = timeline.ordersBySignature.get(signature);
+      if (list) list.push(record.order);
+      else timeline.ordersBySignature.set(signature, [record.order]);
+    }
+    return signature;
+  };
+
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     const kind = classifications[index];
     if (kind === "invalid") continue;
-    if (kind === "unverified_shell") continue;
-    if (kind === "ambiguous") {
+    if (kind === "unverified_shell" || kind === "ambiguous") {
+      if (candidateTools.has(record.tool)) registerSignature(record);
+      if (kind === "unverified_shell") continue;
       stats.ambiguousResultCount += 1;
       continue;
     }
@@ -642,28 +730,17 @@ export function planErrorPurge(records, config = {}) {
     }
     if (!candidateTools.has(record.tool)) continue;
 
-    let signature = "";
-    if (
-      Number.isFinite(record.order) &&
-      isPlainObject(record.args) &&
-      record.env &&
-      typeof record.env.cwd === "string" &&
-      record.env.cwd.length > 0
-    ) {
-      try {
-        signature = buildOperationSignature(record);
-      } catch {
-        signature = "";
-      }
-      if (signature && !options.readOnlyTools.has(record.tool)) {
-        const list = timeline.ordersBySignature.get(signature);
-        if (list) list.push(record.order);
-        else timeline.ordersBySignature.set(signature, [record.order]);
-      }
-    }
+    const signature = registerSignature(record);
 
     if (kind === "error") {
-      const source = isShellExitError(record) ? { field: "output" } : undefined;
+      // A shell failure whose evidence lives in the output (structured non-zero
+      // exit, or a text marker promoted by `shellFailureDetection: "error"`)
+      // carries no `state.error`, so the candidate must read `output`. Reading
+      // `error` would always be empty and silently disable the text mode.
+      const source =
+        isShellExitError(record) || detectShellFailure(record)
+          ? { field: "output" }
+          : undefined;
       const candidate = candidateError(record, stats, signature, options, source);
       if (candidate) candidates.push(candidate);
       continue;
@@ -824,7 +901,8 @@ export function planErrorPurge(records, config = {}) {
         for (const candidate of group.slice(0, -1)) {
           if (candidate.decided) continue;
           if (
-            options.preserveAcrossUserTurns &&
+            // Rule 2 has its own guard: the kept failure repeats the same
+            // error text, so only an explicit opt-in should block it.
             options.preserveRepeatedFailuresAcrossUserTurns &&
             candidate.userSegment !== keeper.userSegment
           ) {

@@ -122,17 +122,17 @@ test("different workspace is not equivalent", () => {
   assert.equal(decisions.length, 0);
 });
 
-test("different user turns preserve the failure by default", () => {
+test("cross-user-turn supersession is allowed by default (matches config default)", () => {
   const records = [
     errorRecord({ id: "e1", order: 1, userSegment: 1 }),
     successRecord({ id: "s1", order: 3, userSegment: 2 }),
   ];
-  const blocked = planErrorPurge(records);
+  const allowed = planErrorPurge(records);
+  assert.equal(allowed.decisions.length, 1);
+
+  const blocked = planErrorPurge(records, { preserveAcrossUserTurns: true });
   assert.equal(blocked.decisions.length, 0);
   assert.equal(reason(blocked.stats, "across_user_turn"), 1);
-
-  const allowed = planErrorPurge(records, { preserveAcrossUserTurns: false });
-  assert.equal(allowed.decisions.length, 1);
 });
 
 test("a state-changing tool between failure and success preserves the failure", () => {
@@ -334,6 +334,82 @@ test("shell failure detection can opt into confirmed errors", () => {
   assert.equal(decisions.length, 0);
   assert.equal(stats.confirmedErrorCount, 1);
   assert.equal(stats.shellFailureCount, 1);
+});
+
+test("compile-error output is a confirmed failure by default (no exit code)", () => {
+  const { decisions, stats } = planErrorPurge([
+    successRecord({
+      id: "b1",
+      order: 1,
+      args: { command: "npx tsc --noEmit" },
+      output: `src/checkout.ts(12,5): error TS1234: boom\n${LONG_ERROR}`,
+    }),
+    successRecord({
+      id: "b2",
+      order: 2,
+      args: { command: "npx tsc --noEmit" },
+      output: "ok",
+    }),
+  ]);
+  assert.equal(stats.confirmedErrorCount, 1);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["b1"],
+  );
+});
+
+test("inspection-only output is data, never a text failure", () => {
+  const { decisions, stats } = planErrorPurge([
+    successRecord({
+      id: "c1",
+      order: 1,
+      args: { command: "cat error.log" },
+      output: `ERROR: something exploded\n${LONG_ERROR}`,
+    }),
+    successRecord({
+      id: "c2",
+      order: 2,
+      args: { command: "cat error.log" },
+      output: "ok",
+    }),
+  ]);
+  assert.equal(stats.confirmedErrorCount, 0);
+  assert.equal(stats.shellFailureCount, 0);
+  assert.equal(decisions.length, 0);
+});
+
+test("a write with diagnostic metadata still counts as the repair action", () => {
+  const readError = {
+    ...successRecord({
+      id: "e1",
+      order: 1,
+      tool: "read",
+      args: { filePath: "a.txt" },
+      output: "",
+    }),
+    status: "error",
+    error: `ENOENT ${LONG_ERROR}`,
+  };
+  const warningWrite = successRecord({
+    id: "w1",
+    order: 2,
+    tool: "write",
+    args: { filePath: "a.txt", content: "hi" },
+    metadata: { error: "warning: overwriting generated file" },
+  });
+  const readOk = successRecord({
+    id: "e2",
+    order: 3,
+    tool: "read",
+    args: { filePath: "a.txt" },
+    output: "hi",
+  });
+
+  const { decisions } = planErrorPurge([readError, warningWrite, readOk]);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["e1"],
+  );
 });
 
 test("pending, running, and later failures do not supersede", () => {
@@ -606,6 +682,29 @@ test("repeated identical shell failures keep the newest output", () => {
   assert.equal(decisions[0].id, "f1");
   assert.equal(decisions[0].field, "output");
   assert.equal(decisions[0].kind, "duplicate_failure");
+});
+
+test("an ambiguous retry of the same command does not block supersession", () => {
+  // The retry has exit 0 but failure-looking text, so it is classified
+  // `ambiguous`: a barrier, but the candidate's own retry and therefore not an
+  // unrelated state change.
+  const shell = (id, order, output, exit) =>
+    successRecord({ id, order, output, metadata: { exit } });
+
+  const { decisions } = planErrorPurge(
+    [
+      shell("f1", 1, LONG_ERROR, 1),
+      shell("a1", 3, `npm ERR! build failed\n${LONG_ERROR}`, 0),
+      shell("s1", 5, "all tests passed", 0),
+    ],
+    // Keep failure-looking output ambiguous: under the default "error" mode it
+    // would itself become a candidate, which is a separate rule.
+    { shellFailureDetection: "ambiguous" },
+  );
+
+  assert.equal(decisions.length, 1);
+  assert.equal(decisions[0].id, "f1");
+  assert.equal(decisions[0].kind, "superseded_by_success");
 });
 
 test("cancelled shell calls are not shell exit failures", () => {

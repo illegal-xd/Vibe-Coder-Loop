@@ -33,6 +33,10 @@
 | 6 | `tests/context-dedup/slim-edit.test.mjs` | 期望 `<path>src/app.js</path>` | 期望值改用 `path.join("src", "app.js")`（Windows 为 `src\app.js`） | `path.relative` 在 Windows 返回反斜杠；原断言只适用于 POSIX |
 | 7 | `tests/context-dedup/token-usage-log.test.mjs` | 用 `/project` 作项目根 | 用 `path.parse(os.tmpdir()).root + "project"` 构造平台绝对路径 | Windows 下 `path.resolve("/project", ...)` 会解析成当前盘符（`D:\project`），与 `path.join("/project", ...)` 不一致 |
 | 8 | `docs/windows-port.md` | — | 本文件 | 追溯载体 |
+| 9 | `.opencode/plugins/vibe-bridge.js`（`spawnCli`） | 启动器候选在**模块加载时**求值一次，`pythonLauncher` 一旦缓存就不再读 `VIBE_KERNEL_PYTHON` | `VIBE_KERNEL_PYTHON` 改为**每次调用重读**并优先于缓存；缓存只在无显式覆盖时写入 | main@d2f664e 新增测试 `vc_state degrades to a structured error when the CLI is unavailable` 通过临时把 `VIBE_KERNEL_PYTHON` 指向不存在路径来模拟降级；缓存旧启动器会让该用例在 Windows 上假通过（`rec.ok === true`）。属于 main 新测试暴露的本分支补丁缺陷 |
+| 10 | `.opencode/context-dedup/core.js`（`repeatedTargets`） | `info.cwd` 直接拼前缀，与目标键（已 `normalizePath` 成 `/` 分隔 + 盘符）比较 | cwd 也过 `normalizePath` 再拼前缀；`<external>/` 判定补盘符绝对路径（`^[A-Za-z]:/`） | Windows 下 `cwd` 是 `D:\repo`、目标键是 `D:/repo/...`，前缀永不匹配 → 诊断日志把项目内重复读取全报成 `<external>/<basename>`。纯诊断口径，不影响裁剪决策 |
+| 11 | `tests/context-dedup/triggerability.test.mjs` | 只覆盖 POSIX cwd | 新增用例「a Windows-style cwd still reports project-relative repeated targets」（`cwd: "D:\\repo"`，纯字符串逻辑，macOS 同样可跑） | 锁住 #10，防止回归 |
+| 12 | `.opencode/plugins/vibe-bridge.js`（`looksVerifiable`） | 只按 `startsWith("/")` 判绝对路径 | 增 `^[A-Za-z]:[\\/]` 与 `\\\\` 前缀判定；引用含 `\` 也视为路径形态 | core 的 `Path.is_absolute()` 在 Windows 对 `D:\repo\x.md` 返回 true，插件侧却放行 → 白花一次 spawn 才被 CLI 拒绝。测试：`vc_transition rejects drive-absolute references (Windows) without spawning` |
 
 ### 审计后确认「无需修改」的项
 
@@ -41,7 +45,7 @@
 | `runtime/**` | 不改 | 已有 `os.name == "nt"` / `sys.platform == "win32"` 分支：`proc_tree.py` 用 `taskkill /T /F`；`pathnorm.py` 大小写不敏感探测；`checkpoint.py` 加锁分支 |
 | `skills/**` 文档中的 `python3 ...` 命令 | 不改 | 属「文档命令」而非运行时路径；`docs/installation.md` 已给出 `python` / `py -3` 替代。Agent 在 Windows 上执行时用 `python` 等价替换 |
 | `backup/config.json`、`runtime/core/memory_store.py` | 不改 | 已声明 Windows 默认 `%USERPROFILE%\.delx-memory\db.sqlite` |
-| `.opencode/context-dedup/**` | 不改 | 仅用 `node:os.homedir()` / `node:path`，无 POSIX 绝对路径；token-usage 落在 `~/.config/opencode/token-usage` |
+| `.opencode/context-dedup/**` | 基本不改（例外见上表 #10） | 仅用 `node:os.homedir()` / `node:path`，无 POSIX 绝对路径；token-usage 落在 `~/.config/opencode/token-usage` |
 | 仓库内硬编码 `/Users/...` | 无 | 全仓 grep `/Users/[A-Za-z0-9_.-]+` 无命中（除审计脚本自身的脱敏正则） |
 
 ## 三、本机安装记录（不进入 git）
@@ -69,9 +73,16 @@ git merge origin/main                       # 有冲突优先保留平台相关�
 
 1. **`vibe-bridge.js` 启动器**：若 main 已改为跨平台启动器（`python`/`py` 探测），删除本分支补丁 #1，避免双份逻辑。
 2. **`vibe-bridge.js` 子进程 env**：若 main 已注入 `PYTHONUTF8`/`PYTHONIOENCODING`，删除补丁 #2。
-3. **`docs/installation.md`**：若 main 新增 Windows 段，合并去重；保持 junction 说明。
-4. **本文件**：保留；每次合并后更新「二」表的适用版本（可在表头加 `main@<sha>` 备注）。
-5. **运行时验证**（见下节）全部重跑，确认没有回归。
+3. **`vibe-bridge.js` 工具返回值**：main 若引入宿主契约包装（`{ title, output, metadata }`），**用 main 的包装，丢弃本分支此前的 `JSON.stringify` 返回值补丁**——两者解决同一个 `undefined.split` 崩溃，main 版本还保留 `metadata` 供机器消费。
+4. **`docs/installation.md`**：若 main 新增 Windows 段，合并去重；保持 junction 说明。
+5. **本文件**：保留；每次合并后更新「二」表的适用版本（可在表头加 `main@<sha>` 备注）。
+6. **运行时验证**（见下节）全部重跑，确认没有回归。
+
+### 合并记录
+
+| 日期 | main 基线 | 冲突文件 | 处理 |
+|---|---|---|---|
+| 2026-11-18 | `main@d2f664e`（context-dedup P0–P2 修复 7 提交 + demo 页） | `.opencode/plugins/vibe-bridge.js`、`tests/context-dedup/slim-edit.test.mjs` | 前者：保留 main 的 `toolResult` 宿主契约包装 + 本分支的 Python 启动器补丁（并修 #9 缓存缺陷、#12 绝对路径预检）；后者：期望值同时满足「平台分隔符」与「保留 EOF footer」两项。另修 #10 并补 #11 用例 |
 
 ## 五、验证命令与结果
 
@@ -102,8 +113,23 @@ bash scripts/verify-symlinks.sh --host
 - `bash scripts/tests/test-context-dedup.sh` → 300 tests：299 pass / 0 fail / 1 skipped。
 - `bash scripts/verify-symlinks.sh --host` → PASS=23 FAIL=0 WARN=1（WARN 为 agent 使用复制安装，属预期）。
 
+合并后复验（2026-11-18，`main@d2f664e` 已合入）：
+
+- `bash scripts/tests/test-context-dedup.sh` → **345 tests：344 pass / 0 fail / 1 skipped**（含 main 新增的 `triggerability.test.mjs`）。
+- `node --test tests/context-dedup/*.test.mjs tests/plugins/*.test.mjs` → **365 tests：364 pass / 0 fail / 1 skipped**（含桥接宿主契约与 Windows 绝对路径用例）。
+- 真插件 + 真 `runtime.core`：`vc_state` → `{ mode: "resume", phase: "S0 Idle", rev: <随会话推进> }`，`title=vibe S0 Idle`；证明 Windows 启动器（`python`）与宿主 `{title, output, metadata}` 契约同时成立。
+- `node --check .opencode/plugins/vibe-bridge.js` → 0（冲突解决后语法有效，无残留标记）。
+
 ## 六、已知边界
 
 - `runtime/exec`（`vc_exec`/`vc_diff`）尚未接线到插件；其 Windows 兼容性只做了代码审计，未做真机验证。
 - UWP / Store 版 Python 的 `python3.exe` 是别名 stub，可能返回 9009；插件已跳过该启动器。
+- **`.cmd / .bat` 型 Python 启动器不可用（未修，按边界记录）**：`spawnOnce` 用 `shell:false` + argv 数组，Node 在 Windows 对 `.cmd/.bat` 直接抛 `EINVAL`（实测确认），被 `try/catch` 接住后 `resolve(null)` → 静默降级为 `BRIDGE_CLI_UNAVAILABLE`。
+  - 影响面：**仅当 `python` / `py` 在 PATH 上解析到 `.bat`/`.cmd` shim 时**（典型：pyenv-win 的 `python.bat`、部分 conda / 便携版包装器）。本机 `where python` → 真实 `python.exe`，不受影响。
+  - 绕过方式：显式指定解释器绝对路径，插件对该值优先且每次调用重读（见「二」表 #9）：
+    ```powershell
+    [Environment]::SetEnvironmentVariable("VIBE_KERNEL_PYTHON", "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", "User")
+    ```
+  - 若将来需要原生支持：对 `.cmd/.bat` 候选改走 `%ComSpec% /d /s /c` 并逐参数引号转义；注意 cmd 的引号语义，需配独立测试后再合入。
+- 插件侧 `looksVerifiable` 是**乐观预检**（只挡最明显的不可验证引用），权威判定在 core `_reference_verifiable`；不一致时表现为多花一次 spawn 后拿到 core 的错误，不会误放行。
 - Git Bash 的 `$HOME` 与 PowerShell `$HOME` 指向同一目录（`C:\Users\allen_`），两条安装路径互不冲突。

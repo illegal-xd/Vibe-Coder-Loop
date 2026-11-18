@@ -44,6 +44,11 @@ import { fileURLToPath } from "node:url";
 
 import { tool } from "@opencode-ai/plugin";
 
+// Single source for inspection-only command detection: shares the exact
+// read-only shell/git list (and chain parsing) with Supersede Writes, so the
+// two layers cannot drift (e.g. `git branch -d` is not inspection-only).
+import { isReadOnlyShellCommand } from "../context-dedup/supersede-writes.js";
+
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PENDING_TTL_MS = 30 * 60 * 1000;
 const CLI_TIMEOUT_MS = 10000;
@@ -137,15 +142,14 @@ function debugWarn(message, detail) {
 }
 
 /**
- * Python launcher candidates. `VIBE_KERNEL_PYTHON` wins; otherwise the
- * platform defaults. Windows normally has no `python3` executable (only the
- * `python` / `py` launchers; the Microsoft Store `python3.exe` alias stub
- * exits 9009 instead of running Python), so a hard-coded `python3` makes every
- * hook degrade on Windows even when Python is installed.
+ * Platform default python launcher candidates. Windows normally has no
+ * `python3` executable (only the `python` / `py` launchers; the Microsoft Store
+ * `python3.exe` alias stub exits 9009 instead of running Python), so a
+ * hard-coded `python3` makes every hook degrade on Windows even when Python is
+ * installed. `VIBE_KERNEL_PYTHON` is read per call in `spawnCli`, so an
+ * explicit override always wins over this list and over the probe cache.
  */
 function pythonCandidates() {
-  const explicit = (process.env.VIBE_KERNEL_PYTHON || "").trim();
-  if (explicit) return [explicit];
   return process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
 }
 const PYTHON_CANDIDATES = pythonCandidates();
@@ -206,7 +210,14 @@ function spawnOnce(python, modulePath, args) {
  */
 async function spawnCli(modulePath, args) {
   if (!RUNTIME_DIR) return null;
-  const candidates = pythonLauncher ? [pythonLauncher] : PYTHON_CANDIDATES;
+  // Re-read the override on every call: it must beat the probe cache (tests
+  // swap it, and a user can repair a broken launcher without a restart).
+  const explicit = (process.env.VIBE_KERNEL_PYTHON || "").trim();
+  const candidates = explicit
+    ? [explicit]
+    : pythonLauncher
+      ? [pythonLauncher]
+      : PYTHON_CANDIDATES;
   for (const python of candidates) {
     const result = await spawnOnce(python, modulePath, args);
     const storeStub =
@@ -215,7 +226,7 @@ async function spawnCli(modulePath, args) {
       result.code === WINDOWS_STORE_ALIAS_EXIT &&
       String(result.out).trim() === "";
     if (result !== null && !storeStub) {
-      if (!pythonLauncher) {
+      if (!explicit && !pythonLauncher) {
         pythonLauncher = python;
         debugWarn(`python launcher resolved: ${python}`);
       }
@@ -356,38 +367,11 @@ function extractErrors(output) {
 
 // Inspection-only commands print DATA; a line that says "Error:" in a log file
 // is content, not a failed execution. Only a host exit status may flag failure.
-const READ_ONLY_COMMANDS = new Set([
-  "cat", "bat", "head", "tail", "less", "more", "grep", "rg", "ag", "ls", "find",
-  "tree", "wc", "stat", "file", "jq", "diff", "sort", "uniq", "cut", "du", "df",
-  "pwd", "which", "type", "echo", "printf",
-]);
-const READ_ONLY_GIT = new Set([
-  "log", "show", "diff", "status", "blame", "branch", "rev-parse", "ls-files",
-  "describe", "remote",
-]);
-
+// The predicate (and its read-only shell/git list) is shared with Supersede
+// Writes so both layers classify a command the same way.
 function isInspectionCommand(args) {
   const cmd = typeof args === "string" ? args : args?.command;
-  if (typeof cmd !== "string" || cmd.trim() === "") return false;
-  const tokens = cmd.trim().split(/\s+/);
-  let i = 0;
-  while (i < tokens.length) {
-    // skip env prefixes (FOO=1) and `cd <dir> &&` prologues
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
-      i += 1;
-      continue;
-    }
-    if (tokens[i] === "cd" && tokens[i + 1] && tokens[i + 2] === "&&") {
-      i += 3;
-      continue;
-    }
-    break;
-  }
-  let head = tokens[i] || "";
-  if (head.includes("/")) head = head.slice(head.lastIndexOf("/") + 1);
-  if (READ_ONLY_COMMANDS.has(head)) return true;
-  if (head === "git") return READ_ONLY_GIT.has(tokens[i + 1] || "");
-  return false;
+  return isReadOnlyShellCommand(cmd);
 }
 
 function extractFilesModified(tool, args) {
@@ -420,7 +404,15 @@ function buildExecResult(hookInput, hookOutput) {
   const exitCode =
     metaExit ?? (inspection ? null : extractExitCode(output)) ?? 0;
   const errors = inspection ? [] : extractErrors(output);
-  const failed = (exitCode !== 0 && !inspection) || errors.length > 0;
+  // When the host reports a real exit status it is authoritative: an exit 0
+  // means the command succeeded even if its output echoes failure-looking text
+  // (`error:` log lines, "Failed to ... using default"). Letting the text veto
+  // a clean exit produced false failure fingerprints, and two identical ones
+  // pushed the session into S14 Safe Mode.
+  const exitFromHost = metaExit !== null;
+  const failed = exitFromHost
+    ? exitCode !== 0 && !inspection
+    : (exitCode !== 0 && !inspection) || errors.length > 0;
   return {
     exec_id: `hook:${hookInput?.callID || Date.now()}`,
     ok: !failed,
@@ -436,13 +428,18 @@ function buildExecResult(hookInput, hookOutput) {
  *  relative path (`a/b`) or a file suffix. Absolute paths are rejected by core. */
 const REF_SUFFIX_RE = /\.[A-Za-z0-9]{1,8}$/;
 const REF_STEP_RE = /^(?:step\s+\d+|s\d{1,2})$/i;
+// POSIX `/abs` and Windows `D:\abs` / `D:/abs` / `\\server\share` all fail
+// core's `Path.is_absolute()` gate; catching them here keeps the pre-check
+// honest instead of spending a spawn on a request core will reject.
+const REF_ABSOLUTE_RE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
 
 function looksVerifiable(item) {
   const text = String(item || "").trim();
   if (!text) return false;
   if (/^(?:path|user|sym|fn):/i.test(text)) return true;
   if (REF_STEP_RE.test(text)) return true;
-  if (text.includes("/") || REF_SUFFIX_RE.test(text)) return !text.startsWith("/");
+  if (REF_ABSOLUTE_RE.test(text)) return false;
+  if (text.includes("/") || text.includes("\\") || REF_SUFFIX_RE.test(text)) return true;
   return false;
 }
 
@@ -460,6 +457,33 @@ function normalizeChecklist(raw) {
   if (!stage || checks.length === 0 || refs.length === 0) return null;
   if (!refs.some(looksVerifiable)) return null;
   return { stage, referenced_outputs: refs, checked_items: checks };
+}
+
+/**
+ * Host tool contract (`@opencode-ai/plugin`): `string | { title?, output:
+ * string, metadata? }`. Returning a bare record leaves `output` undefined and
+ * the host crashes rendering it (`undefined.split(...)`), so every custom tool
+ * result is wrapped here. The record itself stays available as `metadata`.
+ */
+function toolResult(record) {
+  const rec =
+    record && typeof record === "object" && !Array.isArray(record)
+      ? record
+      : { ok: false, code: "BRIDGE_CLI_UNAVAILABLE" };
+  return {
+    title: toolTitle(rec),
+    output: JSON.stringify(rec, null, 2),
+    metadata: rec,
+  };
+}
+
+function toolTitle(rec) {
+  if (typeof rec.from === "string" && typeof rec.to === "string") {
+    return `vibe ${rec.from}→${rec.to}`;
+  }
+  if (typeof rec.phase === "string") return `vibe ${rec.phase}`;
+  if (typeof rec.code === "string") return `vibe ${rec.code}`;
+  return "vibe state";
 }
 
 export const VibeBridgePlugin = async (input) => {
@@ -649,7 +673,7 @@ export const VibeBridgePlugin = async (input) => {
             checked_items: args.checked_items,
           });
           if (!checklist) {
-            return JSON.stringify({
+            return toolResult({
               ok: false,
               code: "CHECKLIST_INVALID",
               next: "exit_checklist 需 stage 码 + 非空 checked_items + 非空 referenced_outputs（至少一项可机械验证的引用）；补齐后再调",
@@ -660,13 +684,13 @@ export const VibeBridgePlugin = async (input) => {
           if (args.reason) argv.push("--reason", args.reason);
           const rec = await core(argv);
           if (!rec) {
-            return JSON.stringify({
+            return toolResult({
               ok: false,
               code: "BRIDGE_CLI_UNAVAILABLE",
-              next: "检查 python3 与 VIBE_KERNEL_HOME；本请求按 Phase 0（LLM 手动驱动）继续",
+              next: "检查 Python 启动器（Windows: python / py）与 VIBE_KERNEL_HOME；本请求按 Phase 0（LLM 手动驱动）继续",
             });
           }
-          return JSON.stringify(rec);
+          return toolResult(rec);
         },
       }),
       vc_state: tool({
@@ -675,9 +699,13 @@ export const VibeBridgePlugin = async (input) => {
         async execute(_args, _ctx) {
           const rec = await core(["get-state", "--cwd", cwd]);
           if (!rec) {
-            return JSON.stringify({ ok: false, code: "BRIDGE_CLI_UNAVAILABLE", next: "检查 python3 / VIBE_KERNEL_HOME" });
+            return toolResult({
+              ok: false,
+              code: "BRIDGE_CLI_UNAVAILABLE",
+              next: "检查 Python 启动器（Windows: python/py）与 VIBE_KERNEL_HOME",
+            });
           }
-          return JSON.stringify(rec);
+          return toolResult(rec);
         },
       }),
     },

@@ -37,6 +37,7 @@
  */
 
 import {
+  DEFAULT_BARRIER_EXEMPT_TOOLS,
   DEFAULT_READ_ONLY_TOOLS,
   DEFAULT_WRITE_TOOLS,
   PRUNE_MARKER,
@@ -65,6 +66,101 @@ export { DEFAULT_WRITE_TOOLS };
 
 /** Tools that can return a file's full current content. grep/glob are partial. */
 export const DEFAULT_SUPERSEDE_READ_TOOLS = Object.freeze(["read"]);
+
+// Core owns this list (Read Window Collapse needs it too); re-exported here
+// because config.js and callers have always imported it from this module.
+export { DEFAULT_BARRIER_EXEMPT_TOOLS };
+
+/** Shell heads that only print data. `cd`/`echo`/`test` never write files. */
+const READ_ONLY_SHELL_HEADS = new Set([
+  "cat", "bat", "head", "tail", "less", "more", "grep", "rg", "ag", "ls", "find",
+  "tree", "wc", "stat", "file", "jq", "diff", "sort", "uniq", "cut", "du", "df",
+  "pwd", "which", "type", "echo", "printf", "cd", "true", "test", "[",
+]);
+
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "log", "show", "diff", "status", "blame", "rev-parse", "ls-files",
+  "describe", "grep", "cat-file",
+]);
+
+/** Flags that turn an otherwise read-only head into a writer. */
+const WRITE_FLAGS_BY_HEAD = Object.freeze({
+  find: ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"],
+  sort: ["-o", "--output"],
+  tree: ["-o", "--output"],
+  file: ["-C", "--compile"],
+});
+
+/** Command/process substitution and background jobs can hide any command. */
+const SHELL_INJECTION_RE = /\$\(|`|<(?=\()|>(?=\()|\s&\s|&$/;
+
+const SHELL_SEGMENT_RE = /\|\||&&|[;&|\n]/;
+
+function hasWriteFlag(head, tokens, startIndex) {
+  const flags = WRITE_FLAGS_BY_HEAD[head];
+  if (!flags) return false;
+  for (let index = startIndex; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    for (const flag of flags) {
+      if (token === flag) return true;
+      if (token.startsWith(`${flag}=`)) return true;
+      // Short flags may be clustered (`-oFILE`, `-roFILE`).
+      if (flag.length === 2 && token.startsWith(flag) && token.length > flag.length) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True only when the whole command is a chain of inspection calls with no file
+ * redirection. A single unknown segment (or a `>` write) keeps the call a
+ * barrier, so this can only make the rule less strict for provably read-only
+ * commands.
+ */
+export function isReadOnlyShellCommand(command) {
+  if (typeof command !== "string" || command.trim().length === 0) return false;
+  // Command substitution, process substitution and background jobs can run any
+  // command anywhere in the line, so bail out before splitting.
+  if (SHELL_INJECTION_RE.test(command)) return false;
+  // fd duplication (2>&1) and discarding to /dev/null are not file writes.
+  const normalized = command
+    .replace(/\d?>&\d/g, " ")
+    .replace(/\d?>\s*\/dev\/null/g, " ");
+  const segments = normalized.split(SHELL_SEGMENT_RE);
+  let sawCommand = false;
+  for (const rawSegment of segments) {
+    const segment = rawSegment.trim();
+    if (!segment) continue;
+    if (segment.includes(">")) return false;
+    const tokens = segment.split(/\s+/);
+    let index = 0;
+    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) {
+      index += 1;
+    }
+    let head = tokens[index] || "";
+    if (head.includes("/")) head = head.slice(head.lastIndexOf("/") + 1);
+    if (head.length === 0) return false;
+    // A write flag anywhere in the segment disqualifies the whole command.
+    if (hasWriteFlag(head, tokens, index + 1)) return false;
+    if (tokens.some((token) => token.startsWith("--output"))) return false;
+    if (head === "git") {
+      const sub = tokens[index + 1] || "";
+      if (!READ_ONLY_GIT_SUBCOMMANDS.has(sub)) return false;
+      sawCommand = true;
+      continue;
+    }
+    if (head === "uniq") {
+      // `uniq in out` writes `out`; two positional arguments are a write.
+      const positional = tokens.slice(index + 1).filter((token) => !token.startsWith("-"));
+      if (positional.length >= 2) return false;
+    }
+    if (!READ_ONLY_SHELL_HEADS.has(head)) return false;
+    sawCommand = true;
+  }
+  return sawCommand;
+}
 
 /**
  * Argument keys that carry the bulk write payload. These are the fields that
@@ -103,6 +199,46 @@ const TRUNCATION_HINTS = [
   "… show more",
 ];
 
+/** The runtime's own end-of-file notice, emitted only when the read reached EOF. */
+const EOF_NOTICE_RE = /\(End of file - total (\d+) lines\)\s*$/;
+
+/** One runtime metadata line (`<path>`, `<type>`, `<file>`, `<content>`). */
+const HEADER_LINE_RE = /\s*<(?:path|type|file|content)\b[^>]*>[^\n]*(?:\n|$)/iy;
+
+function isSpaceCode(code) {
+  return code === 32 || code === 10 || code === 13 || code === 9;
+}
+
+/**
+ * Content lines that precede an end-of-file notice.
+ *
+ * The runtime prefixes its structured metadata lines (`<path>`, `<type>`, ...);
+ * they are dropped so the count can be compared with the notice's own total.
+ * Counting (rather than trusting the notice alone) is what stops a truncated
+ * read — or a file whose last line merely looks like the notice — from being
+ * accepted as complete. Written index-first: the check runs on every read, so
+ * it must not copy the output.
+ */
+function contentLineCount(output, noticeIndex) {
+  let start = 0;
+  for (let guard = 0; guard < 4; guard += 1) {
+    HEADER_LINE_RE.lastIndex = start;
+    const match = HEADER_LINE_RE.exec(output);
+    if (!match || match.index !== start || match[0].length === 0) break;
+    start = HEADER_LINE_RE.lastIndex;
+    if (start >= noticeIndex) return 0;
+  }
+  let end = noticeIndex;
+  while (end > start && isSpaceCode(output.charCodeAt(end - 1))) end -= 1;
+  if (end <= start) return 0;
+  let count = 1;
+  for (let index = output.indexOf("\n", start); index !== -1 && index < end; ) {
+    count += 1;
+    index = output.indexOf("\n", index + 1);
+  }
+  return count;
+}
+
 function asStringSet(list) {
   const set = new Set();
   if (Array.isArray(list)) {
@@ -118,6 +254,22 @@ function normalizeOptions(config = {}) {
   const writeTools = asStringSet(config.writeTools ?? DEFAULT_WRITE_TOOLS);
   const readTools = asStringSet(config.readTools ?? DEFAULT_SUPERSEDE_READ_TOOLS);
   const readOnlyTools = asStringSet(config.readOnlyTools ?? DEFAULT_READ_ONLY_TOOLS);
+  const barrierExemptTools = asStringSet(
+    config.barrierExemptTools ?? DEFAULT_BARRIER_EXEMPT_TOOLS,
+  );
+  // Parts the adapter could not address (repeated call id) still count as
+  // potential mutations, unless they are a configured read-only tool.
+  const extraBarrierOrders = Array.isArray(config.extraBarrierOrders)
+    ? config.extraBarrierOrders
+        .filter(
+          (item) =>
+            item &&
+            Number.isFinite(item.order) &&
+            !readTools.has(item.tool) &&
+            !readOnlyTools.has(item.tool),
+        )
+        .map((item) => item.order)
+    : [];
   const protectedTools = Array.isArray(config.protectedTools)
     ? config.protectedTools.filter((tool) => typeof tool === "string" && tool.trim().length > 0)
     : [];
@@ -132,13 +284,19 @@ function normalizeOptions(config = {}) {
     writeTools,
     readTools,
     readOnlyTools,
+    barrierExemptTools,
+    barrierExemptShellCommands: config.barrierExemptShellCommands !== false,
     preserveAcrossUserTurns: config.preserveAcrossUserTurns === true,
     barrierOnBroadMutations: config.barrierOnBroadMutations !== false,
     protectReferences: config.protectReferences !== false,
     requireFullRead: config.requireFullRead !== false,
-    allowOrderFallback: config.allowOrderFallback === true,
+    // Emission order is the fallback when the host omits timestamps. Default
+    // on: hosts that report no `time.end`/`time.start` would otherwise make
+    // this strategy unreachable; set false to require real happens-before.
+    allowOrderFallback: config.allowOrderFallback !== false,
     protectedTools,
     protectedFilePatterns,
+    extraBarrierOrders,
   };
 }
 
@@ -160,6 +318,20 @@ export function createSupersedeWritesStats() {
     ambiguousWriteCount: 0,
     ambiguousResultCount: 0,
     confirmedWriteCount: 0,
+    // Evidence gaps that keep the strategy at zero on real hosts. They are the
+    // first thing to check when `fileMatchCount > 0` but nothing is pruned.
+    missingWriteEndCount: 0,
+    missingReadStartCount: 0,
+    readMissingEofProofCount: 0,
+    orderFallbackCount: 0,
+    // `allowOrderFallback` is off but the records had everything needed for it.
+    // A non-zero value with `missingWriteEndCount`/`missingReadStartCount` > 0
+    // means the host omits timestamps; if the fallback is also disabled, it is
+    // the only way to make this strategy reachable on that host.
+    orderFallbackAvailableCount: 0,
+    // Internal: writes already counted, so one write paired with several reads
+    // is not double counted.
+    _orderFallbackSeen: null,
     eligibleCount: 0,
     candidateCount: 0,
     fileMatchCount: 0,
@@ -317,7 +489,10 @@ function readLineRange(metadata) {
  * evidence, in this order:
  *   1. `metadata.truncated === false` for a read that started at line 1;
  *   2. `metadata.display` range covering `[1, totalLines]`;
- *   3. legacy records that carry neither offset nor limit.
+ *   3. the runtime's own end-of-file notice for a read that started at line 1,
+ *      accepted only when the reported total fits inside the read's `limit`
+ *      (a capped read must never be read as complete);
+ *   4. legacy records that carry neither offset nor limit.
  * Anything weaker is treated as incomplete and never supersedes a write.
  */
 function inspectRead(record, options) {
@@ -361,6 +536,12 @@ function inspectRead(record, options) {
     }
   }
 
+  // A read that returned no content — only the runtime's header lines — proves
+  // nothing about the file, so it can never stand in for a write's payload.
+  if (typeof output !== "string" || contentLineCount(output, output.length) === 0) {
+    return { full: false, reason: "read_unverified" };
+  }
+
   // Proof 1: the runtime explicitly reports that the read was not truncated.
   // Combined with the offset <= 1 check above, the read covered the whole file
   // even though the runtime also stamped a `limit`.
@@ -376,11 +557,40 @@ function inspectRead(record, options) {
     return { full: false, reason: "read_partial_range" };
   }
 
+  const startsAtBeginning =
+    rawOffset === undefined || rawOffset === null || Number(rawOffset) <= 1;
+
+  // Proof 3: the runtime's end-of-file notice. It is only trusted for a read
+  // that started at line 1, when the text actually returned agrees with the
+  // claimed total, and when that total fits inside the read's own `limit`.
+  if (startsAtBeginning && typeof output === "string") {
+    const notice = output.trimEnd().match(EOF_NOTICE_RE);
+    if (notice) {
+      const totalLines = Number(notice[1]);
+      const linesRead = contentLineCount(output, notice.index);
+      // The notice must describe exactly the text that was returned. A strict
+      // count matters: a tolerance window is itself forgeable by content that
+      // ends with a look-alike notice one line early.
+      if (
+        !Number.isFinite(totalLines) ||
+        totalLines <= 0 ||
+        linesRead === 0 ||
+        linesRead !== totalLines
+      ) {
+        return { full: false, reason: "read_unverified" };
+      }
+      const cap =
+        limit === undefined || limit === null ? Number.POSITIVE_INFINITY : Number(limit);
+      if (totalLines <= cap) {
+        return { full: true, reason: "" };
+      }
+      return { full: false, reason: "read_limited" };
+    }
+  }
+
   // Legacy fallback: no explicit slice. Offset 0/1 is the beginning of the
   // file; a bare `limit` without EOF proof stays conservative because it may
   // be a real cap.
-  const startsAtBeginning =
-    rawOffset === undefined || rawOffset === null || Number(rawOffset) <= 1;
   if (startsAtBeginning && (limit === undefined || limit === null)) {
     return { full: true, reason: "" };
   }
@@ -436,11 +646,28 @@ function buildBarrierTimeline(records, options) {
       else if (collectBarriers) barrierOrders.push(record.order);
       continue;
     }
+    // Inspection-only calls cannot change the file the read is about. Without
+    // this, a single `todowrite` or `cat` between the write and its verifying
+    // read disabled the whole strategy for that file. Applied after the write
+    // branch so a misconfigured exemption can never hide a real write.
+    if (options.barrierExemptTools.has(record.tool)) continue;
+    if (
+      options.barrierExemptShellCommands &&
+      record.tool === "bash" &&
+      isReadOnlyShellCommand(record.args?.command)
+    ) {
+      continue;
+    }
     // Any other tool may modify the file; fail safe.
     if (collectBarriers) barrierOrders.push(record.order);
   }
 
-  if (collectBarriers) barrierOrders.sort((left, right) => left - right);
+  if (collectBarriers) {
+    for (const order of options.extraBarrierOrders ?? []) {
+      barrierOrders.push(order);
+    }
+    barrierOrders.sort((left, right) => left - right);
+  }
   return { barrierOrders, confirmedWrites, identityByOrder, invalidRecord };
 }
 
@@ -536,6 +763,7 @@ export function planSupersedeWrites(records, config = {}) {
         continue;
       }
       stats.confirmedWriteCount += 1;
+      if (timeEnd(record) === null) stats.missingWriteEndCount += 1;
       const protectReason = protectedReason(record, options);
       if (protectReason) {
         increment(stats.skippedReasons, protectReason);
@@ -569,7 +797,13 @@ export function planSupersedeWrites(records, config = {}) {
       const identity = fileIdentityOf(record);
       if (!inspection.full) {
         stats.ambiguousResultCount += 1;
-        increment(stats.readRejectedReasons, inspection.reason || "read_incomplete");
+        const reason = inspection.reason || "read_incomplete";
+        // "No EOF proof" (not a definite partial read) is the common gap on
+        // hosts that do not stamp `truncated`/`display`; surface it by name.
+        if (reason === "read_limited" || reason === "read_unverified") {
+          stats.readMissingEofProofCount += 1;
+        }
+        increment(stats.readRejectedReasons, reason);
         // A rejected read still proves the file was inspected; classify it for
         // the per-write diagnostics only when it was a confirmed success.
         if (identity && isReadCandidate(record, options)) {
@@ -584,6 +818,7 @@ export function planSupersedeWrites(records, config = {}) {
       }
       stats.confirmedReadCount += 1;
       stats.fullReadCount += 1;
+      if (timeStart(record) === null) stats.missingReadStartCount += 1;
       if (!identity) {
         increment(stats.skippedReasons, "read_unresolved_path");
         continue;
@@ -599,9 +834,10 @@ export function planSupersedeWrites(records, config = {}) {
     }
   }
 
-  // Eligible = confirmed writes with a resolvable canonical file identity.
-  // Candidate = eligible write whose file identity also has an accepted full
-  // read (the version relation is checked later, per read).
+  // Funnel note: `candidateCount` is the *eligible* count (every confirmed
+  // write with a resolvable identity, matching docs/context-dedup.md);
+  // `fileMatchCount` is the narrower "has an accepted full read" step, and
+  // `prunableCount` mirrors it for readers that expect the v2 name.
   stats.candidateCount = 0;
   for (const [identity, list] of writesByFile.entries()) {
     stats.candidateCount += list.length;
@@ -685,10 +921,34 @@ export function planSupersedeWrites(records, config = {}) {
         for (const candidate of pendingWrites) {
           if (candidate.decided) continue;
           if (candidate.order >= read.order) continue; // write after read: retained (Case C)
+          // `readCoversWrite` falls back to emission order only when timings are
+          // missing; record that the decision rests on weaker evidence.
+          const usedOrderFallback =
+            options.allowOrderFallback &&
+            (timeEnd(candidate.record) === null || timeStart(read.record) === null);
           if (!readCoversWrite(candidate.record, read.record, options)) {
             if (!candidate.blockedReason) candidate.blockedReason = "read_not_after_write";
+            // Diagnostic only: the missing evidence is a timestamp, and the
+            // emission order would still prove happens-before.
+            if (
+              !options.allowOrderFallback &&
+              (timeEnd(candidate.record) === null || timeStart(read.record) === null) &&
+              Number.isFinite(candidate.order) &&
+              Number.isFinite(read.order) &&
+              read.order > candidate.order
+            ) {
+              // One write may pair with several reads; count the write once.
+              if (!(stats._orderFallbackSeen instanceof Set)) {
+                stats._orderFallbackSeen = new Set();
+              }
+              if (!stats._orderFallbackSeen.has(candidate.record.id)) {
+                stats._orderFallbackSeen.add(candidate.record.id);
+                stats.orderFallbackAvailableCount += 1;
+              }
+            }
             continue;
           }
+          if (usedOrderFallback) stats.orderFallbackCount += 1;
           if (options.preserveAcrossUserTurns && candidate.userSegment !== read.userSegment) {
             if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
             continue;

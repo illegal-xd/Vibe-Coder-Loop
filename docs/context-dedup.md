@@ -71,7 +71,7 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 候选必须同时满足：
 
 1. ToolPart 有非空 `callID` / `tool`；
-2. 工具名在 `deduplication.tools` 白名单（默认 `read` / `grep` / `glob` / `bash`）；
+2. 工具名在 `deduplication.tools` 白名单（默认 `read` / `grep` / `glob`；`bash` 需显式加入）；
 3. `state.status === "completed"`；
 4. `state.output` 非空且不是占位文本；
 5. shell 调用（默认 `bash`）的 `metadata` 不含失败信号（非零 `exit` 等），失败输出属于 Error Purge；
@@ -84,6 +84,17 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 - 估算旧输出 token 不大于占位符 → 不裁剪。
 
 > **为什么不再有“中间工具屏障”（v2）**：进入同一组的记录输出**逐字节相同**，说明可观察结果没有变化；中间调用（`todowrite`、`bash`、`edit` 等）不可能让更早的副本重新变得有信息量。旧 callID 被引用的情况由上面的引用守卫单独覆盖。v1 的 `barrierOnNonWhitelistedTools` 因此移除；实测它拦掉了 64 对完全重复输出（约 40 万字符）且不提供额外安全性。
+
+### 3.2 同文件窗口化读取的区间归并（`collapseReadWindows`）
+
+OpenCode 的 `read` 在长文件上会带 `offset`/`limit`，同一文件被分多次读取时签名不同，逐字节规则无法命中（只记 `same_target_args_changed`）。新增一条保守规则：
+
+1. 仅 `read`，且能确定目标文件与行区间；无 `limit` 时只接受运行时自带的 `(End of file - total N lines)` 作为“读到末尾”的证据，否则不参与；
+2. 后一次读取的区间**严格覆盖**前一次（起点不更晚、终点不更早，且区间不完全相同）；
+3. 两次读取之间没有会修改文件的调用执行：`read`/`grep`/`glob` 与屏障豁免工具（`todowrite`/`question`/`webfetch`/`websearch`/`list`）可直接穿过；其余调用（含 `bash`、写工具）文件可能已变，不做跨版本归并；
+4. 估算被裁输出 token 大于占位符。
+
+命中后裁剪较早的分片、保留覆盖更大的后一次；`skippedReasons.read_window_subsumed` 与 `readWindowCollapseCount` 观测命中，重复目标聚合到 `repeatedTargets`（Top 5）。
 
 ## 四、Error Purge 规则
 
@@ -99,11 +110,13 @@ ToolStateCompleted: { status: "completed", input, output, title, metadata, time 
 
 以下情况**不是**确认错误，默认保留：
 
-- `status === "completed"`，即使 `output` 含 `error` / `failed` / `warning`；
+- `status === "completed"`，即使 `output` 含 `error` / `failed` / `warning`——**例外**：shell 工具的构建/测试/脚本类命令在缺少结构化退出码时，命中 `DEFAULT_SHELL_FAILURE_PATTERNS` 的硬失败文本按 `shellFailureDetection` 处理（默认 `error` 即确认失败；`cat`/`grep`/`git log` 等纯查看命令不参与文本判定）；
 - `status === "error"` 但 `error` 为空或缺失；
 - `status === "pending"` / `"running"` / 未知；
 - 取消/中止标记（`metadata.cancelled/canceled/aborted`），即使退出码非零；
 - `shellExitReliable: false`（可选回退）时的 shell 记录：`completed` + 空 `error` 不能证明成功，计入 `unverifiedShellCount`，不会被用作 superseder。
+
+**成功判定的两条证据强度**（`isConfirmedSuccess`）：硬失败信号（非零退出码、`failed:true`、超时、取消/中止、`metadata.status` 为 `error`/`failed`）永远优先；仅 `metadata.error` / `metadata.exception` 这类诊断文本时，若调用同时带显式成功标记（`ok:true` / `success:true`），该调用仍算成功——某些宿主会把 stderr 或警告文本挂在成功的调用上。只有诊断文本而无成功标记的记录保持歧义、不裁剪。
 
 其余无法归类的记录计入 `ambiguousResultCount`，不会被用作 superseder。
 
@@ -124,8 +137,8 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 一个确认错误被裁剪，必须同时满足：
 
 1. 存在**更晚**的同一签名记录，且 `status === "completed"`、无结构化失败 metadata、不是 `unverified_shell`（见 4.8）；
-2. 默认要求错误与成功在**同一 user turn**（`userSegment` 相同）；跨用户轮次默认保留（重复相同失败规则见 4.4，不受此限制）；
-3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障；
+2. 允许**跨 user turn**（默认）；设 `preserveAcrossUserTurns: true` 恢复“同一 user turn（`userSegment` 相同）才裁剪”的严格限制（重复相同失败规则见 4.4，不受此限制）；
+3. 默认要求两者之间没有**状态变更工具**；只读白名单工具（由 `tools` 提供）可直接穿过；同一签名的重试不视为屏障（含 exit 状态不可证的 `ambiguous` / `unverified_shell` 记录，它们只作屏障候选、不参与减法以外的任何判定）；
 4. 错误 callID 在后续上下文中**未被引用**；
 5. error 文本或失败调用的输入载荷至少有一项带来正收益（error 文本小于占位符时保留原文，只裁剪输入）；
 6. 满足 `minSuccesses`（默认 1；设为 2 可要求连续两次成功）。
@@ -196,15 +209,15 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 3. **文本识别仍保留为补充**：仅用于没有结构化退出码的宿主。
 
 ```json
-{ "errorPurge": { "shellExitReliable": true, "shellFailureDetection": "ambiguous" } }
+{ "errorPurge": { "shellExitReliable": true, "shellFailureDetection": "error" } }
 ```
 
 - `shellExitReliable`：默认 `true`。设为 `false` 时退回 v1 行为（`completed` shell 既不是成功也不是失败，计入 `unverifiedShellCount`），仅用于会掩盖失败退出码的宿主。
-- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `ambiguous`，只在缺少结构化退出码时补充判断。
+- `shellFailureDetection`：`off` | `ambiguous` | `error`，默认 `error`，只在缺少结构化退出码时补充判断。
   - `off`：忽略输出文本；
   - `ambiguous`：命中硬失败文本的 shell 记录归为歧义（保留、不作 superseder，计入 `shellFailureCount`）；
-  - `error`：命中时作为确认错误候选，仍需满足 4.3 的全部守卫。
-- 识别只作用于 `bash`（`SHELL_TOOLS`）；`read`/`write` 等结构化工具不按文本猜测失败。
+  - `error`：命中时作为确认错误候选，仍需满足 4.3 的全部守卫（旧默认；配置类错误会逃逸 Error Purge，故改为默认）。
+- 识别只作用于 `bash`（`SHELL_TOOLS`），且**排除纯查看命令**（`cat`/`grep`/`git log`/`ls` 等，复用 `isReadOnlyShellCommand`）：日志内容里的 `Error:` 是数据，不是执行结论；`read`/`write` 等结构化工具同样不按文本猜测失败。
 - `unverifiedShellCount` 与 `shellFailureCount` 分别统计“exit 不可信”和“shell 失败”的记录数，便于判断零裁剪原因。
 
 ## 四·五、Supersede Writes 规则
@@ -232,9 +245,12 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 6. **完整性的结构性证明**（按顺序取一个）：
    - 运行时显式报告未截断：`metadata.truncated === false`（OpenCode 的 `read` 工具对每个读取都会写入 `metadata.truncated`，是该运行时可靠的 EOF 信号）；或
    - `metadata.display` 给出 `{ lineStart, lineEnd, totalLines }` 且 `lineStart <= 1` 且 `lineEnd >= totalLines`；或
+   - 运行时自己的 EOF 提示：输出末尾出现 `(End of file - total N lines)`，读取从第 1 行开始，**正文行数与 `N` 严格相等**，且 `N` 不超过该次读取的 `limit`；任一不满足即拒绝（`read_unverified` / `read_limited`）。行数交叉校验用于挡住「被截断的读取」、「文件末行恰好就是这串字符」、「正文少一行但自报 N」三类伪证；只返回 `<path>`/`<type>` 头部行的读取不构成任何证明（`read_unverified`）。注意它仍是**文本证据**，`metadata.truncated === false` 才是唯一权威信号，二者同时缺失时该读取按不完整处理；或
    - **遗留形态**：既无 `offset` 也无 `limit`（无切片参数的读取）。
 
-> **运行时注意**：OpenCode 会把 `offset`（默认 1）与 `limit`（按剩余行数计算的上限）规范化进**每一次**读取的 `state.input`。因此**不能**仅凭 `state.input.limit` 出现就判定为片段读取——那会让全部读取被拒绝、Supersede Writes 贡献恒为 0。`limit` 只在缺少上述 EOF 证明时才作为保守拒绝依据（拒绝原因 `read_limited`）。被拒绝的读取原因记入 `stats.readRejectedReasons` 与 `skippedReasons`（`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` 等）。
+> **运行时注意**：OpenCode 会把 `offset`（默认 1）与 `limit`（按剩余行数计算的上限）规范化进**每一次**读取的 `state.input`。因此**不能**仅凭 `state.input.limit` 出现就判定为片段读取——那会让全部读取被拒绝、Supersede Writes 贡献恒为 0。`limit` 只在缺少上述 EOF 证明时才作为保守拒绝依据（拒绝原因 `read_limited`）。被拒绝的读取原因记入 `stats.readRejectedReasons` 与 `skippedReasons`（`read_truncated` / `read_partial_offset` / `read_partial_range` / `read_limited` / `read_invalid_candidate` 等）。**缺证明与确定片段分开计数**：只有 `read_limited` / `read_unverified`（缺 EOF 证明）才累加 `stats.readMissingEofProofCount`；`read_partial_offset` / `read_partial_range` / `read_truncated` 是确定片段。
+
+当 `fileMatchCount > 0` 但 `changed = 0` 时，先看四个证据缺口计数：`missingWriteEndCount`（写入缺完成时间）、`missingReadStartCount`（读取缺开始时间）、`readMissingEofProofCount`（读取缺 EOF 证明）、`orderFallbackCount`（靠消息顺序回退判定）。它们会以 `writes.missing_end_time` / `reads.missing_start_time` / `reads.missing_eof_proof` / `reads.order_fallback_used` 出现在 Token 用量记录中（仅在 > 0 时出现），避免宿主缺字段时被误读为"没有可优化内容"。
 
 行范围读取、分页、片段、截断、读取失败、仅元数据读取、来源不确定的读取**一律不触发**整文件覆盖。当前未实现区间级 Supersede，因此采用保守策略：部分读取不清理任何写上下文。
 
@@ -309,7 +325,9 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   - Supersede Writes 只改 `state.input` 的内容字段与 `state.output`，路径与其余输入字段保持原值；
   - 三条策略都不改 `callID`、`tool`、`state.status`、`title`、`metadata`、`time`、`attachments`。
 - **应用后校验**：逐消息、逐 part 检查数量、`info.id`、`callID`、`tool`、`status`、未目标字段；任何不一致 → 返回原始消息数组，统计 `apply_validation_failed`。
-- **结构异常 fail-closed**：消息缺少 `info`/`parts`、info.id/role 不合法、ToolPart 缺少 `callID`/`state`、`callID` 重复 → 整体回退，不部分裁剪。
+- **结构异常 fail-closed**：消息缺少 `info`/`parts`、info.id/role 不合法、ToolPart 缺少 `callID`/`state` → 整体回退，不部分裁剪；`callID` 重复只跳过冲突的**那一个 part**（计入 `duplicate_call_id`，该 part 不可定位故不参与任何策略），其余记录继续处理——否则一条畸形 part 会让整段会话的三条策略同时失效。
+- **不可定位 part 的屏障语义**：被跳过的重复 `callID` part 保留其 `order` 作为屏障（只读工具除外），因此 Error Purge 不会跨过它清理错误、Supersede Writes 也不会跨过它清理写入；它不参与任何决策目标选择。
+- **应用后校验的目标口径**：只有 `locations` 记录的 `(messageIndex, partIndex)` 才是决策目标；仅重复同一 `callID` 的 part 未被改动属预期，不再报 `target_not_cloned`。
 - **数组替换失败回滚**：插件先备份原数组，再就地替换；若运行时不接受或抛错，恢复原内容并记录 `apply_array_mutation_failed`。
 - **幂等**：三种占位文本都以 `[vibe-context-dedup]` 开头，二次执行直接跳过。
 
@@ -326,12 +344,14 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
   "tools": ["read", "grep", "glob"],
   "placeholder": "[vibe-context-dedup] Duplicate tool result omitted; an identical newer result is retained later in the conversation.",
   "protectCallIdReferences": true,
+  "referenceProtection": "any",
   "mutationTools": ["bash", "edit", "write", "patch", "multiedit", "apply_patch", "task", "skill", "webfetch", "websearch", "todowrite", "question"],
   "protectedTools": [],
   "protectedFilePatterns": [],
   "deduplication": {
     "enabled": true,
-    "tools": ["read", "grep", "glob", "bash"]
+    "tools": ["read", "grep", "glob"],
+    "collapseReadWindows": true
   },
   "errorPurge": {
     "enabled": true,
@@ -342,14 +362,14 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "staleInputPlaceholder": "[vibe-context-dedup] Failed call input omitted: the failure is older than the retention window. The failure status and error message are retained.",
     "redactInputPayload": true,
     "staleInputAfterTurns": 4,
-    "preserveAcrossUserTurns": true,
+    "preserveAcrossUserTurns": false,
     "preserveRepeatedFailuresAcrossUserTurns": false,
     "preserveOnStateChanges": true,
     "pruneRepeatedFailures": true,
     "protectReferences": true,
     "minSuccesses": 1,
     "shellExitReliable": true,
-    "shellFailureDetection": "ambiguous"
+    "shellFailureDetection": "error"
   },
   "supersedeWrites": {
     "enabled": true,
@@ -357,10 +377,13 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
     "placeholder": "[vibe-context-dedup] Write context omitted: a later full read of the same file superseded it. The write's success status and file path are retained.",
     "writeTools": ["write", "edit", "multiedit", "patch", "apply_patch"],
     "readTools": ["read"],
+    "barrierExemptTools": ["todowrite", "question", "webfetch", "websearch", "list"],
+    "barrierExemptShellCommands": true,
     "preserveAcrossUserTurns": false,
     "barrierOnBroadMutations": true,
     "protectReferences": true,
-    "requireFullRead": true
+    "requireFullRead": true,
+    "allowOrderFallback": true
   },
   "slimEdit": {
     "enabled": true,
@@ -388,8 +411,10 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `preview` | 全局观察模式；Dedup 直接使用，其余策略默认继承 | `false` |
 | `tools` | 只读工具集合，供 Error Purge / Supersede 判定“非变更工具” | `["read","grep","glob"]` |
 | `placeholder` | Dedup 占位文本，必须以 `[vibe-context-dedup]` 开头，≤500 字符 | 见上 |
-| `deduplication.tools` | Dedup 白名单（含 `bash`；失败 shell 自动排除） | `["read","grep","glob","bash"]` |
+| `deduplication.tools` | Dedup 白名单（默认不含 `bash`：shell 输出几乎不会逐字节重复，白名单只会增加签名开销；需要时显式加入，失败 shell 仍自动排除） | `["read","grep","glob"]` |
+| `deduplication.collapseReadWindows` | 同一文件的窗口化读取：后一次读取的行区间**严格覆盖**前一次、且其间无写操作时，裁剪前一次；`read`/`grep`/`glob` 与 `barrierExemptTools` 可直接穿过（见 3.2） | `true` |
 | `protectCallIdReferences` | Dedup 引用守卫 | `true` |
+| `referenceProtection` | 引用守卫强度：`any` 保留任何后续提及（含散文、日志回显）；`strong` 只保留结构化引用（机器字段中的精确 id 值），散文提及仅计数不拦截。索引按 id 长度**降序**匹配，避免 `call_1` 吞掉 `call_10` 的引用 | `any` |
 | `mutationTools` | Error Purge 视为状态变更的工具集合 | 见上 |
 | `protectedTools` | 三条策略共用：工具名（支持 `*`/`?` glob）永不裁剪 | `[]` |
 | `protectedFilePatterns` | 三条策略共用：文件 glob 永不裁剪；匹配原始参数、cwd 绝对路径与项目相对路径 | `[]` |
@@ -402,27 +427,30 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | `errorPurge.staleInputPlaceholder` | 年龄规则命中时失败调用输入的占位文本（错误原文保留） | 见上 |
 | `errorPurge.redactInputPayload` | 命中规则时是否同时裁剪失败调用的大体积输入字符串 | `true` |
 | `errorPurge.staleInputAfterTurns` | 确认错误超过 N 个 assistant step 后只裁剪其输入（error 原文保留）；`null` 关闭；旧键 `staleInputAfterUserTurns` 仍作为别名接受 | `4` |
-| `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误（仅作用于“后续成功取代失败”规则） | `true` |
+| `errorPurge.preserveAcrossUserTurns` | 跨 user turn 时保留旧错误（仅作用于“后续成功取代失败”规则）。默认 `false`：跨轮“失败→修复→成功”是最常见路径，旧默认会让它永不修剪；置 `true` 恢复同轮严格限制 | `false` |
 | `errorPurge.preserveRepeatedFailuresAcrossUserTurns` | 重复相同失败的裁剪是否也受 user turn 限制；默认 `false`，因为保留的最新失败仍带相同正文与参数 | `false` |
 | `errorPurge.preserveOnStateChanges` | 失败与成功之间存在状态变更工具时保留 | `true` |
 | `errorPurge.pruneRepeatedFailures` | 允许裁剪更早的完全重复失败 | `true` |
 | `errorPurge.protectReferences` | 旧错误 callID 被后续引用时保留 | `true` |
 | `errorPurge.minSuccesses` | 需要多少个后续等价成功才 supersede | `1` |
 | `errorPurge.shellExitReliable` | 是否信任 `completed` shell 的 exit（非零即确认失败） | `true` |
-| `errorPurge.shellFailureDetection` | shell 输出硬失败识别：`off` / `ambiguous` / `error` | `ambiguous` |
+| `errorPurge.shellFailureDetection` | shell 输出硬失败识别：`off` / `ambiguous` / `error`；纯查看命令不参与文本判定 | `error` |
 | `supersedeWrites.enabled` | Supersede Writes 独立开关 | `true` |
 | `supersedeWrites.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `supersedeWrites.placeholder` | 写上下文被覆盖时的占位文本 | 见上 |
 | `supersedeWrites.writeTools` | 允许进入待覆盖状态的写工具 | `["write","edit","multiedit","patch","apply_patch"]` |
 | `supersedeWrites.readTools` | 能触发覆盖的完整读取工具 | `["read"]` |
+| `supersedeWrites.barrierExemptTools` | 确定不修改文件的工具，作为“写→读”之间的屏障豁免（`task`/`skill` 故意不在其中：子 agent 可能写文件）；传 `[]` 关闭豁免 | `["todowrite","question","webfetch","websearch","list"]` |
+| `supersedeWrites.barrierExemptShellCommands` | 纯查看型 shell 链（`cat`/`ls`/`git status`/`grep`…，含 `cd`/`echo`，无文件重定向）不算屏障 | `true` |
 | `supersedeWrites.preserveAcrossUserTurns` | 跨 user turn 时保留旧写上下文 | `false` |
 | `supersedeWrites.barrierOnBroadMutations` | 写与读之间出现任何非只读/非确认成功写入的记录时保留 | `true` |
 | `supersedeWrites.protectReferences` | 写 callID 被后续引用时保留 | `true` |
 | `supersedeWrites.requireFullRead` | 只允许完整读取触发覆盖（关闭后风险自负） | `true` |
+| `supersedeWrites.allowOrderFallback` | 运行时缺失 `write.time.end` / `read.time.start` 时改用消息顺序判断先后（证据更弱，命中数记入 `orderFallbackCount`）；设 `false` 要求真实 happens-before | `true` |
 | `slimEdit.enabled` | Slim Edit 总开关 | `true` |
 | `slimEdit.preview` | 观察模式；`null`/缺省继承顶层 `preview` | `null` |
 | `slimEdit.toolDescriptions` | 压缩内置工具描述 | `true` |
-| `slimEdit.compactRead` | 缩短 read 路径、去掉 type/footer | `true` |
+| `slimEdit.compactRead` | 缩短 read 路径、去掉 `<type>` 行；**保留 EOF footer**（Supersede Writes 的完整读取证据） | `true` |
 | `slimEdit.lineRangeEdit` | 允许 `oldString: "55-64"` 展开为真实行 | `true` |
 | `log.enabled` | 关闭日志 | `true` |
 | `log.onlyWhenActive` | 只在有候选/变更/错误时写日志 | `true` |
@@ -436,7 +464,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 | 变量 | 作用 |
 |---|---|
 | `VIBE_CONTEXT_DEDUP_DISABLED=1` | 插件总关闭（不读配置文件） |
-| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 顶层预览（所有策略默认继承） |
+| `VIBE_CONTEXT_DEDUP_PREVIEW=1` | 全局预览：**绝对覆盖**各策略的 `preview`（含配置文件里的显式 `false`），与 `VIBE_CONTEXT_DEDUP_DISABLED` 覆盖 `enabled` 同口径 |
 | `VIBE_CONTEXT_ERROR_PURGE_DISABLED=1` | 仅关闭 Error Purge |
 | `VIBE_CONTEXT_ERROR_PURGE_PREVIEW=1` | 仅 Error Purge 预览 |
 | `VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED=1` | 仅关闭 Supersede Writes |
@@ -472,7 +500,7 @@ Error Purge 复用 Dedup 的操作签名：**工具名 + 规范化参数 + cwd/r
 |---|---|---|
 | `record_scan` | 进入合格集之前的记录 | `unsupported_tool`、`not_completed`、`already_pruned`、`protected_tool` / `protected_path`、`missing_environment`、`missing_description` / `missing_args`、`duplicate_definition`、`directory`、`unparsed_output` |
 | `eligible` | 合格但未成为可裁剪候选 | Dedup：`unique_signature`、`same_signature_different_output`、`same_target_args_changed`；Error Purge：`no_success_for_signature`、`later_success_args_changed`、`success_only_before_error`；Supersede：`no_superseding_read`、`read_not_full`；Slim Edit：`already_slim`、`no_change`、`not_line_range`、`literal_match`、`range_out_of_bounds` |
-| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
+| `candidate` | 候选但未变更（守卫或刻意保留的 keeper） | `intervening_state_change`、`intervening_broad_mutation`、`across_user_turn`、`referenced_later_strong` / `referenced_later_text`、`no_token_benefit`、`read_before_write`、`latest_failure_retained`、`cross_strategy_conflict` |
 | `application` | 已标记但未能写回 | `apply_*`、`preview`、`output_read_only`、`args_read_only` |
 
 因此 `eligible - candidate` 由 `eligible` 原因解释，`candidate - changed` 由 `candidate` 原因 + 每组刻意保留的 keeper 解释；`preserved_items` 只统计后者（候选保留数），不包含候选之前的合格记录。
@@ -482,7 +510,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | 策略键 | 扫描对象 | 可裁剪候选 | 实际变更 |
 |---|---|---|---|
 | `tool_descriptions` | 每次 `tool.definition` 调用 | 描述与精简版不同且收益为正 | 描述已被替换；同一请求内重复下发的定义按 `duplicate_definition` 只计一次（跨请求仍按请求重复计） |
-| `compact_read` | 每次 `read` 结果 | 路径/type/footer 至少一项可缩短 | 输出字符串确实变短 |
+| `compact_read` | 每次 `read` 结果 | 路径 / `<type>` 行至少一项可缩短（footer 不参与压缩） | 输出字符串确实变短 |
 | `line_range_edit` | 每次 `edit` 调用 | `oldString` 是合法行区间且文件可读 | `oldString` 已展开为真实行 |
 
 `removed_tokens` 对 `tool_descriptions` / `compact_read` 是提示词侧估算节省；对 `line_range_edit` 是模型原本需要生成的 `oldString` 文本与行区间标记之间的估算差，均不是账单实际节省量。
@@ -497,7 +525,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `uniqueSignatureCount` / `sameSignatureDifferentOutputCount` | 合格记录中“签名唯一”/“签名相同但输出不同”的数量（解释为何不可裁剪） |
 | `sameSignatureDifferentOutputGroups` | 同签名不同输出的签名组数 |
 | `markedCount` / `plannedPruneCount` / `wouldPruneCount` / `prunedCount` / `changedCount` | 标记 / 规则计划 / 引用守卫后 / 实际应用 / 实际变更 |
-| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `shell_failure` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `unsupported_tool` / `unique_signature` / `same_target_args_changed`（同工具同路径但参数窗口不同）/ `same_signature_different_output` / `shell_failure` / `protected_tool` / `protected_path` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省 |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的全部决策估算节省 |
 | `tokenCounting` | `estimate_heuristic_v1` |
@@ -520,7 +548,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `highConfidencePruneCount` / `mediumConfidencePruneCount` | 置信度决策数 |
 | `decisionKinds` | `superseded_by_success` / `duplicate_failure` / `stale_failure_input` 决策计数 |
 | `inputRedactedCount` | 决策中同时裁剪了失败调用输入载荷的数量 |
-| `skippedReasons` | `no_success_for_signature`（同工具无更晚成功）/ `later_success_args_changed`（同工具有更晚成功但参数不等价）/ `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
+| `skippedReasons` | `no_success_for_signature`（同工具无更晚成功）/ `later_success_args_changed`（同工具有更晚成功但参数不等价）/ `success_only_before_error` / `across_user_turn` / `intervening_state_change` / `insufficient_successes` / `protected_tool` / `protected_path` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `latest_failure_retained` / `cross_strategy_conflict` / `apply_*` 等（未归类者记 `no_superseding_evidence`） |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -542,7 +570,7 @@ Slim Edit 的三条策略使用同一漏斗，统计挂在 Token 用量记录的
 | `preservedCount` | 保留的候选写上下文数 |
 | `highConfidencePruneCount` | 高置信度覆盖决策数 |
 | `decisionKinds` | `superseded_by_read` 决策计数 |
-| `skippedReasons` | `no_superseding_read`（该文件从未被读）/ `read_not_full`（只有部分读取）/ `read_before_write`（完整读取全部早于写入）/ `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
+| `skippedReasons` | `no_superseding_read`（该文件从未被读）/ `read_not_full`（只有部分读取）/ `read_before_write`（完整读取全部早于写入）/ `concurrent_write_overlap` / `intervening_broad_mutation` / `read_not_after_write` / `across_user_turn` / `protected_tool` / `protected_path` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `cross_strategy_conflict` / `apply_*` 等 |
 | `tokenSavingsEstimated` | 实际应用的估算节省（观察模式为 0） |
 | `tokenSavingsEstimatedIfApplied` | 通过守卫的决策估算节省 |
 | `tokenCounting` / `actualTokenSavings` | 估算标签 / `null` |
@@ -570,7 +598,7 @@ node --test tests/context-dedup/*.test.mjs
 - Error Purge 负向：无关成功；unit vs integration；build vs deploy；跨 workspace；跨 user turn；状态变更；引用；短错误；空错误；取消/abort；pending/running；completed+diagnostic text；completed+failure metadata；completed shell exit 不可信（默认不作 superseder）；shell 硬失败文本（默认歧义、opt-in 确认错误）；后续失败；缺失/畸形关联。
 - Supersede Writes 正向：写后完整读取；连续写入后统一覆盖；跨 user turn 默认允许；相对/绝对路径归一；预览与独立开关。
 - Supersede Writes 负向：写入失败/超时/pending；重复写入后新写入保留；读取 A 不清理 B；同名不同目录/不同 workspace；行范围/offset/limit/截断/空输出/读取失败；读取早于写入或与写入重叠；并发写入；广义变更屏障；引用守卫；路径无法解析；净收益不足；二次执行幂等；状态不一致回退。
-- Slim Edit：工具描述压缩、read 路径/footer 压缩、行区间展开、字面匹配优先、预览不修改、独立开关，以及三个 tool hook 的统计归因到 usage 记录。
+- Slim Edit：工具描述压缩、read 路径与 `<type>` 行压缩（footer 保留）、行区间展开、字面匹配优先、预览不修改、独立开关，以及三个 tool hook 的统计归因到 usage 记录。
 - 结构/回归：call/result 关联与字段保持；消息顺序；独立关闭；观察模式；重复应用幂等；三条消息策略同请求独立生效；插件 hook 就地应用；日志不落错误正文或文件内容。
 
 环境契约测试读取本机安装的 `@opencode-ai/plugin` 与 SDK 类型，断言 hook 与 `ToolPart` 字段存在；未安装类型时跳过，不伪造通过。
@@ -871,11 +899,11 @@ msg.tokens.cache.read + msg.tokens.cache.write
 | `marked_items` | 标记决策数 | 通过全部守卫后产生的决策数；旧记录无此字段时回退为 `removed_items` |
 | `changed_items` / `removed_items` | 实际裁剪数 | 真正改动了请求副本的决策数（`removed_items` 为兼容别名，等于 `changed_items`） |
 | `preserved_items` | 保留候选数 | `candidate_items − changed_items` |
-| `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed` |
-| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `candidate`（通过结构校验的读取）/ `full` / `rejected_reasons`（`read_truncated` 等） |
+| `writes.*`（仅 Supersede） | 写漏斗 | `confirmed` / `eligible` / `file_matches` / `version_verified` / `marked` / `changed`；证据缺口 `missing_end_time`（写入缺完成时间，仅在 >0 时出现） |
+| `reads.*`（仅 Supersede） | 读漏斗 | `observed` / `candidate`（通过结构校验的读取）/ `full` / `rejected_reasons`（`read_truncated` 等）；证据缺口 `missing_start_time`（读取缺开始时间）/ `missing_eof_proof`（缺 EOF 证明而非确定片段）/ `order_fallback_used`（靠顺序回退做出的判定），均仅在 >0 时出现 |
 | `skipped.record_scan` | 扫描记录数 | 未进入合格集的记录（`unsupported_tool` 计 bash/edit 等非白名单调用，`not_completed` / `already_pruned` / `protected_tool` / `protected_path` / `missing_environment` / `missing_description` / `missing_args` / `duplicate_definition` / `directory` 等结构缺失，**可合法大于 `candidate_items`**） |
 | `skipped.eligible` | 合格记录数 | 合格但未成为可裁剪候选（Dedup `unique_signature` / `same_signature_different_output` / `same_target_args_changed`；Error Purge `no_success_for_signature` / `later_success_args_changed` / `success_only_before_error`；Supersede `no_superseding_read` / `read_not_full`；Slim Edit `already_slim` / `no_change` / `not_line_range` / `literal_match` / `range_out_of_bounds` 等） |
-| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
+| `skipped.candidate` | 候选/分组数 | 候选未变更：守卫拦截或保留（`intervening_state_change` / `intervening_broad_mutation` / `across_user_turn` / `referenced_later_strong` / `referenced_later_text` / `no_token_benefit` / `read_before_write` / `latest_failure_retained` / `cross_strategy_conflict` 等）；每组刻意保留的 keeper 不写跳过原因 |
 | `skipped.application` | 应用阶段决策数 | 已标记但未能写回（`apply_*`、`preview`、`output_read_only`、`args_read_only`） |
 | `scope` | — | 该策略节省所在的提示词区域：`messages` / `tool_schema` / `tool_result` / `model_output`；不同域的数字不可互相比较 |
 | `removed_tokens` | 估算 Token 数（净） | `Σ estimate(previousValue) − estimate(placeholder)`，来源 `estimated_tokens_from_chars` |
@@ -908,27 +936,62 @@ msg.tokens.cache.read + msg.tokens.cache.write
 - 多步工具循环中 transform 与终态 message 的配对依赖 sessionID + 消费一次语义。
 - 重试 attempt：依赖 `session.retry.scheduled` 事件携带的 `assistantMessageID` / `attempt`。若 Runtime 未来改变该事件 shape，`attempt` 可能退回 1，导致同一 message id 的多次 attempt 被去重；已用单测覆盖当前 shape。
 
+## 十一·五、可触发性修订（2026-11-12）
+
+一次全量审查（`plan*` 直接调用探针 + 代码走查）发现多处“策略声明了但永不触发”的判定，本文档记录修复与保留理由。
+
+### 修复
+
+| # | 位置 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | `error-purge.js` 候选构造 | `shellFailureDetection: "error"` 命中的失败没有 `state.error`，候选却去读 `error` 字段 → 永远 `empty_output`，16 条 `DEFAULT_SHELL_FAILURE_PATTERNS` 全部失效 | 输出型失败（结构化非零 exit 或文本模式命中）统一读 `output` |
+| 2 | `supersede-writes.js` 屏障 | 任何非 read/write 工具（含 `todowrite`、`cat`）都阻断覆盖 | 新增 `barrierExemptTools` + 只读 shell 链判定 |
+| 3 | `error-purge.js` 屏障 | 默认 `barrierWriteTools: true` 让 `read 失败 → write 创建 → read 成功` 永不修剪 | 只读类候选（read/grep/glob）把确认成功的写视为“修复动作”，不计屏障 |
+| 4 | `core.js` Dedup | 窗口化读取（`offset`/`limit` 不同）签名不同，永不命中 | 新增区间包含归并（见 3.2） |
+| 7 | `opencode.js` 记录提取 | `turn` 只按 `step-start` 递增；宿主无该 part 时恒为 0，年龄规则静默失效 | 无 `step-start` 时回退到 user turn，并记 `turn_fallback_user_segment` |
+| 13 | `plugins/vibe-bridge.js` 判定 | 宿主给出 `exit: 0` 时，输出里出现 `error:` 等标记仍判失败，连续两次同指纹会误触 S14 SAFE MODE | 有宿主退出码时以退出码为准，文本标记仅计数 |
+
+### 默认值变更
+
+- `errorPurge.preserveAcrossUserTurns`：`true` → `false`（跨轮“失败→修复→成功”可修剪）。
+- `referenceProtection`：**保持 `any`**。评估过改为 `strong`，但 prose 提及常是用户明确要求继续使用某次结果（“use call_x”），改为 strong 会丢失用户仍需要的内容；先用 `referenced_later_text` 计数衡量损失，再决定是否切换。
+- `supersedeWrites.barrierExemptTools` / `barrierExemptShellCommands`：新增，默认开启。
+- `errorPurge.shellFailureDetection`：`ambiguous` → `error`（配置/编译类错误在没有结构化退出码时会逃逸清理）；同时纯查看命令（`cat`/`grep`/`git log` 等）退出文本判定，避免把日志内容当执行结论。
+- `deduplication.tools`：移除默认 `bash`（shell 输出几乎不会逐字节重复，白名单只增加签名开销）；需要时显式加入。
+- `supersedeWrites.allowOrderFallback`：`false` → `true`（宿主普遍不提供时间戳时策略会整体失效）；并发宿主可显式设 `false` 要求真实 happens-before。
+- `errorPurge.preserveAcrossUserTurns` 解析：`!== false` → `=== true`，与 `preserveRepeatedFailuresAcrossUserTurns` 和配置文件默认值对齐；重复失败规则只由自身开关控制。
+
+### 不修（记录理由）
+
+- **`inspectRead` 的 EOF 严格相等**（`linesRead !== totalLines` 即 `read_unverified`）：放宽容差会引入伪造面——文件内容本身可以以一行仿冒的 EOF 提示结尾。已有 `metadata.truncated === false` 与 `metadata.display` 两条结构化证据作为主路径，保持严格相等。
+- **`requireFullRead` 关闭后的退化**（`false` 时任何非空读取都算完整读取，包括 `offset > 1` 的窗口读取）：保持默认 `true`，避免部分读取替代整份写入；该开关只在手动配置时生效，文档已标注风险。
+
+### 新增诊断字段
+
+`readWindowCandidateCount`、`readWindowCollapseCount`、`repeatedTargets`（Top 5 重复目标）、`orderFallbackAvailableCount`、`skippedReasons.turn_fallback_user_segment`。
+
 ## 十二、已知限制与未验证行为
 
 **已限制/明确不做：**
 
-- 只把 `status === "error"` + 非空 `state.error` 视为确认失败；`completed` 结果即使包含错误文本也不按文本分类。
+- 除 shell 构建/测试/脚本命令的硬失败文本（`shellFailureDetection`，纯查看命令除外）外，只把 `status === "error"` + 非空 `state.error` 视为确认失败；`completed` 的其他结果即使包含错误文本也不按文本分类。
 - `completed` + 结构化失败 metadata 视为歧义并保留，不以它作为 superseder；不尝试解析未知 metadata 语义。
 - 操作等价只做精确签名（工具 + 规范化参数 + cwd/root），不做语义命令归一化。
 - 默认保留“失败 → 修改代码/状态变更 → 成功”的旧错误；需要更激进时设 `preserveOnStateChanges: false`。
-- 默认保留跨 user turn 的旧错误（仅“后续成功取代失败”规则）；需要时设 `preserveAcrossUserTurns: false`。重复相同失败的裁剪默认跨轮次，需要严格同轮次守卫时设 `preserveRepeatedFailuresAcrossUserTurns: true`。
+- 跨 user turn 的“失败 → 修复 → 成功”默认**可以**裁剪（`preserveAcrossUserTurns: false`）；需要严格同轮次守卫时设 `true`。重复相同失败的裁剪默认跨轮次，需要严格同轮次守卫时设 `preserveRepeatedFailuresAcrossUserTurns: true`。
 - 单个后续成功默认足以 supersede；无法可靠识别 intermittent/flaky failure。需要更严格时设 `minSuccesses: 2`。
 - 无法可靠识别自然语言引用；使用 callID 引用扫描、user-turn 屏障、状态变更屏障作为保守代理。
 - 执行环境只建模 `cwd` / `root` / 参数内显式 `cwd`；不建模环境变量、`.gitignore`、网络状态。
-- Error Purge 只替换 `state.error` 与失败调用输入中的大体积顶层字符串；不清理 `state.metadata` 中可能存在的堆栈/诊断字段，也不重写数组/对象型输入（如 `multiedit.edits`）。
-- 受保护规则按工具名与文件路径匹配；无法从参数中解析出路径的工具不会被 `protectedFilePatterns` 命中。
+- Error Purge 替换 `state.error`（结构化错误）或 `state.output`（shell 结构化非零 exit / 文本模式命中的失败）以及失败调用输入中的大体积顶层字符串；不清理 `state.metadata` 中可能存在的堆栈/诊断字段，也不重写数组/对象型输入（如 `multiedit.edits`）。
+- 工具名别名（`Read` / `Bash` / `shell` / `read_file`…）目前只在 Slim Edit 的三个 hook 内归一（`canonicalToolID`）；Dedup / Error Purge / Supersede 仍按宿主**原始**工具名匹配，非标准命名的宿主需显式配置 `tools`、`deduplication.tools`、`shellTools`。
+- 受保护规则按工具名与文件路径匹配；无法从参数中解析出路径的工具不会被 `protectedFilePatterns` 命中。`bash.command` 中的路径**不会**被解析（例如 `cat .env`），需要保护时改用 `protectedTools: ["bash"]`。
 - Supersede Writes 只脱敏写工具输入中的已知内容字段（`content` / `oldString` / `newString` / `edits` / `patch` / `diff` / `input` 等）与 `state.output`；未知形状的写工具输入即使成功也不会被覆盖。
-- 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`）。若宿主不提供这些信号，只按“无 offset/limit 且输出非空”判定，超大文件被静默截断时无法识别；可通过 `requireFullRead` 保持默认保守策略。
+- 完整读取判定依赖 `read` 工具的参数（`offset` / `limit`）与结构化 metadata（`truncated` / `loaded` / `partial` / `complete`），并可用输出末尾的 `(End of file - total N lines)` 作为补充证明（要求正文行数与 `N` 严格相等且 `limit >= N`）。EOF 文本是弱证据：构造得足够巧的文件内容仍可能同时满足行数与 `N`；需要严格保证时以 `metadata.truncated === false` 为准。若宿主同时不提供这些信号，只按“无 offset/limit 且输出非空”判定；可通过 `requireFullRead` 保持默认保守策略。
 - 文件版本仅由 `state.time`（写入完成时间、读取开始时间）推断；不读取磁盘 mtime、内容哈希或文件系统锁。读取之后的外部进程修改无法从消息历史中观察，因此不额外失效已经完成的覆盖。
 - 同一文件的中间写入会与更早写入一起被后续完整读取覆盖；这是预期行为（读取代表最终状态），但不是区间级 Supersede。
 - 未实现区间级上下文追踪；部分读取一律不清理整文件写上下文。
 - 只支持当前 `{ info, parts }` / `ToolPart` 结构；若宿主改成独立 tool-role 消息，会安全 no-op。
-- Slim Edit 的工具描述压缩只覆盖 `slim-edit.js` 中列出的工具 ID；未知工具或改版描述保持原样。`compactRead` 依赖 `read` 输出中的 `<path>` / `<type>` / footer 结构，格式变化时安全 no-op。`lineRangeEdit` 在文件不可读、字面 `oldString` 已存在、行号越界或写入只读时保留原参数。
+- Slim Edit 的工具描述压缩只覆盖 `slim-edit.js` 中列出的工具 ID；未知工具或改版描述保持原样。`compactRead` 依赖 `read` 输出中的 `<path>` / `<type>` 结构，格式变化时安全 no-op；它**不删除**末尾的 `(End of file - total N lines)` footer —— 该行是 Supersede Writes 在没有结构化 metadata 时的唯一完整读取证据，删掉会让同一次读取无法再作为 superseder。`lineRangeEdit` 在文件不可读、字面 `oldString` 已存在、行号越界或写入只读时保留原参数。
 - Slim Edit 的行区间节省是对模型原本需要生成的 `oldString` 文本做字符加权估算，不是 provider 计费差额；`total_removed_tokens` 因而不等同于提示词实际缩减量。
 - 没有真实 tokenizer；所有 token 节省都是估算。Token 用量记录的 `context_estimates` / `pruning` 估算同样使用 `char_weight_v1` 启发式，未用真实 DeepSeek 用量校准。
 - 卡片的两栏分组与缓存加权都是**展示层近似**：分组依赖 `scope`（旧记录回退到规范映射），缓存加权假设“被裁掉的 token 与整请求同比例落在缓存段”，并按固定 `0.1×` 折算缓存读价格；provider 折扣不同或裁剪对象明显偏离该比例时，账单口径会偏离实际。

@@ -385,7 +385,7 @@ test("a later reference to the write protects its context", () => {
   const result = transformMessages(messages, CONFIG);
 
   assert.equal(result.changed, false);
-  assert.equal(result.stats.supersedeWrites.skippedReasons.referenced_later, 1);
+  assert.equal(result.stats.supersedeWrites.skippedReasons.referenced_later_text, 1);
 });
 
 test("all three strategies apply independently in one request", () => {
@@ -633,7 +633,7 @@ test("a call id inside a later write payload is not a reference", () => {
   ];
   const result = transformMessages(messages, CONFIG);
   assert.equal(partAt(result, 1).state.input.content, DEFAULT_SUPERSEDE_PLACEHOLDER);
-  assert.equal(result.stats.supersedeWrites.skippedReasons.referenced_later, undefined);
+  assert.equal(result.stats.supersedeWrites.skippedReasons.referenced_later_text, undefined);
 });
 
 test("unresolvable paths are preserved conservatively", () => {

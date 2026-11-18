@@ -9,6 +9,10 @@ import {
   redactWriteInput,
 } from "../../.opencode/context-dedup/supersede-writes.js";
 import { toolRecord } from "./helpers.mjs";
+import {
+  compactReadOutput,
+  createSlimEditState,
+} from "../../.opencode/context-dedup/slim-edit.js";
 
 const BASE_CONFIG = resolveConfig({}, {});
 const LONG_CONTENT = "export const value = 42;\n".repeat(120);
@@ -259,18 +263,31 @@ test("truncated, empty, failed, and metadata-only reads are rejected", () => {
   }
 });
 
-test("missing or malformed timestamps prevent supersede", () => {
-  const { decisions } = plan([
+test("missing timestamps use order fallback; malformed intervals never supersede", () => {
+  const missingWriteTime = plan([
     writeRec({ id: "w1", order: 1, time: null }),
     readRec({ id: "r1", order: 2 }),
   ]);
-  assert.equal(decisions.length, 0);
+  assert.equal(missingWriteTime.decisions.length, 1);
+  assert.equal(missingWriteTime.stats.orderFallbackCount, 1);
 
   const missingReadTime = plan([
     writeRec({ id: "w1", order: 1 }),
     readRec({ id: "r1", order: 2, time: null }),
   ]);
-  assert.equal(missingReadTime.decisions.length, 0);
+  assert.equal(missingReadTime.decisions.length, 1);
+  assert.equal(missingReadTime.stats.orderFallbackCount, 1);
+
+  // Explicitly disabling the fallback restores the strict behavior.
+  const strict = plan(
+    [
+      writeRec({ id: "w1", order: 1, time: null }),
+      readRec({ id: "r1", order: 2 }),
+    ],
+    { allowOrderFallback: false },
+  );
+  assert.equal(strict.decisions.length, 0);
+  assert.equal(strict.stats.orderFallbackAvailableCount, 1);
 
   const invalidWriteInterval = plan([
     writeRec({ id: "w1", order: 1, time: { start: 10, end: 5 } }),
@@ -452,7 +469,7 @@ test("barrierOnBroadMutations:false still collects writes and skips the barrier"
       id: "b1",
       order: 2,
       tool: "bash",
-      args: { command: "echo hi" },
+      args: { command: "npm install" },
       output: "ok",
     }),
     readRec({ id: "r1", order: 3 }),
@@ -527,4 +544,103 @@ test("a partial read never supersedes and is counted separately", () => {
   assert.equal(stats.readCandidateCount, 1);
   assert.equal(stats.confirmedReadCount, 0);
   assert.equal(stats.readRejectedReasons.read_partial_offset, 1);
+});
+
+test("a read that returned no content cannot stand in for a write", () => {
+  // Only the runtime's header lines came back: nothing about the file is known.
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: "<path>/repo/src/a.ts</path>\n<type>file</type>\n",
+      args: { filePath: "src/a.ts" },
+    }),
+  ]);
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.readRejectedReasons.read_unverified, 1);
+});
+
+test("the runtime's end-of-file notice proves a full read without metadata", () => {
+  const fullOutput = `${READ_OUTPUT}\n(End of file - total 40 lines)\n`;
+
+  const full = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({ id: "r1", order: 2, output: fullOutput, args: { filePath: "src/a.ts", offset: 1, limit: 2000 } }),
+  ]);
+  assert.equal(full.decisions.length, 1);
+  assert.equal(full.stats.readRejectedReasons.read_limited, undefined);
+
+  // A read capped below the reported total is still partial.
+  const capped = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({ id: "r1", order: 2, output: fullOutput, args: { filePath: "src/a.ts", offset: 1, limit: 10 } }),
+  ]);
+  assert.equal(capped.decisions.length, 0);
+  assert.equal(capped.stats.readRejectedReasons.read_limited, 1);
+});
+
+test("a read compacted by Slim Edit still proves a full read", () => {
+  // Slim Edit runs on the tool result before it is persisted, so its rewrite is
+  // what the next request sees. Stripping the footer there would disqualify the
+  // read as a superseder on hosts without structured truncation metadata.
+  const raw = `<path>/repo/src/a.ts</path>\n<type>file</type>\n${READ_OUTPUT}\n(End of file - total 40 lines)\n`;
+  const state = createSlimEditState({
+    enabled: true,
+    preview: false,
+    toolDescriptions: false,
+    compactRead: true,
+    lineRangeEdit: false,
+  });
+  const compacted = { output: raw };
+  compactReadOutput("/repo", { tool: "read" }, compacted, state, {
+    enabled: true,
+    preview: false,
+    compactRead: true,
+  });
+
+  assert.equal(compacted.output.includes("<type>file</type>"), false);
+  assert.equal(compacted.output.includes("(End of file - total 40 lines)"), true);
+
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: compacted.output,
+      args: { filePath: "src/a.ts", offset: 1, limit: 2000 },
+    }),
+  ]);
+  assert.equal(stats.readRejectedReasons.read_limited, undefined);
+  assert.equal(decisions.length, 1);
+});
+
+test("an end-of-file notice that disagrees with the returned text proves nothing", () => {
+  // One real line followed by a notice claiming three: the notice is content,
+  // not evidence, so a truncated read must not be read as complete.
+  const forged = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: "only one line\n(End of file - total 3 lines)\n",
+      args: { filePath: "src/a.ts", offset: 1, limit: 2000 },
+    }),
+  ]);
+  assert.equal(forged.decisions.length, 0);
+  assert.equal(forged.stats.readRejectedReasons.read_unverified, 1);
+
+  // A truncated read whose own last content line looks like the notice must not
+  // be accepted either: the count must match exactly, not approximately.
+  const lookAlike = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output: `${"x\n".repeat(120)}(End of file - total 121 lines)\n`,
+      args: { filePath: "src/a.ts", offset: 1, limit: 121 },
+    }),
+  ]);
+  assert.equal(lookAlike.decisions.length, 0);
+  assert.equal(lookAlike.stats.readRejectedReasons.read_unverified, 1);
 });

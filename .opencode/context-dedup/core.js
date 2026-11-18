@@ -32,15 +32,37 @@ export const DEFAULT_PLACEHOLDER =
 export const DEFAULT_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "glob"]);
 
 /**
- * Deduplication scope. Shell output is eligible too: two calls with identical
- * arguments and byte-identical output carry the same information, so pruning
- * the older result is lossless. Failed shell calls are excluded separately by
- * the metadata failure check below.
+ * Tools that never modify the workspace, so a call to one of them cannot
+ * invalidate a later read of an earlier result. Shared by Supersede Writes
+ * (write→read barrier exemption) and Read Window Collapse (dedup barrier).
+ *
+ * `task` / `skill` are deliberately absent: a sub-agent or skill can write
+ * files.
  */
-export const DEFAULT_DEDUP_TOOLS = Object.freeze([
-  ...DEFAULT_READ_ONLY_TOOLS,
-  "bash",
+export const DEFAULT_BARRIER_EXEMPT_TOOLS = Object.freeze([
+  "todowrite",
+  "question",
+  "webfetch",
+  "websearch",
+  "list",
 ]);
+
+/** Read-only tools plus tools that cannot touch files: no barrier, no mutation. */
+const NON_FILE_MUTATION_TOOLS = new Set([
+  ...DEFAULT_READ_ONLY_TOOLS,
+  ...DEFAULT_BARRIER_EXEMPT_TOOLS,
+]);
+
+/**
+ * Deduplication scope. Shell output is technically eligible (identical args +
+ * byte-identical output is lossless to prune), but real shell output almost
+ * never repeats byte-for-byte — timestamps, PIDs and modified-file lists
+ * change between runs — so whitelisting `bash` by default pays signature and
+ * token cost for a near-zero hit rate. Shell stays opt-in through
+ * `deduplication.tools`. Failed shell calls are excluded separately by the
+ * metadata failure check below.
+ */
+export const DEFAULT_DEDUP_TOOLS = Object.freeze([...DEFAULT_READ_ONLY_TOOLS]);
 
 /**
  * Shell tools whose exit status (not the output text) decides success.
@@ -79,6 +101,13 @@ export const DEFAULT_WRITE_TOOLS = Object.freeze([
 ]);
 
 export const TOKEN_COUNTING = "estimate_heuristic_v1";
+
+/**
+ * Rules revision stamped into every JSONL record. It makes "is the running
+ * plugin the code I just edited?" answerable from the log alone, instead of
+ * inferring it from an all-zero counter.
+ */
+export const DEDUP_RULES_REVISION = "2026-11-12.3";
 
 const PATH_KEYS = new Set(["filePath", "path", "cwd", "directory", "dir", "root", "worktree"]);
 
@@ -160,6 +189,13 @@ export function createStats() {
     uniqueSignatureCount: 0,
     sameSignatureDifferentOutputCount: 0,
     sameSignatureDifferentOutputGroups: 0,
+    // Windowed reads of one file: a later read whose line range strictly covers
+    // an earlier one makes the earlier result redundant (same file, no
+    // intervening mutation).
+    readWindowCandidateCount: 0,
+    readWindowCollapseCount: 0,
+    /** Top repeated targets (bounded): drives the next optimization decision. */
+    repeatedTargets: [],
     markedCount: 0,
     plannedPruneCount: 0,
     wouldPruneCount: 0,
@@ -359,11 +395,17 @@ function collectPathArgs(target, value) {
 }
 
 /**
- * Every file path a tool record refers to, in raw (unresolved) form.
+ * Every file path a tool record states in its structured arguments, in raw
+ * (unresolved) form.
  *
  * Covers the OpenCode and V2 shapes the reference implementation protects:
  * direct `filePath`/`path`, `multiedit`'s nested `edits[]`, `apply_patch`'s
  * `patchText`, and V2 code-mode nested `metadata.toolCalls`.
+ *
+ * Shell commands are deliberately not parsed: a path quoted inside
+ * `bash.command` is not extracted, so `protectedFilePatterns` cannot protect a
+ * file that is only touched through `bash` (protect the tool with
+ * `protectedTools` instead).
  */
 export function recordFilePaths(record) {
   const paths = [];
@@ -564,6 +606,12 @@ function normalizeOptions(config = {}) {
   const normalizeRead =
     config.normalizeReadOutput === true ||
     config.deduplication?.normalizeReadOutput === true;
+  const collapseReadWindows =
+    config.collapseReadWindows === undefined &&
+    config.deduplication?.collapseReadWindows === undefined
+      ? true
+      : config.collapseReadWindows === true ||
+        config.deduplication?.collapseReadWindows === true;
   return {
     enabled,
     toolSet,
@@ -572,7 +620,164 @@ function normalizeOptions(config = {}) {
     protectedTools,
     protectedFilePatterns,
     normalizeReadOutput: normalizeRead,
+    collapseReadWindows,
   };
+}
+
+
+/** The runtime's own end-of-file notice, emitted only when the read reached EOF. */
+const EOF_TOTAL_RE = /\(End of file - total (\d+) lines\)\s*$/;
+
+function eofTotalLines(output) {
+  if (typeof output !== "string") return null;
+  const match = output.trimEnd().match(EOF_TOTAL_RE);
+  if (!match) return null;
+  const total = Number(match[1]);
+  return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+/**
+ * Highest line number present in the runtime's rendered read output. OpenCode
+ * renders `N: <line>`, which is authoritative: it reflects what was actually
+ * returned, so a capped read cannot claim lines it never showed. Scanning the
+ * tail keeps this O(1) for large files.
+ */
+function maxLineNumberInOutput(output) {
+  if (typeof output !== "string" || output.length === 0) return null;
+  const tail = output.length > 200_000 ? output.slice(-200_000) : output;
+  const re = /^[ \t]*(\d+): /gm;
+  let max = null;
+  let match;
+  while ((match = re.exec(tail)) !== null) {
+    const numeric = Number(match[1]);
+    if (Number.isFinite(numeric) && (max === null || numeric > max)) max = numeric;
+  }
+  return max;
+}
+
+/** Does the host claim this read returned less than its window implies? */
+function claimsPartialRead(record) {
+  const metadata = isPlainObject(record.metadata) ? record.metadata : {};
+  if (metadata.partial === true) return true;
+  if (metadata.complete === false) return true;
+  if (metadata.truncated === true) return true;
+  return isPlainObject(metadata.display) && metadata.display.truncated === true;
+}
+
+/**
+ * Line window covered by a `read` call, or null when it cannot be determined.
+ */
+function readWindowOf(record) {
+  const args = record && isPlainObject(record.args) ? record.args : null;
+  if (!args) return null;
+  const rawStart = args.offset ?? args.line ?? args.startLine ?? args.from;
+  let start = 1;
+  if (rawStart !== undefined && rawStart !== null) {
+    const numeric = Number(rawStart);
+    if (!Number.isFinite(numeric) || numeric < 0) return null;
+    start = numeric <= 1 ? 1 : numeric;
+  }
+  const rawLimit = args.limit ?? args.lines ?? args.count ?? args.maxLines;
+  // Lines the runtime actually rendered, independent of the requested window.
+  const actualEnd = maxLineNumberInOutput(record.output);
+  let end;
+  if (rawLimit !== undefined && rawLimit !== null) {
+    const numeric = Number(rawLimit);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    end = start + numeric - 1;
+  } else {
+    // No explicit limit: the END-OF-FILE notice or the rendered line numbers
+    // prove how far the read reached.
+    end = eofTotalLines(record.output) ?? actualEnd;
+    if (end === null) return null;
+  }
+  if (actualEnd !== null) {
+    // The rendered range wins: a capped read must not claim lines it never
+    // showed, and this keeps the collapse rule safe without trusting a host
+    // flag whose meaning differs between hosts.
+    end = Math.min(end, actualEnd);
+  } else if (claimsPartialRead(record)) {
+    // No line numbers and the host says the read is incomplete: the window is
+    // unknown, so do not participate.
+    return null;
+  }
+  if (end < start) return null;
+  return { start, end };
+}
+
+/** Does `later` cover a strictly larger window than `earlier`? */
+function windowStrictlyCovers(later, earlier) {
+  if (!later || !earlier) return false;
+  if (later.start > earlier.start) return false;
+  if (later.end < earlier.end) return false;
+  // An identical window is handled by byte-identical deduplication; a differing
+  // body means the file changed outside the conversation, so keep both.
+  return !(later.start === earlier.start && later.end === earlier.end);
+}
+
+/**
+ * Collapse windowed reads of the same file: when a later read covers a
+ * strictly larger line range and nothing mutated in between, the earlier
+ * window's content is fully contained in the later one.
+ */
+function collapseCoveredReads(records, eligible, options, stats, decisions, placeholderTokens) {
+  const collapsedIds = new Set();
+  const groups = new Map();
+  for (const entry of eligible) {
+    if (entry.record.tool !== "read") continue;
+    const window = readWindowOf(entry.record);
+    if (!window) continue;
+    const key = targetKeyOf(entry.record);
+    if (!key) continue;
+    stats.readWindowCandidateCount += 1;
+    const list = groups.get(key);
+    if (list) list.push({ entry, window });
+    else groups.set(key, [{ entry, window }]);
+  }
+  if (groups.size === 0) return collapsedIds;
+
+  // Reads, other read-only tools and barrier-exempt tools cannot change the
+  // file; anything else can. The exempt list is shared with Supersede Writes
+  // so a `todowrite`/`question`/`list` call between two reads of the same file
+  // does not silently disable window collapse.
+  const mutationOrders = [];
+  for (const record of records) {
+    if (!record || !Number.isFinite(record.order)) continue;
+    if (typeof record.tool !== "string") continue;
+    if (NON_FILE_MUTATION_TOOLS.has(record.tool)) continue;
+    mutationOrders.push(record.order);
+  }
+  mutationOrders.sort((left, right) => left - right);
+
+  const decided = new Set(decisions.map((decision) => decision.id));
+  for (const group of groups.values()) {
+    group.sort((left, right) => left.entry.order - right.entry.order);
+    for (let index = 0; index < group.length; index += 1) {
+      const earlier = group[index];
+      if (decided.has(earlier.entry.record.id)) continue;
+      for (let next = index + 1; next < group.length; next += 1) {
+        const later = group[next];
+        if (!windowStrictlyCovers(later.window, earlier.window)) continue;
+        if (hasOrderInRange(mutationOrders, earlier.entry.order, later.entry.order)) continue;
+        const estimatedTokensSaved = keeperTokens(earlier.entry) - placeholderTokens;
+        if (estimatedTokensSaved <= 0) break;
+        decisions.push({
+          id: earlier.entry.record.id,
+          keeperId: later.entry.record.id,
+          tool: earlier.entry.record.tool,
+          order: earlier.entry.order,
+          keeperOrder: later.entry.order,
+          kind: "read_window_subsumed",
+          estimatedTokensSaved,
+        });
+        decided.add(earlier.entry.record.id);
+        collapsedIds.add(earlier.entry.record.id);
+        stats.readWindowCollapseCount += 1;
+        break;
+      }
+    }
+  }
+  return collapsedIds;
 }
 
 function keeperTokens(entry) {
@@ -730,6 +935,10 @@ export function planDeduplication(records, config = {}) {
 
   const decisions = [];
   const uniqueEntries = [];
+  // Targets that were read several times with a changed body (file edited in
+  // between). They never reach `uniqueEntries`, yet they are the most valuable
+  // optimization signal, so they are aggregated below.
+  const sameSignatureTargets = [];
   const placeholderTokens = estimateTokens(options.placeholder);
   const outputKey = (entry) => {
     if (options.normalizeReadOutput && entry.record?.tool === "read") {
@@ -763,6 +972,9 @@ export function planDeduplication(records, config = {}) {
       if (outputGroup.length < 2) {
         stats.sameSignatureDifferentOutputCount += outputGroup.length;
         increment(stats.skippedReasons, "same_signature_different_output", outputGroup.length);
+        if (outputGroup.length > 0) {
+          sameSignatureTargets.push({ entry: outputGroup[0], count: outputGroup.length });
+        }
         continue;
       }
       stats.duplicateGroupCount += 1;
@@ -791,6 +1003,18 @@ export function planDeduplication(records, config = {}) {
     }
   }
 
+  const collapsedReadIds =
+    options.collapseReadWindows && options.enabled
+      ? collapseCoveredReads(
+          records,
+          eligible,
+          options,
+          stats,
+          decisions,
+          placeholderTokens,
+        )
+      : new Set();
+
   decisions.sort((left, right) => left.order - right.order);
   stats.markedCount = decisions.length;
 
@@ -799,9 +1023,14 @@ export function planDeduplication(records, config = {}) {
   // arguments. This is the common "read the same file four times" case, where
   // a windowed `offset`/`limit` changes the signature and byte equality can
   // never hold.
+  const repeatedEntries = [];
   if (uniqueEntries.length > 0) {
     const byTarget = new Map();
     for (const entry of uniqueEntries) {
+      if (collapsedReadIds.has(entry.record.id)) {
+        increment(stats.skippedReasons, "read_window_subsumed");
+        continue;
+      }
       const key = targetKeyOf(entry.record);
       if (!key) {
         increment(stats.skippedReasons, "unique_signature");
@@ -811,16 +1040,62 @@ export function planDeduplication(records, config = {}) {
       if (group) group.push(entry);
       else byTarget.set(key, [entry]);
     }
-    for (const group of byTarget.values()) {
+    for (const [key, group] of byTarget.entries()) {
       increment(
         stats.skippedReasons,
         group.length > 1 ? "same_target_args_changed" : "unique_signature",
         group.length,
       );
+      if (group.length > 1) {
+        repeatedEntries.push({
+          key,
+          count: group.length,
+          cwd: group[0]?.record?.env?.cwd ?? "",
+        });
+      }
     }
   }
+  // Same arguments, different body: the file was edited between two reads. This
+  // is the strongest "read the same file repeatedly" signal, and it never
+  // reaches `uniqueEntries`.
+  for (const item of sameSignatureTargets) {
+    const key = targetKeyOf(item.entry.record);
+    if (!key) continue;
+    repeatedEntries.push({
+      key,
+      count: item.count,
+      cwd: item.entry.record?.env?.cwd ?? "",
+    });
+  }
+  if (repeatedEntries.length > 0) {
+    const merged = new Map();
+    for (const item of repeatedEntries) {
+      const previous = merged.get(item.key);
+      if (previous) previous.count += item.count;
+      else merged.set(item.key, { count: item.count, cwd: item.cwd });
+    }
+    const repeated = [];
+    for (const [key, info] of merged.entries()) {
+      let target = key.split("\u0000").slice(1).join("\u0000");
+      // Report project-relative paths: the log is a local diagnostic and the
+      // absolute form would embed the user's home directory. Both sides go
+      // through `normalizePath` so a Windows cwd (`D:\repo`) still matches the
+      // normalized target (`D:/repo/...`) instead of being reported as external.
+      const normalizedCwd = info.cwd ? normalizePath(info.cwd) : "";
+      const prefix =
+        normalizedCwd && normalizedCwd !== "." ? `${normalizedCwd.replace(/\/+$/, "")}/` : "";
+      if (prefix && target.startsWith(prefix)) {
+        target = target.slice(prefix.length);
+      } else if (target.startsWith("/") || /^[A-Za-z]:\//.test(target)) {
+        target = `<external>/${target.split("/").pop() || target}`;
+      }
+      repeated.push({ target, count: info.count });
+    }
+    repeated.sort((left, right) => right.count - left.count);
+    stats.repeatedTargets = repeated.slice(0, 5);
+  }
 
-  stats.prunableCount = stats.duplicateCandidateCount;
+  stats.prunableCount = stats.duplicateCandidateCount + collapsedReadIds.size;
   stats.plannedPruneCount = decisions.length;
   stats.tokenSavingsEstimated = decisions.reduce(
     (total, decision) => total + decision.estimatedTokensSaved,
@@ -835,6 +1110,14 @@ export function planDeduplication(records, config = {}) {
  * Unified implementation supporting both error-purge and supersede-writes.
  */
 export function hasFailureMetadata(metadata) {
+  return hasHardFailureMetadata(metadata) || hasDiagnosticFailureMetadata(metadata);
+}
+
+/**
+ * Failure signals that describe the execution itself (status/exit/timeout).
+ * These always win, even when a caller also sets a success flag.
+ */
+export function hasHardFailureMetadata(metadata) {
   if (!isPlainObject(metadata)) return false;
   const rawExit = metadata.exitCode ?? metadata.exit_code ?? metadata.exit ?? metadata.code;
   if (typeof rawExit === "number" && Number.isFinite(rawExit) && rawExit !== 0) return true;
@@ -851,19 +1134,46 @@ export function hasFailureMetadata(metadata) {
     return true;
   }
   if (metadata.status === "error" || metadata.status === "failed") return true;
+  return false;
+}
+
+/**
+ * Diagnostic text attached to a completed call (stderr echo, warning note).
+ * It is real failure evidence only when no structured state says otherwise,
+ * so it never overrides an explicit success marker.
+ */
+export function hasDiagnosticFailureMetadata(metadata) {
+  if (!isPlainObject(metadata)) return false;
   for (const key of ["error", "exception"]) {
     if (typeof metadata[key] === "string" && metadata[key].trim().length > 0) return true;
   }
   return false;
 }
 
+/**
+ * Explicit success markers the runtime may expose on a completed call.
+ * Only affirmative flags count: a bare `failed: false` / `isError: false`
+ * next to a diagnostic string is contradictory, so it stays unresolved
+ * (preserved) rather than being read as success.
+ */
+export function hasExplicitSuccessMetadata(metadata) {
+  if (!isPlainObject(metadata)) return false;
+  return metadata.success === true || metadata.ok === true;
+}
+
 export function isConfirmedSuccess(record) {
-  return (
-    record &&
-    record.status === "completed" &&
-    !(typeof record.error === "string" && record.error.trim().length > 0) &&
-    !hasFailureMetadata(record.metadata)
-  );
+  if (
+    !record ||
+    record.status !== "completed" ||
+    (typeof record.error === "string" && record.error.trim().length > 0)
+  ) {
+    return false;
+  }
+  if (!hasFailureMetadata(record.metadata)) return true;
+  // A diagnostic string alone must not veto an explicit success marker: some
+  // runtimes attach stderr/warning text to successful calls. Hard failure
+  // fields (exit code, timeouts, cancellation) still win.
+  return hasExplicitSuccessMetadata(record.metadata) && !hasHardFailureMetadata(record.metadata);
 }
 
 export function validPlaceholder(value, fallback) {

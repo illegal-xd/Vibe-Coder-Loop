@@ -16,11 +16,12 @@ test("defaults are safe and explicit", () => {
   assert.equal(config.protectCallIdReferences, true);
   assert.deepEqual(config.deduplication, {
     enabled: true,
-    tools: ["read", "grep", "glob", "bash"],
+    tools: ["read", "grep", "glob"],
+    collapseReadWindows: true,
   });
   assert.equal(config.errorPurge.enabled, true);
   assert.equal(config.errorPurge.preview, false);
-  assert.equal(config.errorPurge.preserveAcrossUserTurns, true);
+  assert.equal(config.errorPurge.preserveAcrossUserTurns, false);
   assert.equal(config.errorPurge.preserveRepeatedFailuresAcrossUserTurns, false);
   assert.equal(config.errorPurge.preserveOnStateChanges, true);
   assert.equal(config.errorPurge.pruneRepeatedFailures, true);
@@ -29,7 +30,19 @@ test("defaults are safe and explicit", () => {
   // The runtime reports a real exit status, so completed shell calls are
   // success/failure evidence instead of being ignored.
   assert.equal(config.errorPurge.shellExitReliable, true);
-  assert.equal(config.errorPurge.shellFailureDetection, "ambiguous");
+  // Shell output error patterns are treated as confirmed failures by default
+  // (inspection-only commands are excluded from text detection).
+  assert.equal(config.errorPurge.shellFailureDetection, "error");
+  // Supersede Writes: non-mutating tools and inspection-only shell chains are
+  // not barriers by default; both can be turned off explicitly.
+  assert.deepEqual(config.supersedeWrites.barrierExemptTools, [
+    "todowrite",
+    "question",
+    "webfetch",
+    "websearch",
+    "list",
+  ]);
+  assert.equal(config.supersedeWrites.barrierExemptShellCommands, true);
   assert.deepEqual(config.log, DEFAULT_CONFIG.log);
 });
 
@@ -42,6 +55,26 @@ test("environment can disable or preview without editing the file", () => {
 
   const logDisabled = resolveConfig({}, { VIBE_CONTEXT_DEDUP_LOG_DISABLED: "yes" });
   assert.equal(logDisabled.log.enabled, false);
+});
+
+test("the global preview environment switch reaches every strategy", () => {
+  // A dry-run must not leave sibling strategies rewriting the request.
+  const config = resolveConfig({}, { VIBE_CONTEXT_DEDUP_PREVIEW: "1" });
+  assert.equal(config.preview, true);
+  assert.equal(config.errorPurge.preview, true);
+  assert.equal(config.supersedeWrites.preview, true);
+  assert.equal(config.slimEdit.preview, true);
+});
+
+test("the global preview environment switch wins over explicit false", () => {
+  // The same precedence VIBE_CONTEXT_DEDUP_DISABLED has over `enabled`.
+  const config = resolveConfig(
+    { preview: false, errorPurge: { preview: false }, supersedeWrites: { preview: false } },
+    { VIBE_CONTEXT_DEDUP_PREVIEW: "1" },
+  );
+  assert.equal(config.preview, true);
+  assert.equal(config.errorPurge.preview, true);
+  assert.equal(config.supersedeWrites.preview, true);
 });
 
 test("strategies are independently configurable", () => {
@@ -185,6 +218,37 @@ test("error purge input options validate with a turn-based default", () => {
   );
   assert.throws(
     () => resolveConfig({ errorPurge: { inputPlaceholder: "plain" } }, {}),
+    ConfigError,
+  );
+});
+
+test("supersedeWrites uses order fallback by default and can be disabled", () => {
+  assert.equal(resolveConfig({}, {}).supersedeWrites.allowOrderFallback, true);
+
+  const disabled = resolveConfig(
+    { supersedeWrites: { allowOrderFallback: false } },
+    {},
+  );
+  assert.equal(disabled.supersedeWrites.allowOrderFallback, false);
+
+  assert.throws(
+    () => resolveConfig({ supersedeWrites: { allowOrderFallback: "yes" } }, {}),
+    ConfigError,
+  );
+});
+
+test("referenceProtection defaults to any and accepts strong", () => {
+  assert.equal(resolveConfig({}, {}).referenceProtection, "any");
+  assert.equal(
+    resolveConfig({ referenceProtection: "strong" }, {}).referenceProtection,
+    "strong",
+  );
+  assert.throws(
+    () => resolveConfig({ referenceProtection: "weak" }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ referenceProtection: true }, {}),
     ConfigError,
   );
 });
