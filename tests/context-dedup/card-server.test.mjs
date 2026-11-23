@@ -12,8 +12,8 @@ import path from "node:path";
 import {
   buildCardPayload,
   loadCardPayload,
-  startCardServer,
-} from "../../tools/token-usage-card/server.mjs";
+  startViewerServer,
+} from "../../tools/viewer/server.mjs";
 
 const DAY_28 = "2026-10-28";
 const DAY_29 = "2026-10-29";
@@ -37,12 +37,21 @@ function pruning({ dedup = 1, error = 0, supersede = 1 } = {}) {
   };
 }
 
-function record({ timestamp, requestId = "r1", input = 1000, output = 100, cached = 0, summary = pruning() }) {
-  return {
+function record({
+  timestamp,
+  requestId = "r1",
+  input = 1000,
+  output = 100,
+  cached = 0,
+  sessionId = "s",
+  project = null,
+  summary = pruning(),
+}) {
+  const out = {
     schema_version: 3,
     event_type: "model_request_usage",
     timestamp,
-    session_id: "s",
+    session_id: sessionId,
     request_id: requestId,
     input_tokens: { value: input, source: "provider_usage" },
     output_tokens: { value: output, source: "provider_usage" },
@@ -51,6 +60,8 @@ function record({ timestamp, requestId = "r1", input = 1000, output = 100, cache
     pruning: summary,
     errors: [],
   };
+  if (project) out.project = project;
+  return out;
 }
 
 async function writeArchive(directory, records) {
@@ -150,6 +161,36 @@ test("buildCardPayload normalizes v2 totals and four-column old rows", () => {
   assert.equal(rows[1], null);
 });
 
+test("buildCardPayload carries model/session and prefers the record's own project", () => {
+  const direct = {
+    ...record({
+      timestamp: `${DAY_28}T10:00:00.000Z`,
+      sessionId: "ses_1",
+      project: "/repo/direct",
+    }),
+    model: "model-a",
+  };
+  const mapped = {
+    ...record({ timestamp: `${DAY_28}T11:00:00.000Z`, requestId: "r2", sessionId: "ses_2" }),
+    model: "model-b",
+  };
+  const payload = buildCardPayload([direct, mapped], {
+    sessionProjects: { ses_2: "/repo/mapped" },
+  });
+
+  // [6] model, [7] session_id, [8] project.
+  assert.equal(payload.records[0][6], "model-a");
+  assert.equal(payload.records[0][7], "ses_1");
+  assert.equal(payload.records[0][8], "/repo/direct");
+  assert.equal(payload.records[1][6], "model-b");
+  assert.equal(payload.records[1][8], "/repo/mapped");
+
+  // Nothing to resolve: an empty cell, never a made-up project.
+  const bare = buildCardPayload([record({ timestamp: `${DAY_28}T12:00:00.000Z` })], {});
+  assert.equal(bare.records[0][8], "");
+  assert.equal(bare.records[0][6], "");
+});
+
 test("buildCardPayload sorts by time and skips invalid timestamps", () => {
   const payload = buildCardPayload(
     [
@@ -199,10 +240,10 @@ async function withServer(fn) {
       record({ timestamp: `${DAY_28}T10:00:00.000Z`, requestId: "r28" }),
       record({ timestamp: `${DAY_29}T10:00:00.000Z`, requestId: "r29" }),
     ]);
-    const { server, url } = await startCardServer({
+    const { server, url } = await startViewerServer({
       port: 0,
       host: "127.0.0.1",
-      dataDir: directory,
+      usageDir: directory,
       env: {},
     });
     try {
@@ -231,6 +272,24 @@ test("GET /api/usage returns the live payload with no-store", async () => {
   });
 });
 
+test("GET /api/usage re-reads the archive when it changes", async () => {
+  await withServer(async ({ url, directory }) => {
+    const first = await (await fetch(new URL("api/usage", url))).json();
+    assert.equal(first.records.length, 2);
+
+    await writeArchive(directory, [
+      record({ timestamp: `${DAY_28}T10:00:00.000Z`, requestId: "r28" }),
+      record({ timestamp: `${DAY_29}T10:00:00.000Z`, requestId: "r29" }),
+      record({ timestamp: `${DAY_29}T11:00:00.000Z`, requestId: "r30" }),
+    ]);
+
+    // The payload cache keys on file size/mtime, so an appended record must
+    // invalidate it instead of serving a stale snapshot.
+    const second = await (await fetch(new URL("api/usage", url))).json();
+    assert.equal(second.records.length, 3);
+  });
+});
+
 test("GET /api/usage validates and applies from/to", async () => {
   await withServer(async ({ url }) => {
     const filtered = await fetch(new URL(`api/usage?from=${DAY_29}&to=${DAY_29}`, url));
@@ -253,16 +312,24 @@ test("static assets are served from the allow-list only", async () => {
     const home = await fetch(new URL("/", url));
     assert.equal(home.status, 200);
     assert.match(home.headers.get("content-type"), /text\/html/);
-    assert.match(await home.text(), /Token Usage/);
+    const homeHtml = await home.text();
+    assert.match(homeHtml, /Token 用量/);
+    assert.match(homeHtml, /id="view-timeline"/);
+    assert.match(homeHtml, /id="view-memory"/);
+    assert.match(homeHtml, /id="view-usage"/);
 
-    const app = await fetch(new URL("app.js", url));
+    const app = await fetch(new URL("js/usage.js", url));
     assert.equal(app.status, 200);
     assert.match(app.headers.get("content-type"), /text\/javascript/);
     assert.match(await app.text(), /aggregate/);
 
-    const css = await fetch(new URL("styles.css", url));
+    const css = await fetch(new URL("css/base.css", url));
     assert.equal(css.status, 200);
     assert.match(css.headers.get("content-type"), /text\/css/);
+
+    const memoryApp = await fetch(new URL("js/memory.js", url));
+    assert.equal(memoryApp.status, 200);
+    assert.match(memoryApp.headers.get("content-type"), /text\/javascript/);
 
     const missing = await fetch(new URL("server.mjs", url));
     assert.equal(missing.status, 404);
@@ -298,10 +365,10 @@ test("health reports the resolved archive", async () => {
 test("a missing archive renders an empty payload instead of failing", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-card-empty-"));
   const missing = path.join(directory, "does-not-exist");
-  const { server, url } = await startCardServer({
+  const { server, url } = await startViewerServer({
     port: 0,
     host: "127.0.0.1",
-    dataDir: missing,
+    usageDir: missing,
     env: {},
   });
   try {

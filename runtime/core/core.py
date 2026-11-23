@@ -293,7 +293,7 @@ class WorkflowCore:
             f"resume: {_compact(fields.get('resume'))}",
             f"state: {_safe_text(self.resolved.memory_key)}",
         ]
-        return "\n".join(lines)
+        return _cap_snapshot("\n".join(lines))
 
     # 4 ------------------------------------------------------------------
     def feed_exec(self, result: ExecResult | Mapping[str, Any]) -> FeedResult:
@@ -901,17 +901,77 @@ _CONTROL_RE = re.compile(
 )
 
 
-def _safe_text(value: Any) -> str:
+# 注入有界：单字段允许到 1200，整体快照再由 _cap_snapshot 收敛到 ~1.5KB。
+# 旧实现每个字段硬切 400，会把 review 的 JSON 从字符串中间切断，
+# 注入给模型的 TASK 区因此是病态 JSON（缺右括号、hash 被截半）。
+_SAFE_TEXT_LIMIT = 1200
+_SNAPSHOT_LIMIT = 1500
+_TRUNCATION_MARK = "…"
+
+
+def _sanitize_text(value: Any) -> str:
     text = str(value)
     text = _CONTROL_RE.sub(" ", text)
     text = "".join(" " if unicodedata.category(ch) in ("Cf", "Cs") else ch for ch in text)
-    return text.replace("\r", " ").replace("\n", " ")[:400]
+    return text.replace("\r", " ").replace("\n", " ")
+
+
+def _safe_text(value: Any, limit: int = _SAFE_TEXT_LIMIT) -> str:
+    text = _sanitize_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + _TRUNCATION_MARK
+
+
+def _trim_review(value: dict[str, Any]) -> dict[str, Any] | None:
+    """review 超预算时只裁可再生的诊断列表，保留其余键，输出仍是合法 JSON。"""
+    out = dict(value)
+    changed = False
+    failure = out.get("failure_state")
+    if isinstance(failure, dict):
+        failure = dict(failure)
+        history = failure.get("history")
+        if isinstance(history, list) and len(history) > 2:
+            failure["history"] = history[-2:]
+            changed = True
+        exec_ids = failure.get("recent_exec_ids")
+        if isinstance(exec_ids, list) and len(exec_ids) > 3:
+            failure["recent_exec_ids"] = exec_ids[-3:]
+            changed = True
+        out["failure_state"] = failure
+    issues = out.get("issues")
+    if isinstance(issues, list) and len(issues) > 3:
+        out["issues"] = issues[:3]
+        changed = True
+    return out if changed else None
 
 
 def _compact(value: Any) -> str:
     if isinstance(value, str):
         return _safe_text(value)
     try:
-        return _safe_text(json.dumps(value, ensure_ascii=False, sort_keys=False))
+        text = json.dumps(value, ensure_ascii=False, sort_keys=False)
     except (TypeError, ValueError):  # pragma: no cover
-        return str(value)[:400]
+        return _safe_text(str(value))
+    if len(text) <= _SAFE_TEXT_LIMIT:
+        return _safe_text(text)
+    if isinstance(value, dict):
+        trimmed = _trim_review(value)
+        if trimmed is not None:
+            text = json.dumps(trimmed, ensure_ascii=False, sort_keys=False)
+            if len(text) <= _SAFE_TEXT_LIMIT:
+                return _safe_text(text)
+    # 最后兜底也必须产出合法 JSON，绝不把对象从中间切断。
+    # 注意：先截断 preview 源文本、再 dumps；不能先 dumps 再 _safe_text，
+    # 否则截断点落在字符串内部，JSON 仍然是坏的。
+    fallback = {"_truncated": True, "preview": text[: _SAFE_TEXT_LIMIT - 64]}
+    return _sanitize_text(json.dumps(fallback, ensure_ascii=False))
+
+
+def _cap_snapshot(text: str) -> str:
+    if len(text) <= _SNAPSHOT_LIMIT:
+        return text
+    cut = text.rfind("\n", 0, _SNAPSHOT_LIMIT)
+    if cut <= 0:
+        cut = _SNAPSHOT_LIMIT
+    return text[:cut] + "\n" + _TRUNCATION_MARK

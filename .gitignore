@@ -73,11 +73,13 @@ docs/audits/*.local.jsonl
 reports/memory-audit-*.json
 reports/memory-distill-*.json
 
-# 记忆查看器数据快照（含本机路径与记忆正文，禁止入库；用 scripts/memory/export_viewer_data.py 生成）
+# 记忆查看器数据快照（已废弃：记忆视图直接只读 SQLite；归档副本同样不入库）
 tools/memory-viewer/memory-data.json
+tools/_archive/**/memory-data.json
 
-# Token 用量卡片数据快照（含真实用量，禁止入库；用 scripts/token-usage/export_card_data.py 生成）
+# Token 用量离线快照（页面已由 tools/viewer 实时读取 JSONL，不再加载该文件；含真实用量，禁止入库）
 tools/token-usage-card/token-usage-data.js
+tools/_archive/**/token-usage-data.js
 
 # Skill 草稿（来自本机记忆的候选产物；默认不入库，评审后再人工移入 skills/）
 reports/skill-drafts/

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>Vibe Kernel · 上下文时间轴</title>
+<link rel="stylesheet" href="styles.css?v=20261123-17">
+</head>
+<body>
+
+<div class="notice" id="notice" hidden>
+  <svg class="notice-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false">
+    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd"/>
+  </svg>
+  <span class="notice-text">无法读取注入记录。启动本地服务后访问：<code>node tools/prompt-injection-viewer/server.mjs</code></span>
+</div>
+
+<main class="layout" id="layout">
+  <aside class="session-pane" aria-label="对话列表">
+    <div class="pane-brand">
+      <div class="brand-text">
+        <p class="eyebrow">Vibe Kernel</p>
+        <div class="title-line">
+          <h1>上下文轨迹</h1>
+          <span class="mode-badge">标准模式</span>
+        </div>
+      </div>
+      <button type="button" class="pane-toggle" id="sidebarToggle" aria-expanded="true" aria-label="收起对话栏" title="收起对话栏">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="pane-rail" aria-hidden="true">
+      <svg viewBox="0 0 16 16" focusable="false">
+        <path d="M3 4h10M3 8h10M3 12h6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span class="pane-rail-count" id="railCount">0</span>
+    </div>
+    <div class="pane-head">
+      <span>对话</span>
+      <span class="pane-count" id="sessionCount">0</span>
+    </div>
+    <ul class="session-list" id="sessionList"></ul>
+    <p class="pane-empty" id="sessionEmpty" hidden>没有对话记录</p>
+    <div class="pane-footer">
+      <button type="button" class="clear-button" id="clearButton">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M3 4.5h10M6.2 4.5V3h3.6v1.5M4.7 4.5l.6 8.4h5.4l.6-8.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>清除记录</span>
+      </button>
+    </div>
+  </aside>
+
+  <section class="timeline-pane" id="timelinePane" aria-label="上下文轨迹">
+    <div class="trajectory-main">
+      <div class="trajectory-top">
+        <header class="timeline-head" id="timelineHead" hidden>
+          <div>
+            <p class="timeline-eyebrow">对话</p>
+            <h2 id="sessionTitle">—</h2>
+            <p class="timeline-meta" id="sessionMeta"></p>
+          </div>
+          <div class="timeline-stats" id="sessionStats"></div>
+        </header>
+
+        <section class="strip-card" id="stripCard" hidden aria-label="轨迹概览" title="滚轮缩放概览；单击选中单条，拖动选择区间">
+          <div class="strip-legend" aria-hidden="true">
+            <span>输入</span>
+            <span>注入</span>
+            <span>工具</span>
+          </div>
+          <div class="strip-scroll" id="stripScroll">
+            <div class="strip-lanes" id="stripLanes"></div>
+          </div>
+          <button type="button" class="strip-zoom" id="stripZoom" hidden title="重置概览缩放">1×</button>
+        </section>
+
+        <div class="strip-selection-hint" id="stripSelectionHint" hidden>
+          <span id="stripSelectionText"></span>
+          <button type="button" class="strip-clear" id="stripClearButton">清除选择</button>
+        </div>
+      </div>
+
+      <div class="trajectory-scroll" id="trajectoryScroll">
+        <ol class="timeline" id="timeline"></ol>
+        <div class="timeline-empty" id="timelineEmpty">
+          <p>选择左侧对话查看上下文轨迹。</p>
+          <p class="hint">记录来自 <code>vibe-bridge</code> 的系统提示词、用户输入、注入、工具 / MCP / 技能调用。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<aside class="detail-panel" id="detailPanel" hidden aria-label="事件详情">
+  <div class="detail-head">
+    <div>
+      <p class="detail-kicker" id="detailKicker">—</p>
+      <h2 class="detail-title" id="detailTitle">—</h2>
+    </div>
+    <button type="button" class="detail-close" id="detailClose" aria-label="关闭详情">×</button>
+  </div>
+  <div class="detail-tabs" role="tablist">
+    <button type="button" class="detail-tab is-active" data-tab="overview" role="tab" aria-selected="true">概述</button>
+    <button type="button" class="detail-tab" data-tab="preview" role="tab" aria-selected="false">预览</button>
+    <button type="button" class="detail-tab" data-tab="raw" role="tab" aria-selected="false">原始内容</button>
+    <button type="button" class="detail-tab" data-tab="source" role="tab" aria-selected="false">来源</button>
+  </div>
+  <div class="detail-body">
+    <div class="detail-overview" id="detailOverview"></div>
+    <div class="detail-preview" id="detailPreview" hidden></div>
+    <pre class="detail-pre" id="detailRaw" hidden></pre>
+    <div class="detail-overview" id="detailSource" hidden></div>
+  </div>
+</aside>
+
+<div class="scroll-actions" id="scrollActions" hidden>
+  <button type="button" class="scroll-button" id="scrollTopButton" title="回到顶部" aria-label="回到顶部">
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 13V3M4 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <button type="button" class="scroll-button" id="scrollBottomButton" title="滚动到底部" aria-label="滚动到底部">
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 3v10M4 9l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+</div>
+
+<div class="modal-backdrop" id="clearModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="clearTitle" aria-describedby="clearDesc">
+    <div class="modal-head">
+      <h2 id="clearTitle">清除历史记录</h2>
+      <button type="button" class="modal-close" id="clearClose" aria-label="关闭">×</button>
+    </div>
+    <p class="modal-warning" id="clearDesc">清除后不可恢复。归档文件会被重写；运行中的宿主仍可能继续写入新记录。</p>
+    <div class="clear-scope">
+      <button type="button" class="clear-option" id="clearSessionOption">
+        <strong>清空当前对话</strong>
+        <span id="clearSessionHint">选择左侧对话后可用</span>
+      </button>
+      <button type="button" class="clear-option danger" id="clearAllOption">
+        <strong>清空全部数据</strong>
+        <span>删除所有对话的上下文记录</span>
+      </button>
+    </div>
+    <div class="clear-confirm" id="clearConfirm" hidden>
+      <p id="clearConfirmText"></p>
+      <div class="modal-actions">
+        <button type="button" id="clearCancel">取消</button>
+        <button type="button" class="danger" id="clearConfirmButton">确认清空</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js?v=20261123-17"></script>
+</body>
+</html>

@@ -645,6 +645,7 @@ test("builds a versioned record from real values only", () => {
   const record = buildUsageRecord({
     session_id: SESSION_ID,
     request_id: "msg_a1",
+    project: "/repo/demo",
     timestamp: "2026-10-28T12:00:00.000Z",
     usage,
     context_estimates: {
@@ -660,6 +661,7 @@ test("builds a versioned record from real values only", () => {
   assert.equal(record.session_id, SESSION_ID);
   assert.equal(record.request_id, "msg_a1");
   assert.equal(record.model, "deepseek-flash");
+  assert.equal(record.project, "/repo/demo");
   assert.equal(record.transport, "unavailable");
   assert.equal(record.estimator, TOKEN_ESTIMATOR_ID);
   assert.deepEqual(record.errors, []);
@@ -674,6 +676,9 @@ test("absent identifiers stay null and are not fabricated", () => {
   assert.equal(record.provider, null);
   assert.equal(record.model, null);
   assert.equal(record.usage_status, "missing");
+  // Older writers never supplied a project; a missing one must stay absent,
+  // not become an empty string that reads as "project known but blank".
+  assert.equal("project" in record, false);
   assert.equal(record.context_estimates.before_pruning, null);
   assert.equal(record.pruning, null);
 });

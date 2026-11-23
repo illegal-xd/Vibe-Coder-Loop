@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>Vibe Kernel · Token 用量</title>
+<link rel="stylesheet" href="css/base.css?v=20261123-11">
+<link rel="stylesheet" href="css/timeline.css?v=20261123-11">
+<link rel="stylesheet" href="css/usage.css?v=20261123-11">
+<link rel="stylesheet" href="css/memory.css?v=20261123-11">
+</head>
+<body>
+
+<div class="notice" id="notice" hidden>
+  <svg class="notice-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" focusable="false">
+    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd"/>
+  </svg>
+  <span class="notice-text">无法读取数据。启动本地服务后访问：<code>node tools/viewer/server.mjs</code></span>
+</div>
+
+<div class="layout" id="layout">
+  <aside class="session-pane" aria-label="导航与对话列表">
+    <div class="pane-brand">
+      <div class="brand-text">
+        <p class="eyebrow">Vibe Kernel</p>
+        <div class="title-line">
+          <h1>洞察台</h1>
+        </div>
+      </div>
+      <button type="button" class="pane-toggle" id="sidebarToggle" aria-expanded="true" aria-label="收起对话栏" title="收起对话栏">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="pane-rail" aria-label="折叠导航">
+      <button type="button" class="rail-btn is-active" data-view="usage" title="用量" aria-label="用量">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M3 13V9M6.3 13V5.5M9.7 13V7M13 13V3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button type="button" class="rail-btn" data-view="memory" title="记忆" aria-label="记忆">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M3 3.5h4.5A1.5 1.5 0 0 1 9 5v8.5H4.5A1.5 1.5 0 0 1 3 12V3.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M9 5a2 2 0 0 1 2-2h2v8.5h-2a2 2 0 0 0-2 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button type="button" class="rail-btn" data-view="timeline" title="对话" aria-label="对话">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <span class="pane-rail-count" id="railCount">0</span>
+    </div>
+
+    <nav class="pane-nav" aria-label="数据视图" role="tablist">
+      <button type="button" class="nav-item is-active" data-view="usage" role="tab" aria-selected="true">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M3 13V9M6.3 13V5.5M9.7 13V7M13 13V3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <span>用量</span>
+      </button>
+      <button type="button" class="nav-item" data-view="memory" role="tab" aria-selected="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M3 3.5h4.5A1.5 1.5 0 0 1 9 5v8.5H4.5A1.5 1.5 0 0 1 3 12V3.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M9 5a2 2 0 0 1 2-2h2v8.5h-2a2 2 0 0 0-2 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <span>记忆</span>
+      </button>
+      <button type="button" class="nav-item" data-view="timeline" role="tab" aria-selected="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <span>对话</span>
+      </button>
+    </nav>
+
+    <div class="pane-sessions" id="paneSessions" hidden>
+      <div class="pane-head">
+        <span>对话列表</span>
+        <span class="pane-count" id="sessionCount">0</span>
+      </div>
+
+      <ul class="session-list" id="sessionList"></ul>
+      <p class="pane-empty" id="sessionEmpty" hidden>没有对话记录</p>
+
+      <div class="pane-footer">
+        <button type="button" class="clear-button" id="clearButton">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M3 4.5h10M6.2 4.5V3h3.6v1.5M4.7 4.5l.6 8.4h5.4l.6-8.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>清除记录</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="view-stage" id="viewStage">
+    <!-- ============================================================ 轨迹 -->
+    <section class="view" id="view-timeline" aria-hidden="true" aria-label="上下文轨迹">
+      <section class="timeline-pane" id="timelinePane">
+        <div class="trajectory-main">
+          <div class="trajectory-top">
+            <header class="timeline-head" id="timelineHead" hidden>
+              <div>
+                <p class="timeline-eyebrow">对话</p>
+                <h2 id="sessionTitle">—</h2>
+                <p class="timeline-meta" id="sessionMeta"></p>
+              </div>
+              <div class="timeline-stats" id="sessionStats"></div>
+            </header>
+
+            <section class="strip-card" id="stripCard" hidden aria-label="轨迹概览" title="滚轮缩放概览；单击选中单条，拖动选择区间">
+              <div class="strip-legend" aria-hidden="true">
+                <span>输入</span>
+                <span>注入</span>
+                <span>工具</span>
+              </div>
+              <div class="strip-scroll" id="stripScroll">
+                <div class="strip-volume" id="stripVolume"
+                     title="按记录体积累计的上下文构成；竖线为上下文快照 / 压缩点。是记录体量的估算，不是模型上下文真值。"></div>
+                <div class="strip-lanes" id="stripLanes"></div>
+              </div>
+              <button type="button" class="strip-zoom" id="stripZoom" hidden title="重置概览缩放">1×</button>
+            </section>
+
+            <div class="strip-selection-hint" id="stripSelectionHint" hidden>
+              <span id="stripSelectionText"></span>
+              <button type="button" class="strip-clear" id="stripClearButton">清除选择</button>
+            </div>
+          </div>
+
+          <div class="trajectory-scroll" id="trajectoryScroll">
+            <ol class="timeline" id="timeline"></ol>
+            <div class="timeline-empty" id="timelineEmpty">
+              <p>选择左侧对话查看上下文轨迹。</p>
+              <p class="hint">记录来自 <code>vibe-bridge</code> 的系统提示词、用户输入、注入、工具 / MCP / 技能调用。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============================================================ 记忆 -->
+    <section class="view" id="view-memory" aria-hidden="true" aria-label="记忆">
+      <header class="mem-head">
+        <div>
+          <p class="eyebrow">delx-memory</p>
+          <div class="mem-title">
+            <h2>记忆</h2>
+            <span class="mem-count" id="memCount">—</span>
+          </div>
+          <p class="mem-sub" id="memSource">只读数据库</p>
+        </div>
+        <div class="mem-actions">
+          <button class="mem-btn" id="memRefresh" type="button" title="重新读取数据库">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M13.7 2.5v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>刷新</span>
+          </button>
+          <button class="mem-btn" id="memExportCsv" type="button" title="导出当前筛选结果">导出 CSV</button>
+        </div>
+      </header>
+
+      <section class="mem-toolbar" aria-label="筛选与排序">
+        <div class="mem-field grow">
+          <label for="search">搜索</label>
+          <input id="search" type="search" autocomplete="off"
+                 placeholder="搜索 key / 正文 / 标签，空格 AND，支持 type: tag: status:"
+                 title="key / 正文 / 标签，空格分隔按 AND 组合；支持 type: tag: status: layer: frag: weight:">
+        </div>
+        <div class="mem-field">
+          <label for="typeFilter">类型</label>
+          <select id="typeFilter"></select>
+        </div>
+        <div class="mem-field">
+          <label for="weightFilter">权重</label>
+          <select id="weightFilter"></select>
+        </div>
+        <div class="mem-field">
+          <label for="layerFilter">层级</label>
+          <select id="layerFilter"></select>
+        </div>
+        <div class="mem-field">
+          <label for="statusFilter">状态</label>
+          <select id="statusFilter"></select>
+        </div>
+        <div class="mem-field">
+          <label for="fragFilter">分片</label>
+          <select id="fragFilter"></select>
+        </div>
+        <div class="mem-field">
+          <label for="ttlFilter">TTL</label>
+          <select id="ttlFilter"></select>
+        </div>
+        <div class="mem-field">
+          <label for="minSize">最小字符</label>
+          <input id="minSize" type="number" min="0" step="100" placeholder="0">
+        </div>
+        <div class="mem-field">
+          <label for="sortBy">排序</label>
+          <select id="sortBy"></select>
+        </div>
+      </section>
+
+      <section class="mem-chips" id="activeFilters" aria-label="已启用的筛选"></section>
+      <div class="mem-stats" id="memStats" aria-live="polite"></div>
+
+      <div class="mem-scroll" id="memScroll">
+        <table class="grid" id="grid">
+          <thead>
+            <tr>
+              <th data-sort="key" scope="col">键</th>
+              <th data-sort="type" scope="col">类型</th>
+              <th data-sort="size" scope="col" class="num">字符</th>
+              <th scope="col">标签</th>
+              <th data-sort="updated_at" scope="col">更新时间</th>
+              <th data-sort="status" scope="col">状态</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+
+        <p class="empty" id="empty" hidden>没有匹配的记忆</p>
+      </div>
+      <div class="mem-pager" id="memPager">
+        <span class="mem-pager-info" id="pagerInfo">—</span>
+        <div class="mem-pager-pages" id="pagerPages" role="navigation" aria-label="分页"></div>
+        <div class="mem-pager-tools">
+          <label class="mem-pager-field" for="pageSize">每页
+            <select id="pageSize" aria-label="每页条数"></select>
+          </label>
+          <label class="mem-pager-field" for="pageJump">跳至
+            <input id="pageJump" type="number" min="1" step="1" inputmode="numeric"
+                   aria-label="跳转页码" title="输入页码后按 Enter" placeholder="页码">
+            页
+          </label>
+        </div>
+      </div>
+<!-- ============================================================== 记忆抽屉 -->
+<div class="drawer-mask" id="drawerMask"></div>
+
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="drawerTitle" tabindex="-1">
+  <div class="drawer-head">
+    <div class="drawer-title">
+      <h2 id="drawerTitle">—</h2>
+      <div class="badges" id="drawerBadges"></div>
+    </div>
+    <button class="icon-btn" id="closeDrawer" type="button" aria-label="关闭">✕</button>
+  </div>
+
+  <div class="drawer-tools">
+    <button class="mem-btn" id="copyKey" type="button">复制 key</button>
+    <button class="mem-btn" id="copyValue" type="button">复制正文</button>
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="text" role="tab" aria-selected="true" type="button">正文</button>
+      <button class="tab" data-tab="meta" role="tab" aria-selected="false" type="button">metadata</button>
+    </div>
+  </div>
+
+  <div class="drawer-relations" id="drawerRelations"></div>
+
+  <pre class="drawer-body" id="drawerText"></pre>
+  <pre class="drawer-body" id="drawerMeta" hidden></pre>
+</aside>
+    </section>
+
+    <!-- ============================================================ 用量 -->
+    <section class="view is-active" id="view-usage" aria-hidden="false" aria-label="Token 用量">
+      <main class="page is-initial-loading" aria-labelledby="cardTitle">
+        <header class="card-head">
+          <div class="head-titles">
+            <p class="eyebrow">Vibe Kernel</p>
+            <h1 id="cardTitle">Token 用量</h1>
+            <p class="subtitle" id="rangeCaption" aria-live="polite">—</p>
+          </div>
+          <div class="head-controls">
+            <div class="segmented" role="group" aria-label="统计维度">
+              <span class="segmented-thumb" aria-hidden="true"></span>
+              <button type="button" data-range="yesterday">昨天</button>
+              <button type="button" class="is-active" data-range="today" aria-pressed="true">今天</button>
+              <button type="button" data-range="last7">最近 7 天</button>
+            </div>
+            <button type="button" class="chip-toggle" id="compareToggle" aria-pressed="false"
+                    title="与上一个等长区间对比">对比上一区间</button>
+            <div class="health-wrap">
+              <button type="button" class="refresh health-btn" id="healthButton"
+                      title="数据健康" aria-label="数据健康" aria-expanded="false">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <path d="M8 1.8 9.4 3l1.8-.3.6 1.7 1.7.6-.3 1.8 1.2 1.4-1.2 1.4.3 1.8-1.7.6-.6 1.7-1.8-.3L8 14.2 6.6 13l-1.8.3-.6-1.7-1.7-.6.3-1.8L1.6 7.8 2.8 6.4l-.3-1.8 1.7-.6.6-1.7L6.6 3 8 1.8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+                  <circle cx="8" cy="8" r="1.6" fill="currentColor"/>
+                </svg>
+              </button>
+              <div class="health-popover" id="healthPopover" hidden aria-label="数据健康"></div>
+            </div>
+            <button type="button" class="refresh" id="refreshButton" title="刷新数据" aria-label="刷新数据">
+              <svg class="refresh-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                <path d="M13.7 2.5v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="refresh-spinner" aria-hidden="true"></span>
+            </button>
+          </div>
+        </header>
+
+        <section class="metrics is-loading" id="metrics" aria-label="Token 指标">
+          <div class="metric">
+            <p class="metric-label">输入 Token</p>
+            <p class="metric-value" id="mInput">—</p>
+            <p class="metric-note" id="mInputNote">含缓存前缀</p>
+            <p class="metric-delta" id="mInputDelta" hidden></p>
+          </div>
+          <div class="metric">
+            <p class="metric-label">输出 Token</p>
+            <p class="metric-value" id="mOutput">—</p>
+            <p class="metric-note">可见输出与推理</p>
+            <p class="metric-delta" id="mOutputDelta" hidden></p>
+          </div>
+          <div class="metric">
+            <p class="metric-label">缓存命中</p>
+            <p class="metric-value" id="mRate">—</p>
+            <p class="metric-note" id="mRateNote">缓存读 ÷ 总输入</p>
+            <p class="metric-delta" id="mRateDelta" hidden></p>
+          </div>
+          <div class="metric">
+            <p class="metric-label">估算裁剪</p>
+            <p class="metric-value" id="mRemoved">—</p>
+            <p class="metric-note" id="mRemovedNote">估算值，不等于账单节省</p>
+            <p class="metric-delta" id="mRemovedDelta" hidden></p>
+          </div>
+        </section>
+
+        <section class="trend" aria-labelledby="trendTitle">
+          <div class="section-head">
+            <h2 id="trendTitle">时间分布</h2>
+            <p class="section-total" id="trendCaption" aria-live="polite"></p>
+          </div>
+          <div class="trend-shell">
+            <svg class="trend-svg" id="trendSvg" role="img"
+                 aria-label="按时间分布的输入与输出 Token 柱状图"></svg>
+            <div class="trend-tip" id="trendTip" hidden></div>
+            <p class="trend-empty" id="trendEmpty" hidden>该区间没有记录</p>
+            <div class="sk sk-trend" aria-hidden="true"></div>
+          </div>
+          <div class="trend-legend" id="trendLegend" aria-hidden="true">
+            <span class="lg-input">输入</span>
+            <span class="lg-output">输出</span>
+          </div>
+          <p class="trend-focus" id="trendFocus" hidden>
+            <span id="trendFocusText"></span>
+            <button type="button" class="trend-clear" id="trendClearButton">清除聚焦</button>
+          </p>
+        </section>
+
+        <section aria-labelledby="strategyTitle">
+          <div class="section-head">
+            <h2 id="strategyTitle">策略贡献</h2>
+            <p class="section-total" id="strategyTotal" aria-live="polite"></p>
+          </div>
+          <div id="strategyList" class="strategy-grid"></div>
+          <div class="sk-cards" aria-hidden="true">
+            <span class="sk sk-card"></span>
+            <span class="sk sk-card"></span>
+            <span class="sk sk-card"></span>
+          </div>
+          <p class="strategy-hint" id="strategyHint" hidden>该区间没有实际裁剪记录，策略贡献为 0。</p>
+        </section>
+
+        <section class="breakdown" aria-labelledby="breakdownTitle">
+          <div class="section-head">
+            <h2 id="breakdownTitle">去向拆分</h2>
+            <div class="segmented compact" role="tablist" id="dimensionTabs" aria-label="拆分维度">
+              <span class="segmented-thumb" aria-hidden="true"></span>
+              <button type="button" class="is-active" data-dim="model" role="tab" aria-selected="true">模型</button>
+              <button type="button" data-dim="session" role="tab" aria-selected="false">会话</button>
+              <button type="button" data-dim="project" role="tab" aria-selected="false">项目</button>
+            </div>
+          </div>
+          <div class="breakdown-scroll">
+            <div class="sk-rows" aria-hidden="true">
+              <span class="sk sk-row"></span>
+              <span class="sk sk-row"></span>
+              <span class="sk sk-row"></span>
+              <span class="sk sk-row"></span>
+              <span class="sk sk-row"></span>
+            </div>
+            <table class="bd-table">
+              <thead>
+                <tr>
+                  <th scope="col">名称</th>
+                  <th scope="col" class="num">请求</th>
+                  <th scope="col" class="num">输入</th>
+                  <th scope="col" class="num">输出</th>
+                  <th scope="col" class="num">缓存命中</th>
+                  <th scope="col" class="num">裁剪</th>
+                  <th scope="col" class="num">占输入</th>
+                </tr>
+              </thead>
+              <tbody id="breakdownRows"></tbody>
+            </table>
+          </div>
+          <p class="breakdown-empty" id="breakdownEmpty" hidden></p>
+        </section>
+
+        <footer class="foot">
+          <p class="footnote">
+            仅列出本区间产生候选或裁剪的策略，并按提示词区域分组：标「每请求」的是每次请求都会重复生效的前缀折扣（正面为每请求均值，占比按占输入计算），标「区间累计」的是事件型裁剪（占比在同组内计算），两组不共享分母。扫描 / 合格 / 候选 / 标记为每请求均值。贡献均为估算 token（字符加权），顶部另给出按缓存读 0.1× 折算的账单口径近似值；两者都不等于实际账单。点击卡片可翻转查看明细。
+          </p>
+          <p class="snapshot" id="snapshot" aria-live="polite"></p>
+        </footer>
+      </main>
+    </section>
+  </div>
+</div>
+
+<!-- ============================================================== 详情抽屉 -->
+<aside class="detail-panel" id="detailPanel" hidden aria-label="事件详情">
+  <div class="detail-head">
+    <div>
+      <p class="detail-kicker" id="detailKicker">—</p>
+      <h2 class="detail-title" id="detailTitle">—</h2>
+    </div>
+    <button type="button" class="detail-close" id="detailClose" aria-label="关闭详情">×</button>
+  </div>
+  <div class="detail-tabs" role="tablist">
+    <button type="button" class="detail-tab is-active" data-tab="overview" role="tab" aria-selected="true">概述</button>
+    <button type="button" class="detail-tab" data-tab="preview" role="tab" aria-selected="false">预览</button>
+    <button type="button" class="detail-tab" data-tab="raw" role="tab" aria-selected="false">原始内容</button>
+    <button type="button" class="detail-tab" data-tab="source" role="tab" aria-selected="false">来源</button>
+  </div>
+  <div class="detail-body">
+    <div class="detail-overview" id="detailOverview"></div>
+    <div class="detail-preview" id="detailPreview" hidden></div>
+    <pre class="detail-pre" id="detailRaw" hidden></pre>
+    <div class="detail-overview" id="detailSource" hidden></div>
+  </div>
+</aside>
+
+<div class="scroll-actions" id="scrollActions" hidden>
+  <button type="button" class="scroll-button" id="scrollTopButton" title="回到顶部" aria-label="回到顶部">
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 13V3M4 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+  <button type="button" class="scroll-button" id="scrollBottomButton" title="滚动到底部" aria-label="滚动到底部">
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M8 3v10M4 9l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
+</div>
+
+<div class="modal-backdrop" id="clearModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="clearTitle" aria-describedby="clearDesc">
+    <div class="modal-head">
+      <h2 id="clearTitle">清除历史记录</h2>
+      <button type="button" class="modal-close" id="clearClose" aria-label="关闭">×</button>
+    </div>
+    <p class="modal-warning" id="clearDesc">清除后不可恢复。归档文件会被重写；运行中的宿主仍可能继续写入新记录。</p>
+    <div class="clear-scope">
+      <button type="button" class="clear-option" id="clearSessionOption">
+        <strong>清空当前对话</strong>
+        <span id="clearSessionHint">选择左侧对话后可用</span>
+      </button>
+      <button type="button" class="clear-option danger" id="clearAllOption">
+        <strong>清空全部数据</strong>
+        <span>删除所有对话的上下文记录</span>
+      </button>
+    </div>
+    <div class="clear-confirm" id="clearConfirm" hidden>
+      <p id="clearConfirmText"></p>
+      <div class="modal-actions">
+        <button type="button" id="clearCancel">取消</button>
+        <button type="button" class="danger" id="clearConfirmButton">确认清空</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="js/timeline.js?v=20261123-11"></script>
+<script src="js/usage.js?v=20261123-11"></script>
+<script src="js/memory.js?v=20261123-11"></script>
+<script src="js/app.js?v=20261123-11"></script>
+</body>
+</html>

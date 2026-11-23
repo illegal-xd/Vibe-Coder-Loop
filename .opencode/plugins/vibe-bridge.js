@@ -18,6 +18,9 @@
  *     is injected (0 blocking spawn). A cold pointer is warmed by a detached
  *     spawn (single in flight, 60s TTL).
  *   - Snapshot results are cached (full: 5s, pointer: 60s) per (cwd, detail).
+ *   - Every successful checkpoint/compaction injection is also appended to an
+ *     independent prompt-injection archive (async queue, never blocking and
+ *     never failing the hook). See `prompt-injection/log.js`.
  *
  * ExecResult fidelity (审查 v3): feed-exec drives failure aggregation, and
  * two consecutive same-fingerprint failures force S14 Safe Mode — so a false
@@ -48,6 +51,19 @@ import { tool } from "@opencode-ai/plugin";
 // read-only shell/git list (and chain parsing) with Supersede Writes, so the
 // two layers cannot drift (e.g. `git branch -d` is not inspection-only).
 import { isReadOnlyShellCommand } from "../context-dedup/supersede-writes.js";
+import {
+  CATEGORY_CONTEXT,
+  CATEGORY_MCP,
+  CATEGORY_SKILL,
+  CATEGORY_TOOL,
+  CATEGORY_USER_INPUT,
+  MCP_CALL_EVENT,
+  SKILL_CALL_EVENT,
+  SYSTEM_PROMPT_EVENT,
+  TOOL_CALL_EVENT,
+  USER_INPUT_EVENT,
+  createInjectionLogger,
+} from "../prompt-injection/log.js";
 
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PENDING_TTL_MS = 30 * 60 * 1000;
@@ -66,6 +82,35 @@ const EXEC_CLASS_TOOLS = new Set(
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
 );
+// MCP tool names are host-specific. These prefixes cover the common
+// OpenCode conventions; VIBE_BRIDGE_MCP_TOOLS can add exact names/prefixes.
+const EXTRA_MCP_TOOLS = `${process.env.VIBE_BRIDGE_MCP_TOOLS || ""}`
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+const MCP_NAME_PATTERN = /^(?:mcp(?:[_.]|$)|delx-memory[_.]|codegraph[_.])/i;
+function isMcpToolName(name) {
+  const lower = String(name || "").toLowerCase();
+  if (!lower) return false;
+  if (MCP_NAME_PATTERN.test(lower)) return true;
+  return EXTRA_MCP_TOOLS.some((item) => lower === item || lower.startsWith(item));
+}
+
+function clipText(value, max) {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
+function safeJsonText(value, max) {
+  let text;
+  try {
+    text = JSON.stringify(value);
+  } catch {
+    text = "<unserializable>";
+  }
+  return clipText(text, max);
+}
 
 function envList(name) {
   return (process.env[name] || "")
@@ -139,6 +184,13 @@ function debugWarn(message, detail) {
   } catch {
     // ignore
   }
+}
+
+/** One-line diagnostic text; project paths are redacted before logging. */
+function sanitizeError(error, directory = "") {
+  let text = error && typeof error.message === "string" ? error.message : String(error);
+  if (directory) text = text.split(directory).join("<project>");
+  return text.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 /**
@@ -423,6 +475,192 @@ export const VibeBridgePlugin = async (input) => {
   const directory = input?.directory || process.cwd();
   const cwd = input?.worktree || directory;
 
+  // Prompt-injection archive is independent from token usage. `record()` only
+  // enqueues; a detached flush writes the JSONL later, so a chat hook never
+  // waits for disk I/O. Failures are rate-limited diagnostics, never request
+  // failures.
+  let injectionLogFailureAt = 0;
+  const injectionLog = createInjectionLogger({
+    env: process.env,
+    onFailure: (error) => {
+      const now = Date.now();
+      if (now - injectionLogFailureAt < 5 * 60 * 1000) return;
+      injectionLogFailureAt = now;
+      try {
+        console.warn(
+          "[vibe-bridge] prompt-injection log failed:",
+          sanitizeError(error, directory)
+        );
+      } catch {
+        // Diagnostics must not break a request.
+      }
+    },
+  });
+
+  /** Record an injection only after the host output was actually modified. */
+  function recordInjection(hookInput, fields) {
+    try {
+      injectionLog.record({
+        sessionID: hookInput?.sessionID,
+        model: hookInput?.model,
+        project: directory,
+        ...fields,
+      });
+    } catch {
+      // record() is contractually non-throwing; this is belt-and-braces.
+    }
+  }
+
+  /**
+   * Record the user's own message text. This is a different category from an
+   * injected TASK zone: the viewer must be able to show "what the user sent"
+   * separately from "what the adapter injected". Synthetic/ignored text parts
+   * are host-generated prompts, not user input, so they are skipped.
+   */
+  function recordUserInput(hookInput, hookOutput) {
+    try {
+      const parts = Array.isArray(hookOutput?.parts) ? hookOutput.parts : [];
+      const content = parts
+        .filter(
+          (part) =>
+            part &&
+            part.type === "text" &&
+            typeof part.text === "string" &&
+            part.synthetic !== true &&
+            part.ignored !== true
+        )
+        .map((part) => part.text)
+        .join("\n\n")
+        .trim();
+      if (!content) return;
+      const message = hookOutput?.message;
+      injectionLog.record({
+        sessionID: hookInput?.sessionID || message?.sessionID,
+        messageID: hookInput?.messageID || message?.id,
+        model: hookInput?.model || message?.model,
+        project: directory,
+        event: USER_INPUT_EVENT,
+        category: CATEGORY_USER_INPUT,
+        hook: "chat.message",
+        kind: "user_input",
+        trigger: "user_message",
+        target: "user_message",
+        content,
+      });
+    } catch {
+      // Best-effort: logging user text must never block the chat.
+    }
+  }
+
+  // Only record a system prompt when it actually changes; otherwise every
+  // request would duplicate the same large block in the timeline.
+  const lastSystemPrompt = new Map();
+
+  function recordSystemPrompt(hookInput, hookOutput) {
+    try {
+      const values = Array.isArray(hookOutput?.system)
+        ? hookOutput.system
+        : typeof hookOutput?.system === "string"
+          ? [hookOutput.system]
+          : [];
+      const content = values
+        .filter((item) => typeof item === "string" && item.trim() !== "")
+        .join("\n\n")
+        .trim();
+      if (!content) return;
+      const key = hookInput?.sessionID || "__unknown__";
+      const hash = createHash("sha256").update(content).digest("hex");
+      if (lastSystemPrompt.get(key) === hash) return;
+      lastSystemPrompt.set(key, hash);
+      if (lastSystemPrompt.size > 500) lastSystemPrompt.clear();
+      injectionLog.record({
+        sessionID: hookInput?.sessionID,
+        model: hookInput?.model,
+        project: directory,
+        event: SYSTEM_PROMPT_EVENT,
+        category: CATEGORY_CONTEXT,
+        hook: "experimental.chat.system.transform",
+        kind: "system_prompt",
+        trigger: "session_start",
+        target: "system",
+        content,
+      });
+    } catch {
+      // Best-effort: context logging must never block a request.
+    }
+  }
+
+  /**
+   * Record a completed tool call. MCP tools and the OpenCode `skill` tool get
+   * their own category; everything else is a plain tool call. Args and result
+   * are clipped before entering the async queue so a large write/read cannot
+   * make the hook expensive.
+   */
+  function recordToolCall(hookInput, hookOutput) {
+    try {
+      const name = String(hookInput?.tool || "");
+      if (!name) return;
+      const lower = name.toLowerCase();
+      let category = CATEGORY_TOOL;
+      let event = TOOL_CALL_EVENT;
+      if (isMcpToolName(name)) {
+        category = CATEGORY_MCP;
+        event = MCP_CALL_EVENT;
+      } else if (lower === "skill" || lower === "skills") {
+        category = CATEGORY_SKILL;
+        event = SKILL_CALL_EVENT;
+      }
+      const args = safeJsonText(hookInput?.args ?? null, 8000);
+      const output =
+        typeof hookOutput?.output === "string"
+          ? clipText(hookOutput.output, 8000)
+          : safeJsonText(hookOutput?.output ?? "", 8000);
+      const title = clipText(hookOutput?.title || "", 500);
+      const lines = [`tool: ${name}`, `args: ${args}`];
+      if (title) lines.push(`title: ${title}`);
+      if (output) lines.push(`result: ${output}`);
+      injectionLog.record({
+        sessionID: hookInput?.sessionID,
+        project: directory,
+        event,
+        category,
+        hook: "tool.execute.after",
+        kind: category,
+        trigger: "tool_call",
+        target: category,
+        content: lines.join("\n"),
+      });
+    } catch {
+      // Best-effort: tool-call logging must never block the tool.
+    }
+  }
+
+  /**
+   * Observable state for the injection archive. Exposed through `vc_state` so
+   * a host restart can be verified without reading the JSONL by hand:
+   * `sequence` proves the hot path enqueued records, `failed`/`last_error`
+   * expose silent write/validation failures.
+   */
+  function injectionDiagnostic() {
+    try {
+      const stats = injectionLog.stats();
+      return {
+        enabled: injectionLog.enabled,
+        base_path: String(injectionLog.basePath || "")
+          .split(directory)
+          .join("<project>")
+          .replace(os.homedir(), "~"),
+        pending: stats.pending,
+        dropped: stats.dropped,
+        sequence: stats.sequence,
+        failed: stats.failed,
+        last_error: stats.lastError ? sanitizeError(stats.lastError, directory) : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   const pendingInject = new Map();
 
   function markPending(sid, mode) {
@@ -499,8 +737,14 @@ export const VibeBridgePlugin = async (input) => {
     },
 
     // ── Mechanism B: named hooks ───────────────────────────────────────────
+    "chat.message": async (hookInput, hookOutput) => {
+      if (DISABLED) return;
+      recordUserInput(hookInput, hookOutput);
+    },
+
     "tool.execute.after": async (hookInput, hookOutput) => {
       if (DISABLED) return;
+      recordToolCall(hookInput, hookOutput);
       // P2: only feed execution-class tools; read/edit/write carry no observable exit.
       if (!hookInput || !EXEC_CLASS_TOOLS.has(hookInput.tool)) return;
       try {
@@ -521,12 +765,21 @@ export const VibeBridgePlugin = async (input) => {
       }
     },
 
-    "experimental.session.compacting": async (_hookInput, hookOutput) => {
+    "experimental.session.compacting": async (hookInput, hookOutput) => {
       if (DISABLED) return;
       try {
         const text = await taskZoneText("full");
         const wrapped = wrapInject(text, "full");
-        if (wrapped) hookOutput?.context?.push?.(wrapped);
+        if (wrapped && hookOutput?.context && typeof hookOutput.context.push === "function") {
+          hookOutput.context.push(wrapped);
+          recordInjection(hookInput, {
+            hook: "experimental.session.compacting",
+            kind: "checkpoint_full",
+            trigger: "compaction",
+            target: "compaction_context",
+            content: wrapped,
+          });
+        }
       } catch {
         // injection failure must not block compaction
       }
@@ -545,6 +798,7 @@ export const VibeBridgePlugin = async (input) => {
 
     "experimental.chat.system.transform": async (hookInput, hookOutput) => {
       if (DISABLED) return;
+      recordSystemPrompt(hookInput, hookOutput);
       try {
         const sid = hookInput?.sessionID;
         const pending = sid ? popPending(sid) : null;
@@ -555,6 +809,13 @@ export const VibeBridgePlugin = async (input) => {
           const wrapped = wrapInject(text, "full");
           if (wrapped && hookOutput?.system) {
             hookOutput.system.push(wrapped);
+            recordInjection(hookInput, {
+              hook: "experimental.chat.system.transform",
+              kind: "checkpoint_full",
+              trigger: pending.mode,
+              target: "system",
+              content: wrapped,
+            });
             return;
           }
         }
@@ -563,7 +824,16 @@ export const VibeBridgePlugin = async (input) => {
         const cachedPtr = getCachedSnapshot(cwd, "pointer");
         if (cachedPtr) {
           const wrapped = wrapInject(cachedPtr, "pointer");
-          if (wrapped && hookOutput?.system) hookOutput.system.push(wrapped);
+          if (wrapped && hookOutput?.system) {
+            hookOutput.system.push(wrapped);
+            recordInjection(hookInput, {
+              hook: "experimental.chat.system.transform",
+              kind: "checkpoint_pointer",
+              trigger: "hot_pointer",
+              target: "system",
+              content: wrapped,
+            });
+          }
         } else {
           warmPointer();
         }
@@ -630,14 +900,16 @@ export const VibeBridgePlugin = async (input) => {
         args: {},
         async execute(_args, _ctx) {
           const rec = await core(["get-state", "--cwd", cwd]);
+          const injection = injectionDiagnostic();
           if (!rec) {
             return toolResult({
               ok: false,
               code: "BRIDGE_CLI_UNAVAILABLE",
               next: "检查 python3 / VIBE_KERNEL_HOME",
+              injection_log: injection,
             });
           }
-          return toolResult(rec);
+          return toolResult({ ...rec, injection_log: injection });
         },
       }),
     },

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""导出 Token 用量卡片数据：~/.config/opencode/token-usage/token-usage*.jsonl → tools/token-usage-card/token-usage-data.js。
+"""旧版离线快照导出（legacy）：~/.config/opencode/token-usage/token-usage*.jsonl → token-usage-data.js。
+
+统一查看器 tools/viewer 已改为每次请求实时读取 JSONL，不再加载该快照；本脚本仅保留给
+历史流程/一致性测试使用（测试通过 VIBE_TOKEN_USAGE_OUT_FILE 指向临时文件）。
 
 卡片页是静态 HTML，file:// 下无法 fetch 本地 jsonl，因此由本脚本生成可直接 <script> 加载的快照。
 只保留卡片需要的字段，并按 schema 语义归一：

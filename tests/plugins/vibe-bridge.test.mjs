@@ -19,6 +19,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { readInjectionLog } from "../../.opencode/prompt-injection/log.js";
+
 const PLUGIN_PATH = path.resolve(".opencode/plugins/vibe-bridge.js");
 
 let tmp;
@@ -99,6 +101,9 @@ before(async () => {
   delete process.env.VIBE_BRIDGE_DEBUG;
   delete process.env.VIBE_BRIDGE_DENY_TOOLS;
   delete process.env.VIBE_BRIDGE_EXEC_TOOLS;
+  // Keep the real prompt-injection archive untouched unless a test opts in.
+  process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED = "1";
+  delete process.env.VIBE_PROMPT_INJECTION_HOME;
   pluginUrl = pathToFileURL(PLUGIN_PATH).href;
   mod = await import(pluginUrl);
 });
@@ -378,6 +383,235 @@ test("cold pointer is warmed in background without blocking the request", async 
   assert.match(sys2.system[0], /VC checkpoint \(pointer\)/);
 });
 
+test("prompt injections are recorded asynchronously with content and session", async () => {
+  const home = path.join(tmp, "prompt-injections");
+  delete process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED;
+  process.env.VIBE_PROMPT_INJECTION_HOME = home;
+  try {
+    const p = await newPlugin();
+    const model = { providerID: "deepseek", id: "v4" };
+
+    // First request may only warm the pointer cache; the second injects it.
+    await p["experimental.chat.system.transform"]({ sessionID: "inj-warm", model }, { system: [] });
+    await new Promise((r) => setTimeout(r, 450));
+
+    const sys = { system: [] };
+    await p["experimental.chat.system.transform"]({ sessionID: "inj-1", model }, sys);
+    assert.ok(sys.system.length > 0, "pointer injected into the system prompt");
+
+    let records = [];
+    for (let attempt = 0; attempt < 20 && records.length === 0; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      const result = await readInjectionLog({
+        env: { VIBE_PROMPT_INJECTION_HOME: home },
+      });
+      records = result.records;
+    }
+
+    const record = records.find((item) => item.session_id === "inj-1");
+    assert.ok(record, "injection record written without blocking the hook");
+    assert.equal(record.event, "prompt_injection");
+    assert.equal(record.hook, "experimental.chat.system.transform");
+    assert.equal(record.kind, "checkpoint_pointer");
+    assert.equal(record.trigger, "hot_pointer");
+    assert.equal(record.target, "system");
+    assert.equal(record.project, tmp);
+    assert.deepEqual(record.model, { provider_id: "deepseek", model_id: "v4" });
+    assert.match(record.content, /VC checkpoint \(pointer\)/);
+
+    // The same plugin instance exposes the logger through vc_state, which is
+    // how a host restart can be verified without reading the archive by hand.
+    const stateRes = await p.tool.vc_state.execute({}, {});
+    const stateRec = parseToolResult(stateRes);
+    assert.equal(stateRec.injection_log.enabled, true);
+    assert.ok(stateRec.injection_log.sequence >= 1, "hot path enqueued at least one record");
+    assert.equal(stateRec.injection_log.failed, 0);
+    assert.match(stateRec.injection_log.base_path, /prompt-injections/);
+  } finally {
+    process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED = "1";
+    delete process.env.VIBE_PROMPT_INJECTION_HOME;
+  }
+});
+
+test("user messages are recorded as a distinct category", async () => {
+  const home = path.join(tmp, "prompt-user-input");
+  delete process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED;
+  process.env.VIBE_PROMPT_INJECTION_HOME = home;
+  try {
+    const p = await newPlugin();
+    const message = {
+      id: "msg_user_1",
+      sessionID: "ses_user_1",
+      role: "user",
+      model: { providerID: "deepseek", modelID: "v4" },
+    };
+    await p["chat.message"](
+      { sessionID: "ses_user_1", messageID: "msg_user_1", model: message.model },
+      {
+        message,
+        parts: [
+          { type: "text", text: "请修复登录超时" },
+          { type: "text", text: "synthetic wrapper", synthetic: true },
+          { type: "reasoning", text: "not user input" },
+        ],
+      }
+    );
+
+    let record = null;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      const result = await readInjectionLog({
+        env: { VIBE_PROMPT_INJECTION_HOME: home },
+      });
+      record = result.records.find((item) => item.session_id === "ses_user_1") || null;
+    }
+
+    assert.ok(record, "user input record is flushed");
+    assert.equal(record.event, "user_input");
+    assert.equal(record.category, "user_input");
+    assert.equal(record.kind, "user_input");
+    assert.equal(record.hook, "chat.message");
+    assert.equal(record.trigger, "user_message");
+    assert.equal(record.target, "user_message");
+    assert.equal(record.message_id, "msg_user_1");
+    assert.equal(record.content, "请修复登录超时");
+    assert.deepEqual(record.model, { provider_id: "deepseek", model_id: "v4" });
+  } finally {
+    process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED = "1";
+    delete process.env.VIBE_PROMPT_INJECTION_HOME;
+  }
+});
+
+test("tool, MCP and skill calls are recorded with distinct categories", async () => {
+  const home = path.join(tmp, "prompt-context-events");
+  delete process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED;
+  process.env.VIBE_PROMPT_INJECTION_HOME = home;
+  try {
+    const p = await newPlugin();
+    await p["tool.execute.after"](
+      { tool: "read", sessionID: "ses_ctx", callID: "c1", args: { filePath: "a.txt" } },
+      { title: "read a.txt", output: "file body", metadata: {} }
+    );
+    await p["tool.execute.after"](
+      {
+        tool: "delx-memory_memory_get",
+        sessionID: "ses_ctx",
+        callID: "c2",
+        args: { key: "agent:test" },
+      },
+      { title: "", output: "{\"value\":\"v\"}", metadata: {} }
+    );
+    await p["tool.execute.after"](
+      { tool: "skill", sessionID: "ses_ctx", callID: "c3", args: { name: "vibe-coder-loop" } },
+      { title: "", output: "loaded", metadata: {} }
+    );
+
+    let records = [];
+    for (let attempt = 0; attempt < 20 && records.length < 3; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      const result = await readInjectionLog({
+        env: { VIBE_PROMPT_INJECTION_HOME: home },
+      });
+      records = result.records.filter((item) => item.session_id === "ses_ctx");
+    }
+
+    const tool = records.find((item) => item.event === "tool_call");
+    const mcp = records.find((item) => item.event === "mcp_call");
+    const skill = records.find((item) => item.event === "skill_call");
+    assert.ok(tool, "plain tool call recorded");
+    assert.equal(tool.category, "tool");
+    assert.match(tool.content, /read/);
+    assert.match(tool.content, /file body/);
+    assert.ok(mcp, "MCP call recorded");
+    assert.equal(mcp.category, "mcp");
+    assert.match(mcp.content, /delx-memory_memory_get/);
+    assert.match(mcp.content, /result:/);
+    assert.ok(skill, "skill call recorded");
+    assert.equal(skill.category, "skill");
+    assert.match(skill.content, /vibe-coder-loop/);
+  } finally {
+    process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED = "1";
+    delete process.env.VIBE_PROMPT_INJECTION_HOME;
+  }
+});
+
+test("system prompt is recorded once per session and deduped", async () => {
+  const home = path.join(tmp, "prompt-system");
+  delete process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED;
+  process.env.VIBE_PROMPT_INJECTION_HOME = home;
+  try {
+    const p = await newPlugin();
+    const model = { providerID: "deepseek", id: "v4" };
+    await p["experimental.chat.system.transform"](
+      { sessionID: "ses_sys", model },
+      { system: ["base system prompt"] }
+    );
+    await p["experimental.chat.system.transform"](
+      { sessionID: "ses_sys", model },
+      { system: ["base system prompt"] }
+    );
+
+    let records = [];
+    for (let attempt = 0; attempt < 20 && records.length === 0; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      const result = await readInjectionLog({
+        env: { VIBE_PROMPT_INJECTION_HOME: home },
+      });
+      records = result.records.filter(
+        (item) => item.session_id === "ses_sys" && item.event === "system_prompt"
+      );
+    }
+    assert.equal(records.length, 1, "same system prompt is not duplicated");
+    assert.equal(records[0].category, "context");
+    assert.equal(records[0].content, "base system prompt");
+  } finally {
+    process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED = "1";
+    delete process.env.VIBE_PROMPT_INJECTION_HOME;
+  }
+});
+
+test("injection-log failures are observable, redacted and never throw the hook", async () => {
+  const blocker = path.join(tmp, "blocker");
+  await writeFile(blocker, "not a directory");
+  const home = path.join(blocker, "home"); // ENOTDIR on mkdir
+  delete process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED;
+  process.env.VIBE_PROMPT_INJECTION_HOME = home;
+  try {
+    const p = await newPlugin();
+    const model = { providerID: "deepseek", id: "v4" };
+
+    await p["experimental.chat.system.transform"](
+      { sessionID: "fail-warm", model },
+      { system: [] }
+    );
+    await new Promise((r) => setTimeout(r, 450));
+
+    const sys = { system: [] };
+    await p["experimental.chat.system.transform"]({ sessionID: "fail-1", model }, sys);
+    assert.ok(sys.system.length > 0, "injection still happens when the archive is broken");
+
+    let state = null;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      const res = await p.tool.vc_state.execute({}, {});
+      state = parseToolResult(res);
+      if (state.injection_log && state.injection_log.failed >= 1) break;
+    }
+
+    assert.ok(state.injection_log, "diagnostic survives a broken archive");
+    assert.equal(state.injection_log.enabled, true);
+    assert.ok(state.injection_log.failed >= 1);
+    assert.ok(state.injection_log.last_error, "failure reason is retained");
+    assert.ok(
+      !state.injection_log.last_error.includes(tmp),
+      "project path is redacted from last_error"
+    );
+  } finally {
+    process.env.VIBE_PROMPT_INJECTION_LOG_DISABLED = "1";
+    delete process.env.VIBE_PROMPT_INJECTION_HOME;
+  }
+});
+
 test("deny list blocks the tool before execute", async () => {
   process.env.VIBE_BRIDGE_DENY_TOOLS = "task";
   // Cache-bust import so the deny env is read at module init.
@@ -397,6 +631,8 @@ test("vc_state satisfies the host tool contract (string output, not a bare recor
   assert.equal(rec.ok, true);
   assert.equal(rec.phase, "S0");
   assert.equal(rec.rev, 0);
+  assert.equal(rec.injection_log.enabled, false, "tests disable the archive by default");
+  assert.equal(rec.injection_log.sequence, 0);
   // The raw record stays available for machine consumers.
   assert.equal(res.metadata.phase, "S0");
   assert.match(res.title, /vibe S0/);

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from runtime.core import ExecResult, WorkflowCore
@@ -170,6 +171,31 @@ class CoreApiTests(CoreTest):
             "resume:",
         ):
             self.assertIn(key, full)
+
+    def test_snapshot_full_review_json_stays_valid_when_large(self) -> None:
+        """注入的 TASK 区必须始终是合法 JSON，不能把 review 从字符串中间切断。"""
+        self.seed_code(
+            "S8",
+            loop=1,
+            review={
+                "result": "ok",
+                "last_review": "none",
+                "last_failure": "none",
+                "issues": ["i1", "i2", "i3", "i4"],
+                "failure_state": {
+                    "consecutive_count": 0,
+                    "history": [f"{i:064x}" for i in range(20)],
+                    "recent_exec_ids": [f"hook:call_{i}" for i in range(50)],
+                },
+            },
+        )
+        full = self.core.snapshot_task_zone()
+        self.assertLessEqual(len(full), 1500)
+        review_line = next(line for line in full.splitlines() if line.startswith("review: "))
+        payload = json.loads(review_line[len("review: "):])
+        self.assertEqual(payload["result"], "ok")
+        self.assertLessEqual(len(payload["failure_state"]["history"]), 2)
+        self.assertLessEqual(len(payload["failure_state"]["recent_exec_ids"]), 3)
 
     def test_snapshot_invalid_detail(self) -> None:
         with self.assertRaises(ValueError):

@@ -323,6 +323,7 @@ export const VibeContextDedupPlugin = async (input = {}) => {
       session_id: sessionID,
       request_id: info.id,
       attempt,
+      project: directory,
       usage,
       context_estimates: pending ? pending.context_estimates : null,
       schema_estimates: schemaEstimates,

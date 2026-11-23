@@ -26,7 +26,7 @@ import { assistantMessage, toolPart, userMessage } from "./helpers.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const EXPORTER = path.join(ROOT, "scripts/token-usage/export_card_data.py");
-const CARD = path.join(ROOT, "tools/token-usage-card/app.js");
+const CARD = path.join(ROOT, "tools/viewer/js/usage.js");
 const SESSION_ID = "ses_export_card";
 
 const CONFIG = resolveConfig({}, {});

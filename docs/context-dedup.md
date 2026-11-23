@@ -757,10 +757,10 @@ Runtime 归一化为：
 
 ### 卡片服务（实时读取归档）
 
-- 启动：`bash scripts/token-usage/serve_card.sh`（等价 `node tools/token-usage-card/server.mjs`），默认监听 `http://127.0.0.1:8787/`。
-- 参数：`--port <n>`（默认 8787，0 为随机端口）、`--host <addr>`（默认 `127.0.0.1`）、`--data-dir <dir>`（默认 `VIBE_TOKEN_USAGE_HOME` 或 `~/.config/opencode/token-usage`）。
+- 启动：`bash scripts/token-usage/serve_card.sh`（等价 `node tools/viewer/server.mjs --open usage`），默认监听 `http://127.0.0.1:8788/#usage`；同一服务也提供 `#timeline` / `#memory`。
+- 参数：`--port <n>`（默认 8788，0 为随机端口）、`--host <addr>`（默认 `127.0.0.1`）、`--usage-dir <dir>`（别名 `--data-dir`；默认 `VIBE_TOKEN_USAGE_HOME` 或 `~/.config/opencode/token-usage`）。
 - 数据链路：`GET /api/usage` **每次请求都重新读取**归档 JSONL，响应 `Cache-Control: no-store`；页面每 15 秒静默刷新，页面隐藏时暂停，重新可见时立即刷新，也可点“刷新”按钮。页面默认统计**今天**，可切换昨天或最近 7 天；浅色 / 深色跟随系统。不再依赖预生成的 `token-usage-data.js`。
-- 静态资源仅允许 `/`、`/index.html`、`/app.js`、`/styles.css`；其余路径 404，不做目录遍历。仅监听本机回环地址，不暴露到网络。
+- 静态资源仅允许首页、`/css/*.css`、`/js/*.js`；其余路径 404，不做目录遍历。仅监听本机回环地址，不暴露到网络。
 - 诊断：`GET /api/health` 返回归档目录；`GET /api/usage?from=YYYY-MM-DD&to=YYYY-MM-DD` 支持 UTC 日期范围（仅用于按需裁剪返回量，页面默认返回全部再由前端按本地自然日过滤）。
 - 离线快照（可选）：`python3 scripts/token-usage/export_card_data.py` 仍可生成 `token-usage-data.js`（同一行契约），但页面默认不加载；仅在无 Node 服务时用于手工注入。
 - 分域展示（B）：payload 的 `strategies[]` 每项除 `key`/`label` 外还带 `scope`（取自记录里的 `pruning.<key>.scope`，旧记录回退到规范映射）。卡片按 `scope` 分两组——**每请求**（`tool_schema`：正面显示每次请求的均值，占比按“该策略节省 ÷ 区间输入”计算）与**区间累计**（`messages` / `tool_result` / `model_output`：占比只在同组内计算）。两组**不共享分母**，恒定前缀折扣不再以 99% 占比压过事件型裁剪；「估算裁剪」顶部指标同时给出 `前缀 / 消息 / 其他` 拆分。

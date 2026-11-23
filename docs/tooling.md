@@ -21,9 +21,9 @@
 | 记忆运维 | `python3 scripts/memory/memops.py validate\|search\|repair\|split` | `validate` / `search` 只读；`repair` / `split` **默认 dry-run**，`--apply` 才写且自动备份 |
 | Skill 运行时（加载计划 / 回写 / 外置） | `python3 skills/vibe-coder-loop/backup/memory_tool.py preflight\|touch\|metrics\|artifact\|backup\|restore\|verify\|list\|check-keys\|export-rules` | `preflight` / `list` / `verify` / `check-keys` 只读；`touch` / `metrics` / `restore` 写库；`backup` / `export-rules` / `artifact put` 写文件；`artifact page` 读文件；`artifact release` **删除产物目录**（不可逆；Checkpoint 仍在引用的 ref 会失效）；`restore` / `export-rules` 支持 `--dry-run` |
 | 记忆迁移 / 审计 / 蒸馏 | `python3 scripts/memory/{migrate,audit_memory,distill}.py` | `distill` / `audit_memory` 只读库（`--out-*` 写报告）；`migrate` 默认 dry-run，但仍会写冻结计划 `.plan-*.json` 到 `--backup-dir`；`--apply` 写库并备份；`--restore` 需 `--yes` |
-| 查看器数据导出 | `python3 scripts/memory/export_viewer_data.py` | 只读 SQLite（`mode=ro`），写 `tools/memory-viewer/memory-data.json`（gitignore） |
+| 本地查看器（轨迹 / 记忆 / 用量） | `node tools/viewer/server.mjs [--port 8788] [--host 127.0.0.1] [--injection-dir <dir>] [--usage-dir <dir>] [--memory-db <file>] [--allow-remote] [--open timeline/memory/usage]` | 只读提示词注入归档（`VIBE_PROMPT_INJECTION_HOME`）、Token 用量归档（`VIBE_TOKEN_USAGE_HOME`）与 delx-memory SQLite（`DELX_MEMORY_DB` / `--memory-db`，`mode=ro`）；三视图共用一套 HTML / CSS / JS。每次 API 请求重新读取：`/api/injections`（单次最多 5000 条）、`/api/usage`、`/api/memory`；`/api/health` 汇总三个路径。唯一写操作是 `POST /api/clear` 按会话或全量清空注入归档（页面二次确认 + 自定义 header）。默认只监听回环，非回环需显式 `--allow-remote`；记忆视图需 Node.js 22.5+（`node:sqlite`），缺失时仅该视图降级为 `available:false` |
 | OpenCode 上下文裁剪（可选） | `.opencode/plugins/vibe-context-dedup.js`（宿主自动加载；测试用 `node --test tests/context-dedup/*.test.mjs`） | 改本次模型请求的 `output.messages`（Dedup: `state.output`；Error Purge: `state.error`），以及工具 hook 的工具描述 / read 输出 / `edit` 行区间（Slim Edit）；不写会话存储；日志写 `~/.vibe-loop/context-dedup/events.jsonl` 与 `~/.config/opencode/token-usage/token-usage-YYYY-MM-DD.jsonl` |
-| OpenCode↔Kernel 桥接（可选） | `.opencode/plugins/vibe-bridge.js`（宿主自动加载；测试用 `node --test tests/plugins/*.test.mjs`） | 只调用 `runtime.core`，不直接读写 Checkpoint。`vc_transition`/`vc_state` 工具走 CLI；Hook：`tool.execute.after`→`feed-exec`（仅 `bash`/`task`，`VIBE_BRIDGE_EXEC_TOOLS` 可扩展）、`session.created`→`load-checkpoint`、`session.compacting`/`chat.system.transform`→`snapshot-task-zone` 注入。环境变量 `VIBE_KERNEL_HOME`/`VIBE_KERNEL_PYTHON`/`VIBE_BRIDGE_DISABLED`/`VIBE_BRIDGE_DEBUG`/`VIBE_BRIDGE_DENY_TOOLS`/`VIBE_BRIDGE_EXEC_TOOLS`；CLI 不可用降级 Phase 0，不阻断宿主 |
+| OpenCode↔Kernel 桥接（可选） | `.opencode/plugins/vibe-bridge.js`（宿主自动加载；测试用 `node --test tests/plugins/*.test.mjs`） | 只调用 `runtime.core`，不直接读写 Checkpoint。`vc_transition`/`vc_state` 工具走 CLI；Hook：`tool.execute.after`→`feed-exec`（仅 `bash`/`task`，`VIBE_BRIDGE_EXEC_TOOLS` 可扩展）、`session.created`→`load-checkpoint`、`session.compacting`/`chat.system.transform`→`snapshot-task-zone` 注入、`chat.message`→记录用户输入、`tool.execute.after`→记录工具 / MCP / 技能调用、`chat.system.transform`→记录系统提示词。每次上下文事件后异步写提示词注入归档 `~/.config/opencode/prompt-injection/prompt-injection-YYYY-MM-DD.jsonl`（与 token 用量分开；`VIBE_PROMPT_INJECTION_HOME` 重定位，`VIBE_PROMPT_INJECTION_LOG_DISABLED=1` 关闭）。环境变量 `VIBE_KERNEL_HOME`/`VIBE_KERNEL_PYTHON`/`VIBE_BRIDGE_DISABLED`/`VIBE_BRIDGE_DEBUG`/`VIBE_BRIDGE_DENY_TOOLS`/`VIBE_BRIDGE_EXEC_TOOLS`/`VIBE_BRIDGE_MCP_TOOLS`；CLI 不可用降级 Phase 0，不阻断宿主 |
 | 公开面审计 | `bash scripts/audit.sh scan\|check\|report\|verify` | 默认只读；`report` 写 Markdown；契约见 `docs/audits/audit-tool.md` |
 | 软链校验 | `bash scripts/verify-symlinks.sh [--host]` | 只读 |
 | Skill 自检 | `bash skills/vibe-coder-loop/scripts/smoke-check.sh` | 只读 |
@@ -48,7 +48,7 @@
 | `memory_feedback` | 成功（含空结果） | `verify` 发现错误 | 参数错误 | 记忆库异常 | — |
 | `skill_draft` | 成功（含 deferred / no-op） | 自检失败 | 参数错误 | 记忆库异常 | — |
 | `memops` | 成功（含 dry-run） | `validate` 有错误 / 运行异常 | 参数错误 | — | — |
-| `distill` / `audit_memory` / `export_viewer_data` | 成功 | 数据库不可用 / IO 异常 | 参数错误 | — | — |
+| `distill` / `audit_memory` | 成功 | 数据库不可用 / IO 异常 | 参数错误 | — | — |
 | `memory_tool.py` | 成功（含 no-op / dry-run） | 校验失败 / 无源数据 / 恢复被拒 / 写库失败 | 参数错误或库路径不可用 | 规则库缺失、参数值非法、artifact 读写失败 | artifact ref 不存在/过期；`check-keys` 缺 key；脱敏残留或漂移 |
 | `audit.sh` / `verify-symlinks.sh` | 通过 | 失败 / 发现 | 参数错误 | — | — |
 | `smoke-check.sh` | 通过 | 检查失败 | 预算超限 | 规则库 / 核心脚本缺失 | — |
@@ -74,5 +74,6 @@ bash scripts/tests/test-runtime-core.sh
 bash scripts/tests/test-runtime-exec.sh
 bash scripts/tests/test-audit.sh
 bash scripts/tests/test-context-dedup.sh
+node --test tests/plugins/*.test.mjs
 bash scripts/verify-symlinks.sh
 ```

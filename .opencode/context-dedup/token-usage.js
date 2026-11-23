@@ -942,6 +942,11 @@ export function buildUsageRecord(input = {}) {
   if (Number.isInteger(input.attempt) && input.attempt > 1) {
     record.attempt = input.attempt;
   }
+  // Project root is optional: older records do not carry it, and the viewer
+  // falls back to the injection archive's session -> project map for those.
+  if (typeof input.project === "string" && input.project.length > 0) {
+    record.project = input.project;
+  }
   if (usage.validation) {
     const validation = normalizedValidation(usage.validation);
     if (validation) record.validation = validation;

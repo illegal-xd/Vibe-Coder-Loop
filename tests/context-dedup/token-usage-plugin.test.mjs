@@ -113,6 +113,9 @@ test("records one usage entry pairing real usage with the measured pruning", asy
     assert.equal(record.event_type, "model_request_usage");
     assert.equal(record.session_id, SESSION_ID);
     assert.equal(record.request_id, "msg_a1");
+    // The plugin records the project root so the viewer can split usage by
+    // project without joining the injection archive.
+    assert.equal(record.project, directory);
     assert.equal(record.provider, "aspire-coding-shenzhen");
     assert.equal(record.model, "deepseek-flash");
     assert.equal(record.usage_status, "actual");
