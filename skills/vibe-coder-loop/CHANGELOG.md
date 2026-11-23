@@ -67,6 +67,24 @@
 > **写入事故与恢复（如实记录）**：首次写该 key 未先 `memory_get`，覆盖了 2026-10-14 建立的旧值（`action=updated` 才暴露）。已从 `~/.delx-memory/backups/db.sqlite.bak-2026-10-22-095405-l0l7-backfill-v1` 取回原 JSON，与本次授权合并后全量回传 tags/metadata（2093 bytes，原 `duties` / `autonomous_with_mechanism_gates` / `still_requires_user` 完整）。教训重申：更新既有 key 前必须 `memory_get`（`pattern:memory-writeback-integrity`）。
 > **验证**：`memory_get` 读回一致；`scripts/smoke-check.sh` rc=0。
 
+> **同版本追加（规则体系去重 + 记忆整理）**：用户指令——检查项目与 delx-memory 中的全部规则，消除重复/冗余/冲突/低频项；保留安全与质量规则；P2 力度「中等」；`~/CLAUDE.md` 改按需引用；`lifecycle.md` TTL 兜底补实现。
+>
+> | # | 项 | 处置 | 落点 |
+> |---|---|---|---|
+> | 1 | 出口条件双份（S8 缺 4 项、S9 两份不相交） | `rules/*.md` 压为卡片（触发 + 条目 key + 降级 + 出口指针）；S7 计划契约、S9 验证画像/无单测两项补入 transition → 单源 | `rules/` 六文件 + `engine/transition.md` |
+> | 2 | 删除权限/三红线 6 处复述 | kernel §2 保留对象表；lifecycle「适用范围」压为 3 行 + 指针；safety §1 删除行指针化 | `kernel.md` / `policy/lifecycle.md` / `policy/safety.md` |
+> | 3 | Confidence 3 类场景 8 处复述 | kernel §3 + safety §3 #10 改为指针（confidence.md 单源） | 同上 + `policy/confidence.md` |
+> | 4 | Loop 计数 6 处复述 | kernel §7 压为 3 条 + state-machine 指针 | `kernel.md` §7 |
+> | 5 | 加载清单 4 份 | SKILL「分级加载」表→要点列表（preflight 已输出文件集，不手抄） | `SKILL.md` |
+> | 6 | profiles Required 块 6 份重复 | 改为「公共 Required 一行 + 本类增补 + 出口纪律」 | `profiles/*.md` |
+> | 7 | CLAUDE.md 常驻通用编码准则与流程张力 | 全文迁入 `references/coding-heuristics.md`（R3/R4 级、按需）；`~/CLAUDE.md` 改 8 行指针 | 新文件 + `SKILL.md` 索引 |
+> | 8 | TTL 兜底「声明未实现」 | `memory_tool.py` 新增 `_archive_review`：preflight 扫描 `archive/` >90 天（git grep 弱证据；不写 stale tag、不删除、上限 80 文件） | `backup/memory_tool.py` + `policy/lifecycle.md` |
+> | 9 | 记忆冗余 | `agent:vc_constraints` 3254→1462 字（修旧路径为 skill 发现机制）；删 8 条 `vc:checkpoint-quarantine`；合并 antd form-item lesson 2→1；14 条 90 天零访问标 `stale`；补 TTL 26 条（lesson 90d / reference 365d） | delx-memory |
+> | 10 | smoke-check 白名单与预算 | `DEAD_PTR_KNOWN` 清空失效项（rules/test.md 行已改）；总预算 4200→3900（棘轮只降不升） | `scripts/smoke-check.sh` |
+>
+> **验证（E4）**：`bash scripts/smoke-check.sh --table` rc=0 / 0 HARD / 0 死指针 / 3798 行（原 ~4080）；`backup/test_memory_tool.py` 65 tests OK；`check-keys` 30/30 存在；记忆 376→367 条；`memops validate` 见本轮报告。
+> **未处理（如实记录）**：`vc:checkpoint:/`（realpath 误算为根）保留未删——归属项目不明，按删除义务降级为待裁决项。
+
 ## v1.22.2 — 版本递增（1.22.1 收口）
 
 > 版本策略：**提交后才递增下一版本**。1.22.1 的第八–十一批已随三个 commit 落地，本版做版本号递增与归属声明；本版内后续改动按「同版本第 N 批」继续追加。

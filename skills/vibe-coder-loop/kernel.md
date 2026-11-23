@@ -76,9 +76,7 @@ status: active
 
 **记忆条目删除义务（自主执行，无用户确认）**：
 
-用户对记忆的增 / 删 / 改 / 查已给出**常驻授权**（授权模型事实源 = `delx-memory-protocol` §记忆操作授权模型）——Agent **自主执行，不再逐次征询**。删除仅需两项技术自检：**① 归属为本方**（他方 `owner:*` / 跨 skill 键不删）**② 可回滚证据已核验**（快照 / git / 内容已迁移，实际核验而非推断）。
-
-不满足任一 → 降级为「标记 `pending_removal` + 列入 🗑 待删除清单」并标注原因；删除后须输出 `🗑 已删除：<keys>`、做引用扫描（FTS 反查旧键名）、重建快照使备份与库一致。详见 `policy/lifecycle.md`「记忆条目删除义务」。
+增 / 删 / 改 / 查为**常驻授权**（授权模型 = `delx-memory-protocol` §记忆操作授权模型）。删除只需两项自检：**① 归属为本方**（他方 `owner:*` / 跨 skill 键不删）**② 可回滚证据已核验**（实际核验，非推断）。不满足任一 → `pending_removal` + 🗑 待删除清单。完整执行纪律（批量 ≥5 先列清单、删除后引用扫描与快照重建）唯一事实源 = `policy/lifecycle.md`「记忆条目删除义务」。
 
 > **唯一保留的用户确认项 = 文件 / 代码资产的物理删除**（见上 A 类）。`contradict` 经验冲突、`rule:` 条目权限、`level:core` 授予**均属 Agent 自主范围**——守门靠机制而非审批：经验冲突保留双方 + 标注；`rule:` 走 `policy/priority.md` §3.6 准入四条件 + 结构红线（不得覆盖 R0/R1 与 `engine/` 流程）+ 观察期转正；`level:core` 须记授予依据且不改变 Advisory 地位。
 
@@ -107,17 +105,13 @@ status: active
 
 ### 定义与格式（唯一事实源 = `policy/confidence.md`）
 
-- **Evidence 五级**（E0 模型推测 / E1 用户明确描述 / E2 文件读取确认 / E3 代码图谱或静态分析确认 / E4 测试或运行结果确认）定义与各来源可信度权重见 `policy/confidence.md`「Evidence 五级」
-- **标注格式**：`[Confidence: High/Medium/Low]` + `[Evidence: E0-E4(来源描述)]`
-- **安全约束**：Evidence = E0 时 Confidence 最高只能 Medium（§2 红线），且 Low 必须暂停并输出追问清单
+- 格式：`[Confidence: High/Medium/Low]` + `[Evidence: E0-E4(来源描述)]`
+- 五级定义与可信度权重 → `policy/confidence.md`「Evidence 五级」
+- **安全不变量**：Evidence = E0 → Confidence 最高 Medium；Confidence = Low → 暂停并输出追问清单
 
 ### 何时需要标注（3 类场景）
 
-- 存在多个合理解释（技术栈 / 方案 / 字段语义）
-- 记忆与当前代码冲突
-- 风险等级或影响范围无把握
-
-**其余场景不要求标注**（条件定义唯一事实源 = `policy/confidence.md`「何时需要标注」）。
+多个合理解释 / 记忆与代码冲突 / 风险等级或影响范围无把握 —— **仅此 3 类要求标注**。场景定义、"不要求标注"的边界与降级规则唯一事实源 = `policy/confidence.md`「何时需要标注」，此处不重述。
 
 ## 4. Rule Priority 系统
 
@@ -198,8 +192,8 @@ Loop Depth（Level 0/1/2/3/4）控制流程深度，但**安全约束永不降�
 
 ## 7. 计数器规则
 
-- **最多执行 3 轮 Code+Review 循环**（Loop 1/2/3；Intent/Preflight/Decision/Clarify/Design/Plan 阶段不递增计数器）
-- **Quick Loop（Level 0/1）上限 1 轮**：S8 出口内联检查不通过 → 同一轮内回退修复 1 次（不递增 Loop）；Level 1 的 S9 Test 失败 → **不回退 Code**，直接输出 `⚠️ Quick Loop 未通过，建议升级 Standard Loop`（见 `rules/test.md`；运行时 `loop_max=1` 会拒绝 `S9→S8`）。仍不通过 → 停止并建议升级 Standard Loop
-- **情况 B 回退不重置计数器**：Review[N] → Design（`Design[0]` 中的 0 是设计重入序号，仅作文档记号；checkpoint `loop=N+1`，**输出标签用 `[Loop: N+1]`**）→ Code[N+1]
-- **计数器上限拦截**：若 Review[3] 触发情况 B（N+1=4>3），不进入 Design，直接停止
-- **防跳过回退不消耗计数**：因无法引用上一阶段而回退，属同一轮内修正，Code 仍标原 N
+- 上限 **3 轮** Code+Review（Loop 1/2/3）；**Quick Loop 上限 1 轮**（S8 出口不合格 → 同轮回退修复 1 次，不递增；L1 的 S9 失败不回退 Code，直接建议升级 Standard Loop）
+- **情况 B 回退不重置计数器**（`Design[0]` 是重入序号，输出标签用 `[Loop: N+1]`）；Review[3] 触发 B → 直接停止
+- **防跳过回退不消耗计数**（同轮修正，Code 仍标原 N）
+
+> 完整计数规则（起点 / 递增 / 不递增 / 归零三条边）唯一事实源 = `engine/state-machine.md`「循环计数规则」。

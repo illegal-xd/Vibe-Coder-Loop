@@ -78,8 +78,8 @@ Hook 链路（审查 v3）：
 **出口条件**：
 - [ ] **Task→Memory Router 已执行（强制）**：S1 判定任务类型后，按 `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」执行对应**强制召回清单**（已知 key 用 `memory_get` 精确取值，不经 search；经验域用 `memory_search`，本环境无该工具时用 `python3 backup/memory_tool.py search "<关键词>" --limit 5`，均须最小充分——防 snippet 截断 + 保证必中）。**路由表唯一事实源 = `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节**（`skill:learning/memory:query-router` 条目为其可执行副本），本文件不重复清单内容。**此项为状态机强制动作，不依赖 Agent 自发检索**
 - [ ] **规则召回证据已输出（可校验）**：列出本轮实际 `memory_get` 的 `rule:*` / `lesson:*` key；无命中写 `[Rule 命中: 无]` + 一句判定依据（须引用本轮任务类型；不得空写）。未输出或空写 → `[RULE_RECALL_MISSING]` 回退 S2（Level 0 同样适用）
-- [ ] 上下文感知路由已执行（按用户输入特征选择 memory/codegraph 路径，清单外条目按需加载）
-- [ ] **验证画像已建立**：存在 `project:verify:<repo>` 条目或本轮新建（`<repo>` = 仓库根目录名，取 `git rev-parse --show-toplevel` 的 basename；与项目入口记忆同一命名，避免建出同义重复条目）；输出 `[Verify: test=… lint=… typecheck=…]`，并标注命令**副作用**（是否写盘 / 是否默认 `--fix`）。无可执行验证命令时必须显式标注 `[无验证命令]` 并降级（不得跳过本项）；未建而可用 → 回退 S2 补齐（回退语义同 `RULE_RECALL_MISSING`，不新增码）
+- [ ] 上下文感知路由已执行（memory / codegraph 路径按用户输入特征选择，清单外条目按需加载）
+- [ ] **验证画像已建立**：存在 `project:verify:<repo>` 条目或本轮新建（`<repo>` = `git rev-parse --show-toplevel` 的 basename）；输出 `[Verify: test=… lint=… typecheck=…]` 并标注命令副作用（是否写盘 / 默认 `--fix`）；无可执行命令须显式标 `[无验证命令]`（不得跳过本项）；未建而可用 → 回退 S2（回退语义同 `RULE_RECALL_MISSING`）
 - [ ] **影响面已输出**：`codegraph explore` 给出 `[Impact: N 文件 / M 调用方]` + 清单 + 「无测试覆盖」标注；索引新鲜度检查并入本项。CodeGraph 不可用 → 标注降级并改用 `grep` 直查调用方（不得跳过）
 - [ ] 版本号一致性检查已标注
 - [ ] Feedback Loop 注入已标注（`[Feedback 命中]` 或 `[无反馈注入]`）
@@ -145,6 +145,7 @@ Hook 链路（审查 v3）：
 - [ ] Step 已声明依赖与完成判据（轻 Plan 可内联精简，见 `rules/plan.md`「轻 Plan」）
 - [ ] 存在能力缺口的 Step 已写能力载体（无缺口则本项不适用，见 `engine/skill-routing.md`）
 - [ ] 编排决策已输出（模式 + 判断依据 + 角色映射）
+- [ ] **计划契约已声明**（预期修改 / 新增 / 删除文件集，定义见 `rules/plan.md`「计划契约」；轻 Plan 可只写「预期修改」一行）
 - [ ] 若产生可复用项目约束，按 `learning/memory/lifecycle.md` 路径 B/C 写入记忆
 
 **转移**：`>>> 进入 Code`
@@ -174,8 +175,7 @@ Hook 链路（审查 v3）：
 - [ ] 资产生命周期操作合规
 - [ ] **不可修复的 Hard 项已上报**：已造成不可逆后果且无法回退 → `--vc-violation <事实>` 进 S14；可修复者仍走 S10 情况 B（分流见 `policy/safety.md` §3）
 - [ ] 若本轮 Code 完成了一个版本功能/修改了 API 签名 → 标注 `[待 Memory Evolution]`
-- [ ] **steering 队列检查**：若运行中存在 steering 消息（用户插话，见 `kernel.md` 双队列契约）→ 注入当前轮次后继续；注入后重新执行前置检查
-- [ ] **能力载体适用性检查**：若 Plan 绑定了能力载体（技能 / 子 agent），执行中确认其与实际问题匹配；不匹配 → 按 `engine/skill-routing.md` 输出 `[Skill 切换]` 说明并更新对应 Step 绑定。未绑定则本项标「不涉及」
+- [ ] **steering / 能力载体**：steering 消息 → 注入后重跑前置检查；Plan 绑定的能力载体与实际问题不匹配 → 按 `engine/skill-routing.md` 输出 `[Skill 切换]` 并更新 Step 绑定（未绑定标「不涉及」）
 
 **转移**：`>>> 进入 Test`
 
@@ -189,6 +189,7 @@ Hook 链路（审查 v3）：
 - [ ] 测试已执行（subagent 派发 / 降级自测 / Quick Loop 自测）并返回报告
 - [ ] 报告引用了 Code 阶段的函数/类名
 - [ ] 报告含验证结论；涉及不确定判断时含 Confidence + Evidence
+- [ ] **验证口径**：验证命令引用 `project:verify:<repo>` 并附退出码（S2 未召回 → 回退补建，不建不得跑）；无 test 脚本时输出 `[无单测覆盖：<依据>]`，只能声明 lint/build 通过，**禁止"测试通过"**
 - [ ] **Metrics 记账**：`{cycle:N, test_passed, failure_type, degradation}` 记入内存清单（收尾出口一次提交，聚合由 Tool 承担）；**失败信号已记录**（仅真实失败）：`verification_failure` 写入 `signal:reflection:*`（参数见 S11「信号记录」）
 - [ ] **steering 队列检查**：若存在 steering 消息 → 注入后回到 S8 Code 继续（同一轮，不递增计数）
 - [ ] **Hard 项不豁免**：回退前判 Hard 违规（清单见 `safety.md` §3）→ 命中则**不得以"测试失败"名义修补**，改走 S10 情况 B（回 `S6[0]`），违规修复合并其中
@@ -257,9 +258,7 @@ Hook 链路（审查 v3）：
 - [ ] **Checkpoint 收尾已执行**：`.state.md` → `status: complete` + `resume` 写下一步（协议见 `engine/state-machine.md`「Workflow Checkpoint」）
 - [ ] **技能/文档维护类任务：残留验证已执行（强制）**：本轮若改过技能文件（`vibe-coder-loop/*`、Vibe Coder Kernel、`kernel/` 文档）或 `skill:`/`rule:` 条目 → 执行 ① 日期/版本残留 grep + ② 死指针候选词 grep（**验证模式、合法例外与回退要求见 `rule:skill-iteration-manifest`**）；残留 > 0 → 回退修复后再收尾（教训 `lesson:skill-edit-date-residue`）
 - [ ] **follow-up 队列检查**：队列非空 → 注入 → `>>> 回到 S1 Intent` 并 **Loop 归 0**（follow-up = 新目标，享独立重试预算；语义见 `kernel.md` §1）；队列为空 → 正常结束。**turn 间到达的追加消息落在下一 turn** → 按 `.state.md` 恢复协议处理（先核验 `pending`），不算本 turn 遗漏
-- [ ] 输出最终结果
-- [ ] 「📋 待用户决策清单」（若有）
-- [ ] 扩展建议（**Level 2+ 且确有价值时**给 3–5 个改进方向；Level 0/1 可省略）
+- [ ] 输出最终结果 + 「📋 待用户决策清单」（若有）+ 扩展建议（Level 2+ 且确有价值时 3–5 项）
 
 > 防跳过回退规则（引用清单 + 回退模板 + 计数规则）见 `engine/state-machine.md`「防跳过规则」节（唯一事实源）。
 

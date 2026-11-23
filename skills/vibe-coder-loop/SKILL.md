@@ -81,6 +81,7 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 | **子 agent 首步** | `kernel.md` + `policy/safety.md` + `policy/lifecycle.md` + `policy/confidence.md` | 四件套加载包（定义见 policy/safety.md 第 5 节）；兜底 `delx-memory_memory_get` key=`agent:vc_constraints` |
 | **输出格式疑问** | `references/output-format.md`（**文件即完整规则**；`skill:references/output-format` 为全文镜像） | 按需参考 |
 | **多 Skill 布局疑问** | `references/layout.md`（多 skill 生态 + 委托分治 + 新增 skill 检查清单） | 按需参考 |
+| **通用编码启发式** | `references/coding-heuristics.md`（原 `~/CLAUDE.md` 迁入；R3/R4 级） | S8 需要"最小改动 / 简单优先 / 可验证目标"时按需读 |
 | **Review 格式参考** | `references/example.md` | 按需参考 |
 | **调试模式触发** | `references/debug-mode.md`（**文件即完整规则**；`skill:references/debug-mode` 为全文镜像） | 按需参考 |
 | **E4 真机验证** | `references/e4-matrix.md` | 按需参考（Test A–F 证据采集） |
@@ -119,19 +120,13 @@ skill-maintenance > debugging > planning > refactoring > review > coding
 
 > **边界**：本节属**前馈侧**（控制"什么进入上下文"），是 Skill 职责；**反馈侧**（压缩时机 / 阈值，即"什么离开上下文"）**完全属 Runtime**，Skill 不设阈值、不请求压缩。两侧不重叠（见 `engine/state-machine.md`「上下文压缩（Runtime 负责）」）。
 
-### 分级加载（控制进入上下文的文件量）
+### 分级加载（按 Loop Depth 取文件集）
 
-按 Loop Depth 控制 rules/ 层加载量，避免 Quick Loop 读取全量流程文件：
-
-> **前馈 / 反馈边界**：本节只决定「加载哪些文件」（前馈，Skill 职责）；压缩阈值与时机属 Runtime（见上节边界声明）。确定性执行（回写 / 指标）由 `backup/memory_tool.py` 承担，不计入 rules/ 加载量。
-
-| 模式 | rules/ 必读 | policy/ 必读 | learning/ 必读 |
-|---|---|---|---|
-| Quick Loop（Level 0/1） | `intent.md`（S1 激活时读，目标三元组格式）+ `code.md`（Level 1 加 `test.md`+`review.md`） | `safety.md` + `confidence.md`（涉及资产归档时加 `lifecycle.md`） | `learning/memory/lifecycle.md`「记忆生命周期管理」节（内含「记忆访问计数与元数据协议」回写契约，Quick Loop 出口必用）+ `learning/memory/retrieval.md`「任务类型 → 规则/经验路由表」节（Level 0 轻量 S2 Step 0-1 最小召回）；出口内联走 lifecycle「Quick Loop 记忆闭环」节，仪表盘读 `skill-metrics.md`「系统状态仪表盘」节 |
-| Standard Loop（Level 2） | 激活阶段的全部 rules/（intent/design/plan/code/test/review） | 全部 policy/ | S12 时 `learning/memory/promotion.md` + `learning/memory/lifecycle.md` + skill-metrics.md；概念/路由按需 `learning/memory/architecture.md` / `learning/memory/retrieval.md`；**触发式 `learning/memory/advanced.md` 命中才读** |
-| Full Loop（Level 3/4） | 全部 rules/（含 orchestration.md 编排决策时） | 全部 policy/ | 全部 learning/（`learning/memory/advanced.md` **为纯触发式**——不在加载清单内，命中其触发条件才读；S11 `reflection.md` 仍按门控读） |
-
-- Level 0-Doc（内容写作型）：rules/ 仅 S1 引用 `rules/intent.md` 目标三元组格式，其余不读（S8 出口三维审查定义在 `engine/router.md`）
-- 防跳过规则仍适用：进入某阶段但未加载对应文件 → 回退；**本表与「加载时机索引」冲突时按加载范围取并集**（本表为下限，索引为上限；仅指文件加载范围，与记忆召回无关——召回取最小充分，见 `learning/memory/retrieval.md`）
+- **Quick Loop（Level 0/1）**：`rules/intent.md`（S1）+ `rules/code.md`（Level 1 加 `test.md` + `review.md`）；`policy/safety.md` + `confidence.md`（涉及资产归档加 `lifecycle.md`）；`learning/memory/lifecycle.md`「回写契约」+ `retrieval.md`「任务类型 → 规则/经验路由表」
+- **Standard（Level 2）**：激活阶段的全部 `rules/` + 全部 `policy/`；S12 读 `promotion.md` + `lifecycle.md` + `skill-metrics.md`；跨模块记忆挂载按需 `learning/memory/architecture.md`
+- **Full（Level 3/4）**：全部 `rules/`（含 `orchestration.md`）+ 全部 `policy/` + 全部 `learning/`（`advanced.md` 仍为纯触发式，命中才读）
+- Level 0-Doc（内容写作型）：`rules/` 仅 S1 引用 `intent.md` 的三元组格式，其余不读
+- 机器副本 = `load_plan.json` `levels`，`preflight` 已直接输出本次文件集与命中节 —— **不手抄本表**
+- 与「加载时机索引」冲突时按加载范围取并集（本表为下限，索引为上限）；防跳过规则仍适用
 - 子 agent 四件套不受分级影响（安全约束全量加载）
 

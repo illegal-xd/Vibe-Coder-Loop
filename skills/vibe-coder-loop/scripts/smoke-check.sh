@@ -25,7 +25,7 @@ SMOKE_NAME="vibe-coder-loop"
 # 死指针候选词集中维护——曾因只按编号形态扫描漏掉「写入规则 N」「Buffer」「主 prompt」三种形态
 DEAD_PTR_WORDS='写入规则|Buffer 初始化|主 prompt|降级判定时机|计数回写规则|规则 6-8|「规则 [0-9]'
 DEAD_PTR_KNOWN=(
-  './rules/test.md::降级判定时机（5 情形）+ 降级行为 + 标注措辞（唯一版本）见 `skill:rules/test:degradation`（加载全文执行）。核心：'
+  # 当前无合法例外；新增项须按「文件::整行」双精确匹配，且跨文件不继承
 )
 GOV_FILE='references/governance.md'
 # 映射表 key 存在性校验：把「映射表里写的 key」从声明变成可校验事实
@@ -41,13 +41,13 @@ LOAD_PLAN_MENTION='SKILL.md'
 CHECKPOINT_FILE="${VIBE_CHECKPOINT_FILE:-.state.template.md}"
 # 行数预算：防规则膨胀。**语义 = 容量预算，不是安全阈值** —— 超限不计 HARD，仅 exit 2。
 # 棘轮：**只降不升**；确需上调须在 CHANGELOG 记明理由（历史上 3800→3900 亦为棘轮例外）。
-# 本轮重推演 3900→4200（拒绝 3960 式 epsilon 上调：+21 行仅够约 1.5 轮常规迭代）：
+# 本轮重推演 3900→4200（历史）（拒绝 3960 式 epsilon 上调：+21 行仅够约 1.5 轮常规迭代）：
 #   3939 实测 + 已知 3 条 references 待完整化(≈+90) + 10 轮常规迭代余量(≈+130) ≈ 4080 → 取整 4200 作容量上限。
 # 预警（人工，工具只输出合计行数，不复制 core 检查逻辑）：余额 <120 行（>4080）时，
 #   本轮收尾前必须做减法，或在 CHANGELOG 记明下一轮处置；不得静默带病进入下一轮。
 # 全面迁移其余骨架文件（预估 +300~450 行）必须**重新推演**本值，不得沿用。
 BUDGET_FILE_LINES=320
-BUDGET_TOTAL_LINES=4200
+BUDGET_TOTAL_LINES=3900
 # ================================
 
 CORE=""

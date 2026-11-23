@@ -17,7 +17,7 @@ status: active
 
 | 操作类型 | 示例 | 降级策略 |
 |---|---|---|
-| 删除 | 删除文件 / 代码 / 注释（**代码资产**） | **无用户指令** → 归档注释 `@Iteration` 替代；**用户明确指令** → 输出 Conflict Card + 「🗑 待删除清单」（含可执行命令），**物理删除由用户执行**（Agent 不执行）；**本轮自产草稿** → 可直接删改（见 `policy/lifecycle.md`「适用范围」） |
+| 删除（**代码资产**） | 删除文件 / 代码 / 注释 | **无用户指令** → 归档注释 `@Iteration`；**用户明确指令** → Conflict Card + 「🗑 待删除清单」（含可执行命令），**物理删除由用户执行**；**本轮自产草稿** → 可直接删改 —— 细则见 `policy/lifecycle.md` |
 | 删除（**记忆条目**） | `memory_forget` / 移除 delx-memory 键 | **Agent 自主执行**（记忆操作常驻授权，无需用户确认）；义务 = 归属为本方 + 可回滚证据已核验；批量 ≥5 条先输出清单（不阻塞）——见 `policy/lifecycle.md`「记忆条目删除义务」 |
 | 覆盖 | 无备份的覆写 | 并存引入新旧两版 |
 | 提交 | git commit | 用户确认后执行（运行时通道：`runtime/exec` 的 `git commit/add/tag/stash/switch` 默认 fail-closed，授权后以 `allow_high_risk=True` 放行；`push` 仍走 feature 分支 + PR） |
@@ -113,13 +113,7 @@ Signal = **Review Signal**，不是 Violation：
 
 ### Confidence + Evidence 的 3 类必标场景（#10）
 
-仅下列场景未标注才算违反：
-
-1. 存在多个合理解释（技术栈 / 方案 / 字段语义）
-2. 记忆与当前代码冲突
-3. 风险等级或影响范围无把握
-
-**其余场景不要求标注**（格式与降级规则见 `policy/confidence.md`）。
+多个合理解释 / 记忆与当前代码冲突 / 风险等级或影响范围无把握 —— **仅此 3 类未标注才算违反**。场景定义、边界与降级规则唯一事实源 = `policy/confidence.md`「何时需要标注」。
 
 ## 4. 归档注释格式（强制统一）
 

@@ -9,45 +9,20 @@ status: active
 
 # Profile: Skill Maintenance — 技能/文档维护
 
-> 任务入口路由卡。**Profile = Router**：仅聚合"本类任务需加载哪些模块"，不复制任何规则内容（Rules = Authority）。逐阶段文件清单 = `SKILL.md`「加载时机索引」；Level→激活阶段映射 = `engine/complexity-gate.md`「Loop Depth」矩阵（唯一事实源）。
+> Router 卡：只列**本类差异项**。公共加载集见 `SKILL.md`「加载时机索引」与「分级加载」；机器版 = `load_plan.json` `profiles.skill-maintenance`。
 
-**适用（判定特征，命中任一即本 Profile）**：
-- 修改 vibe-coder-loop skill 文件（*.md / *.yaml / memory/ 分片 / profiles/）
-- 修改 Vibe Coder Kernel（`kernel/Vibe Coder.md`）或本仓库文档
-- 维护 `skill:` / `rule:` 记忆条目、backup 工具与快照
+**适用**：修改 vibe-coder-loop skill 文件 / `kernel/Vibe Coder.md` / 本仓库文档 / `skill:`·`rule:` 条目与 backup 快照
+**任务分类**：E（技能维护变体，多为 Level 0-Doc 或 Standard）；记忆路由行 = 「技能/文档维护」**强制召回** `rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue`
 
-**任务分类**：E. Investigation（技能维护变体，常 Level 0-Doc 或 Standard）；记忆路由行 = 「技能/文档维护」强制召回（`learning/memory/retrieval.md` 路由表：`rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue`，`memory_get` 精确 key）
+**执行路径**：单文件文档 → Level 0-Doc；跨文件结构变更 → Standard；规则内容修改时 S13 残留验证强制
 
-**执行路径**：随改动规模走 Level 0-Doc（单文件文档修改）/ Standard（跨文件结构变更，本类任务多属后者）；规则内容修改时 S13 出口残留验证强制
+**公共 Required:** kernel + engine + policy + `learning/memory/retrieval.md`（S2 召回）+ `learning/memory/lifecycle.md`（回写契约）+ `learning/skill-metrics.md`（S13 仪表盘）+ 逐阶段文件 —— 见 `SKILL.md`「加载时机索引」
+**本类 Required（增补）:** `references/governance.md`（映射表/canonical 分类）、`CHANGELOG.md`（迭代历史）、`manifest.yaml`（版本号唯一源）、`backup/README.md`、`skill-authoring` skill（维护协议源）
 
-**加载**：
-
-Required:
-- kernel.md（资产生命周期 + 反自改纪律）
-- policy/safety.md + policy/lifecycle.md（修改 Skill 文件属用户资产：先归档/保留旧内容，不物理删除）
-- references/governance.md（本 skill **自身**骨架↔规则映射表 + canonical source 分类 + 下沉协议；**通用协议本体**在 `skill-authoring` skill 的 `governance-protocol.md`）
-- engine/transition.md（S13 出口残留验证）+ engine/complexity-gate.md + engine/router.md（S4 分级：本类任务常走 Level 0-Doc）
-- CHANGELOG.md（迭代历史 + 版本规则：正文禁止日期/版本残留）
-- manifest.yaml（版本号唯一事实源；本次变更统一合并当前版本号，未提交 git 不迭代）
-- learning/memory/retrieval.md（S2 强制召回：`rule:skill-iteration-manifest` + `lesson:skill-edit-date-residue`）
-- learning/memory/lifecycle.md（S13 回写契约）+ learning/skill-metrics.md（S13 仪表盘）
-- learning/memory/promotion.md（Standard 路径的 S12 收尾）
-
-Optional:
-- `skill-authoring` skill（维护协议源：骨架化/canonical-source/下沉/fallback/残留验证纪律 + 自检脚本模板）
-- learning/evolution.md（Skill Patch Proposal 机制——Agent 禁止自动修改 Skill，仅提案；**用户明确指令修改时豁免**，本 Profile 即处理用户指令场景）
-- backup/README.md + backup/memory_tool.py（维护收尾：重新 backup + verify）
-- learning/memory/architecture.md（分片事实源声明，改动协议前核对）
-- **fresh-context 实测**（跨文件 / 跨层结构变更后，至少 1 次独立子 agent 按新文件走读一遍；主 agent 自查有熟悉性盲区，见 `lesson:fresh-context-subagent-validation`）
-
-**出口纪律**：
-- **反自改原则**：无用户明确指令禁止自动修改 Skill 文件（`learning/evolution.md` 核心原则）
-- 版本策略：统一合并当前版本号（manifest.yaml `version`），未提交 git 期间不迭代；除非用户指定版本
-- S13 残留验证（强制）——走 `bash scripts/smoke-check.sh --table`（cwd = **Skill 根目录** `skills/vibe-coder-loop/`；在仓库根执行时用 `bash skills/vibe-coder-loop/scripts/smoke-check.sh --table`）。**检查逻辑唯一事实源 = `skill-authoring/scripts/smoke-check-core.sh`**（本 Skill 的 `scripts/smoke-check.sh` 只是配置薄包装——不得在此复制检查逻辑）
-  - **退出码即结论**：0 = 通过；1 = HARD 违规（必须修复后重跑）；2 = 仅预算超限；3 = 环境/用法错误
-  - ① 日期/版本残留 → 必须 0 命中（`RESIDUAL_HIT`，HARD）
-  - ② 死指针候选 → `DEAD_POINTER_CANDIDATE`，脚本输出候选；**已裁定为合法命中**的（节标题引用、机制自述行）记入 `DEAD_PTR_KNOWN` 白名单——键 = `文件::整行内容`，**双精确匹配**：内容或所在文件任一变动即重新成为候选；**跨文件复用不继承豁免**。这是**唯一**保留人工裁定的项——其余项已全部机械判定
-  - ③ 映射一致性（`MAP_INCONSISTENT`，HARD）：映射表左列文件存在 + **声明的 `skill:*` key 真实存在** + **Canonical ≠ 数据 的条目 tags 含 `permanent`**（规则条目带 TTL = 到期静默降级）
-  - ④ 加载计划一致性（`LOAD_PLAN_PATH_MISSING` / `LOAD_PLAN_UNDOCUMENTED`，HARD）：`load_plan.json` 内路径存在且被 `SKILL.md` 提及
-  - ⑤ 行数预算（`BUDGET_EXCEEDED`，退出码 2）：**棘轮语义，只降不升**；确需上调须在 CHANGELOG 记明理由
-- 收尾义务：`bash scripts/smoke-check.sh --table`（cwd = Skill 根目录）退出码 0 + backup 快照重新生成 + verify
+**出口纪律**
+- **反自改**：无用户明确指令不改 Skill 文件（`learning/evolution.md` 核心原则）
+- **版本策略**：统一合并当前 `manifest.yaml` version，未提交 git 期间不迭代；正文禁止日期/版本残留
+- **S13 残留验证（强制）**：`bash scripts/smoke-check.sh --table`（cwd = Skill 根），退出码 0 = 通过 / 1 = HARD 违规 / 2 = 预算超限 / 3 = 环境错误
+  - ① 日期/版本残留必须 0 命中 ② 死指针候选：合法命中记入 `DEAD_PTR_KNOWN`（键 = `文件::整行`，双精确匹配，跨文件不继承）③ 映射一致性：key 真实存在 + 规则条目 tags 含 `permanent` ④ 加载计划路径存在且被 SKILL.md 提及 ⑤ 行数预算**只降不升**
+- 收尾：smoke-check 通过 + backup 快照重建 + verify
+- 跨文件/跨层结构变更后至少 1 次 fresh-context 子 agent 走读（主 agent 自查有熟悉性盲区）

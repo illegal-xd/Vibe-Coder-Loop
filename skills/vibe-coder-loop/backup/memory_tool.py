@@ -1590,6 +1590,78 @@ def resolve_plan(plan, level, task):
     return out
 
 
+ARCHIVE_STALE_DAYS = 90      # policy/lifecycle.md「TTL 兜底机制」
+ARCHIVE_SCAN_MAX_FILES = 80  # 单次扫描上限（防巨型仓库拖慢 preflight）
+ARCHIVE_SCAN_SKIP = {".git", "node_modules", ".venv", "venv", "dist", "build", "backup", "coverage"}
+
+
+def _git_toplevel():
+    """项目根：git 仓库根，否则 cwd。"""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5, cwd=os.getcwd(),
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return Path(os.getcwd())
+
+
+def _archive_review(root):
+    """TTL 兜底的检测端：列出 root 下 `archive/` 中 mtime > 90 天的文件。
+
+    只做**检测 + 提示**，不写 stale tag、不删除（删除权在用户，见 policy/lifecycle.md）。
+    引用检查为弱证据：git 可用时 `git grep` 排除 archive/；不可用则标注"未检查"。
+    返回 [(relpath, 归档日期)]。
+    """
+    candidates = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ARCHIVE_SCAN_SKIP]
+        if os.path.basename(dirpath) != "archive":
+            continue
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            p = Path(dirpath) / fn
+            try:
+                age = time.time() - p.stat().st_mtime
+            except OSError:
+                continue
+            if age > ARCHIVE_STALE_DAYS * 86400:
+                candidates.append(p)
+            if len(candidates) >= ARCHIVE_SCAN_MAX_FILES:
+                break
+        if len(candidates) >= ARCHIVE_SCAN_MAX_FILES:
+            break
+    if not candidates:
+        return []
+
+    unreferenced = []
+    for p in candidates:
+        stem = p.stem
+        referenced = None  # None = 未检查
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(root), "grep", "-q", "-F", stem, "--",
+                 ".", ":(exclude)**/archive/**"],
+                capture_output=True, text=True, timeout=10,
+            )
+            referenced = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            referenced = None
+        if referenced is not True:
+            try:
+                rel = str(p.relative_to(root))
+            except ValueError:
+                rel = str(p)
+            stamp = time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))
+            note = "未检出引用" if referenced is False else "引用未检查（git 不可用）"
+            unreferenced.append((rel, stamp, note))
+    return unreferenced
+
+
 def cmd_preflight(args, db):
     """打印加载计划 + 成本 + 章节索引 + 记忆候选（只回 key，不回 value）。
 
@@ -1843,6 +1915,15 @@ def cmd_preflight(args, db):
     print("【经验候选 · 按 retrieval.md 路由表命中才 memory_search，勿全量拉取】")
     print("  " + "  ".join(f"{p}:* {c} 条" for p, c in counts.items()))
     print()
+
+    stale_archives = _archive_review(_git_toplevel())
+    if stale_archives:
+        print(f"【归档待审查 · >{ARCHIVE_STALE_DAYS} 天（弱证据，仅提示，不自动删除）】")
+        for rel, stamp, note in stale_archives:
+            print(f"  - {rel}（最后修改 {stamp}，{note}）")
+        print("  建议：[1] 用户确认后删除 [2] 重新激活（取消归档） [3] 继续保留（Agent 不自主删除）")
+        print()
+
     print("【下一步】对实际消费的 key 执行: python3 backup/memory_tool.py touch <key>...")
 
     return 3 if missing else 0

@@ -75,7 +75,7 @@ status: active
 |---|---|
 | R0 Kernel Rules | `kernel.md`（三红线 / Evidence / SAFE MODE / 计数器 / 角色隔离） |
 | R1 Safety Policy | `policy/safety.md`（不可逆操作清单 / Conflict Card / 约束分级 Hard·Signal / 归档注释格式） |
-| P0 用户明确目标 | 用户字面表达（**受 R0/R1 约束**：说"删除所有旧代码"仍须先出 Conflict Card；**代码资产不由 Agent 物理删除**——出 🗑 清单由用户执行；本轮自产草稿可直接删改；**记忆条目**过四条件闸门——见 `kernel.md` §2） |
+| P0 用户明确目标 | 用户字面表达（**受 R0/R1 约束**：删除类指令走 Conflict Card；删除权限按对象划分 = `kernel.md` §2） |
 | P0.5 用户偏好 | 长期稳定偏好（Vue3 / TypeScript / 函数式等），多次确认后沉淀 `preference:user:*`；低于安全、高于普通优化。定义与沉淀协议唯一事实源 = `learning/memory/lifecycle.md`「用户偏好记忆系统」节 |
 | R2 Workflow Rules | `engine/`（状态机流转 / 阶段出口条件 / 防跳过 / 上下文压缩边界） |
 | R3 Optimization Rules | 可读性 / 性能 / 结构优化；**可牺牲**（与安全或用户目标冲突时延后） |
