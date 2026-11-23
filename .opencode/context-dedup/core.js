@@ -189,8 +189,8 @@ export function createStats() {
     uniqueSignatureCount: 0,
     sameSignatureDifferentOutputCount: 0,
     sameSignatureDifferentOutputGroups: 0,
-    // Windowed reads of one file: a later read whose line range strictly covers
-    // an earlier one makes the earlier result redundant (same file, no
+    // Windowed reads of one file: a later read whose line range covers an
+    // earlier one makes the earlier result redundant (same file, no
     // intervening mutation).
     readWindowCandidateCount: 0,
     readWindowCollapseCount: 0,
@@ -625,8 +625,14 @@ function normalizeOptions(config = {}) {
 }
 
 
-/** The runtime's own end-of-file notice, emitted only when the read reached EOF. */
-const EOF_TOTAL_RE = /\(End of file - total (\d+) lines\)\s*$/;
+/**
+ * The runtime's own end-of-file notice, emitted only when the read reached EOF.
+ * OpenCode appends its `</content>` closing tag (and sometimes a
+ * `<system-reminder>` block) AFTER the notice, so the pattern tolerates a
+ * trailing close tag instead of anchoring on the raw string end.
+ */
+const EOF_TOTAL_RE =
+  /\(End of file - total (\d+) lines\)[ \t]*(?:\n?<\/content>[\s\S]*)?$/;
 
 function eofTotalLines(output) {
   if (typeof output !== "string") return null;
@@ -702,23 +708,32 @@ function readWindowOf(record) {
     return null;
   }
   if (end < start) return null;
-  return { start, end };
-}
-
-/** Does `later` cover a strictly larger window than `earlier`? */
-function windowStrictlyCovers(later, earlier) {
-  if (!later || !earlier) return false;
-  if (later.start > earlier.start) return false;
-  if (later.end < earlier.end) return false;
-  // An identical window is handled by byte-identical deduplication; a differing
-  // body means the file changed outside the conversation, so keep both.
-  return !(later.start === earlier.start && later.end === earlier.end);
+  // `rendered` records whether the window end rests on line numbers the host
+  // actually drew. Without them the window is a claim, not an observation.
+  return { start, end, rendered: actualEnd !== null };
 }
 
 /**
- * Collapse windowed reads of the same file: when a later read covers a
- * strictly larger line range and nothing mutated in between, the earlier
- * window's content is fully contained in the later one.
+ * Does `later` cover at least the window of `earlier`?
+ *
+ * Coverage is inclusive: byte-identical deduplication only fires when the
+ * canonical arguments also match, and OpenCode re-reads the same window with
+ * and without explicit `offset`/`limit`. The caller additionally requires an
+ * identical body for equal (or unrendered) windows, so a file changed outside
+ * the conversation keeps its only pre-change snapshot. The `decided` set keeps
+ * a record that byte deduplication already pruned from being counted twice.
+ */
+function windowCovers(later, earlier) {
+  if (!later || !earlier) return false;
+  if (later.start > earlier.start) return false;
+  if (later.end < earlier.end) return false;
+  return true;
+}
+
+/**
+ * Collapse windowed reads of the same file: when a later read covers the line
+ * range of an earlier one and nothing mutated in between, the earlier window's
+ * content is fully contained in the later one.
  */
 function collapseCoveredReads(records, eligible, options, stats, decisions, placeholderTokens) {
   const collapsedIds = new Set();
@@ -757,7 +772,17 @@ function collapseCoveredReads(records, eligible, options, stats, decisions, plac
       if (decided.has(earlier.entry.record.id)) continue;
       for (let next = index + 1; next < group.length; next += 1) {
         const later = group[next];
-        if (!windowStrictlyCovers(later.window, earlier.window)) continue;
+        if (!windowCovers(later.window, earlier.window)) continue;
+        // An identical window is only redundant when the body is identical:
+        // a differing body means the file changed outside the conversation and
+        // the earlier snapshot is the only record of that state. The same rule
+        // applies when the host rendered no line numbers, because the window is
+        // then a claim rather than an observation.
+        const sameWindow =
+          later.window.start === earlier.window.start && later.window.end === earlier.window.end;
+        if (sameWindow || !later.window.rendered || !earlier.window.rendered) {
+          if (earlier.entry.output !== later.entry.output) continue;
+        }
         if (hasOrderInRange(mutationOrders, earlier.entry.order, later.entry.order)) continue;
         const estimatedTokensSaved = keeperTokens(earlier.entry) - placeholderTokens;
         if (estimatedTokensSaved <= 0) break;

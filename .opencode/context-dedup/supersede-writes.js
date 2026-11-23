@@ -8,10 +8,14 @@
  * while the write's identity, status, metadata, and audit history are kept.
  *
  * Safety policy (v1):
+ * - after a write succeeds, either a later *full, fresh* read of the same file
+ *   or a later *full write* (default tool `write`) of the same file represents
+ *   the file's current state, so the earlier write's bulky content is
+ *   redundant; the write's identity, status, metadata and audit history stay;
  * - only explicitly configured write tools (default write/edit/multiedit/
  *   patch/apply_patch) with a confirmed-success status are candidates;
  * - only a confirmed-success full read (default tool `read`) of the SAME
- *   canonical file, in the SAME workspace (cwd/root), can supersede;
+ *   canonical file, in the SAME workspace (cwd/root), can supersede by read;
  * - a read is "full" only when it starts at line 1, is not truncated, and
  *   returns content (not metadata-only). The runtime normalizes every read's
  *   input with an explicit `offset`/`limit`, so a bare `limit` is NOT proof of
@@ -21,12 +25,16 @@
  * - the read must have started no earlier than the write ended (real
  *   happens-before). Missing or malformed completion timings preserve the
  *   write; overlapping writes invalidate the read for that file;
- * - confirmed successful writes are part of the chain (same-file writes are
- *   superseded too, different-file writes cannot touch this file). Every
- *   other mutation-like record (bash, failed write, unknown tool, unresolved
- *   path) between the write and the read is a barrier, because it might have
- *   touched the file and we cannot prove the read still contains the write's
- *   final result;
+ * - for the read path, confirmed successful writes are part of the chain
+ *   (same-file writes are superseded too, different-file writes cannot touch
+ *   this file). Every other mutation-like record (bash, failed write, unknown
+ *   tool, unresolved path) between the write and the read is a barrier,
+ *   because it might have touched the file and we cannot prove the read still
+ *   contains the write's final result;
+ * - for the full-write path no barrier is needed: the later full write's own
+ *   input *is* the file's final content at that point, so whatever ran in
+ *   between is overwritten. Only happens-before, non-overlap, the user-turn
+ *   guard and the token gate apply;
  * - write call ids referenced later are protected by the adapter;
  * - writes to user-protected tools or file patterns are never redacted;
  * - estimated saved tokens must exceed the placeholder, otherwise the
@@ -57,12 +65,21 @@ import {
 } from "./core.js";
 
 export const DEFAULT_SUPERSEDE_PLACEHOLDER =
-  `${PRUNE_MARKER} Write context omitted: a later full read of the same file ` +
+  `${PRUNE_MARKER} Write context omitted: a later full read or write of the same file ` +
   "superseded it. The write's success status and file path are retained.";
 
 export const HIGH_CONFIDENCE = "high";
 
 export { DEFAULT_WRITE_TOOLS };
+
+/**
+ * Write tools whose input carries the file's complete new content. A later
+ * confirmed call to one of these fully defines the file's state, so every
+ * earlier write payload for that file is stale — the same argument that lets a
+ * later full read supersede a write. Partial writers (`edit`, `patch`) are
+ * deliberately absent: their input is a diff, not a snapshot of the file.
+ */
+export const DEFAULT_FULL_WRITE_TOOLS = Object.freeze(["write"]);
 
 /** Tools that can return a file's full current content. grep/glob are partial. */
 export const DEFAULT_SUPERSEDE_READ_TOOLS = Object.freeze(["read"]);
@@ -199,8 +216,14 @@ const TRUNCATION_HINTS = [
   "… show more",
 ];
 
-/** The runtime's own end-of-file notice, emitted only when the read reached EOF. */
-const EOF_NOTICE_RE = /\(End of file - total (\d+) lines\)\s*$/;
+/**
+ * The runtime's own end-of-file notice, emitted only when the read reached EOF.
+ * OpenCode appends its `</content>` closing tag (and sometimes a
+ * `<system-reminder>` block) AFTER the notice, so the pattern tolerates a
+ * trailing close tag instead of anchoring on the raw string end.
+ */
+const EOF_NOTICE_RE =
+  /\(End of file - total (\d+) lines\)[ \t]*(?:\n?<\/content>[\s\S]*)?$/;
 
 /** One runtime metadata line (`<path>`, `<type>`, `<file>`, `<content>`). */
 const HEADER_LINE_RE = /\s*<(?:path|type|file|content)\b[^>]*>[^\n]*(?:\n|$)/iy;
@@ -252,6 +275,7 @@ function asStringSet(list) {
 function normalizeOptions(config = {}) {
   const enabled = config.enabled !== false;
   const writeTools = asStringSet(config.writeTools ?? DEFAULT_WRITE_TOOLS);
+  const fullWriteTools = asStringSet(config.fullWriteTools ?? DEFAULT_FULL_WRITE_TOOLS);
   const readTools = asStringSet(config.readTools ?? DEFAULT_SUPERSEDE_READ_TOOLS);
   const readOnlyTools = asStringSet(config.readOnlyTools ?? DEFAULT_READ_ONLY_TOOLS);
   const barrierExemptTools = asStringSet(
@@ -282,6 +306,7 @@ function normalizeOptions(config = {}) {
     enabled,
     placeholder: validPlaceholder(config.placeholder, DEFAULT_SUPERSEDE_PLACEHOLDER),
     writeTools,
+    fullWriteTools,
     readTools,
     readOnlyTools,
     barrierExemptTools,
@@ -324,6 +349,9 @@ export function createSupersedeWritesStats() {
     missingReadStartCount: 0,
     readMissingEofProofCount: 0,
     orderFallbackCount: 0,
+    // Emission-order fallback used by the full-write chain. Kept apart from
+    // `orderFallbackCount`, which feeds `reads.order_fallback_used`.
+    writeChainOrderFallbackCount: 0,
     // `allowOrderFallback` is off but the records had everything needed for it.
     // A non-zero value with `missingWriteEndCount`/`missingReadStartCount` > 0
     // means the host omits timestamps; if the fallback is also disabled, it is
@@ -335,6 +363,9 @@ export function createSupersedeWritesStats() {
     eligibleCount: 0,
     candidateCount: 0,
     fileMatchCount: 0,
+    // Writes with a later full write of the same file: the write-chain path,
+    // independent of any read.
+    writeChainMatchCount: 0,
     versionVerifiedCount: 0,
     markedCount: 0,
     plannedPruneCount: 0,
@@ -837,7 +868,8 @@ export function planSupersedeWrites(records, config = {}) {
   // Funnel note: `candidateCount` is the *eligible* count (every confirmed
   // write with a resolvable identity, matching docs/context-dedup.md);
   // `fileMatchCount` is the narrower "has an accepted full read" step, and
-  // `prunableCount` mirrors it for readers that expect the v2 name.
+  // `prunableCount` is the narrower still "passed the version-relation checks
+  // and reached the token-benefit gate" step (see `verifiedIds`).
   stats.candidateCount = 0;
   for (const [identity, list] of writesByFile.entries()) {
     stats.candidateCount += list.length;
@@ -846,7 +878,11 @@ export function planSupersedeWrites(records, config = {}) {
   stats.eligibleCount = stats.candidateCount;
 
   const decisions = [];
-  const decide = (candidate, read) => {
+  // Writes that reached the token-benefit gate. This is the prunable-candidate
+  // set: a write whose only full read predates it (or that a barrier blocks)
+  // never gets here, and is explained by the eligibility reasons instead.
+  const verifiedIds = new Set();
+  const decide = (candidate, keeper, kind = "superseded_by_read") => {
     const originalInput = candidate.record.args;
     const redactedInput = redactWriteInput(originalInput, options.placeholder);
     const originalInputJson = contentString(originalInput);
@@ -859,7 +895,7 @@ export function planSupersedeWrites(records, config = {}) {
       originalInputTokens - redactedInputTokens + outputTokens - placeholderTokens;
     if (savedTokens <= 0) {
       if (!candidate.blockedReason) candidate.blockedReason = "no_token_benefit";
-      return;
+      return false;
     }
     const bytesRemoved =
       byteLength(originalInputJson) -
@@ -869,13 +905,13 @@ export function planSupersedeWrites(records, config = {}) {
     const estimatedTokensSaved = Math.ceil(savedTokens);
     const decision = {
       id: candidate.record.id,
-      kind: "superseded_by_read",
+      kind,
       confidence: HIGH_CONFIDENCE,
       tool: candidate.record.tool,
       order: candidate.order,
-      keeperId: read.record.id,
-      keeperOrder: read.order,
-      keeperTool: read.record.tool,
+      keeperId: keeper.record.id,
+      keeperOrder: keeper.order,
+      keeperTool: keeper.record.tool,
       field: "input+output",
       fileIdentity: candidate.identity,
       filePath: safePathLabel(candidate.identity),
@@ -893,77 +929,168 @@ export function planSupersedeWrites(records, config = {}) {
     candidate.decided = true;
     stats.tokenSavingsEstimatedIfApplied += estimatedTokensSaved;
     increment(stats.decisionKinds, decision.kind);
+    return true;
+  };
+
+  /**
+   * Is this write still carrying real file content? A payload that is already
+   * a placeholder (or empty) proves nothing about the file, so it must not be
+   * used as the "authoritative snapshot" for a chain. Only relevant on hosts
+   * that persist transformed messages; on a request-scoped copy it is a no-op.
+   */
+  function hasAuthoritativePayload(record) {
+    const input = record.args;
+    if (!input || typeof input !== "object") return false;
+    for (const key of CONTENT_KEYS) {
+      const value = input[key];
+      if (typeof value === "string" && value.length > 0 && !value.startsWith(PRUNE_MARKER)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Supersede earlier writes with a later full write of the same file.
+   *
+   * No barrier check: the later write's own input is the file's final content
+   * at that point, so an intervening command cannot make the earlier payload
+   * current again. Overlapping (concurrent) writes are skipped because the
+   * final order is not observable. The nearest later full write is used as the
+   * keeper; earlier writes therefore form a chain whose last link is the
+   * retained full write.
+   */
+  const applyFullWriteChain = (writes) => {
+    if (options.fullWriteTools.size === 0) return;
+    let nextFullWrite = null;
+    for (let index = writes.length - 1; index >= 0; index -= 1) {
+      const candidate = writes[index];
+      const isFullWrite = options.fullWriteTools.has(candidate.record.tool);
+      if (nextFullWrite && !candidate.decided) {
+        const usedOrderFallback =
+          options.allowOrderFallback &&
+          (timeEnd(candidate.record) === null || timeStart(nextFullWrite.record) === null);
+        if (!readCoversWrite(candidate.record, nextFullWrite.record, options)) {
+          // Also rejects concurrent writes: a later write that started before
+          // this one finished cannot define the final content.
+          if (!candidate.blockedReason) candidate.blockedReason = "write_not_after_write";
+          if (
+            !options.allowOrderFallback &&
+            (timeEnd(candidate.record) === null || timeStart(nextFullWrite.record) === null) &&
+            Number.isFinite(candidate.order) &&
+            Number.isFinite(nextFullWrite.order) &&
+            nextFullWrite.order > candidate.order
+          ) {
+            if (!(stats._orderFallbackSeen instanceof Set)) {
+              stats._orderFallbackSeen = new Set();
+            }
+            if (!stats._orderFallbackSeen.has(candidate.record.id)) {
+              stats._orderFallbackSeen.add(candidate.record.id);
+              stats.orderFallbackAvailableCount += 1;
+            }
+          }
+        } else if (
+          options.preserveAcrossUserTurns &&
+          candidate.userSegment !== nextFullWrite.userSegment
+        ) {
+          if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
+        } else {
+          // Recorded separately: `reads.order_fallback_used` must keep meaning
+          // "a read decision rested on emission order".
+          if (usedOrderFallback) stats.writeChainOrderFallbackCount += 1;
+          if (!verifiedIds.has(candidate.record.id)) {
+            verifiedIds.add(candidate.record.id);
+            stats.versionVerifiedCount += 1;
+          }
+          if (decide(candidate, nextFullWrite, "superseded_by_write")) {
+            stats.writeChainMatchCount += 1;
+          }
+        }
+      }
+      // Only a retained full write may keep earlier payloads superseded: a
+      // record that was itself pruned no longer holds the content, and using it
+      // as the keeper would leave every earlier decision pointing at a
+      // placeholder.
+      if (isFullWrite && !candidate.decided && hasAuthoritativePayload(candidate.record)) {
+        nextFullWrite = candidate;
+      }
+    }
   };
 
   if (!timeline.invalidRecord) {
     for (const [identity, writes] of writesByFile.entries()) {
-      const reads = readsByFile.get(identity) ?? [];
-      if (reads.length === 0) continue;
       writes.sort((left, right) => left.order - right.order);
-      reads.sort((left, right) => left.order - right.order);
+      const reads = readsByFile.get(identity) ?? [];
+      if (reads.length > 0) {
+        reads.sort((left, right) => left.order - right.order);
 
-      for (const read of reads) {
-        const pendingWrites = writes.filter(
-          (candidate) => !candidate.decided && candidate.order < read.order,
-        );
-        if (pendingWrites.length === 0) continue;
+        for (const read of reads) {
+          const pendingWrites = writes.filter(
+            (candidate) => !candidate.decided && candidate.order < read.order,
+          );
+          if (pendingWrites.length === 0) continue;
 
-        // If any pending same-file write overlaps this read, the read is
-        // unreliable for the whole file: skip it as a superseder.
-        const overlap = pendingWrites.some((candidate) =>
-          sameFileWriteOverlapsRead(candidate.record, read.record),
-        );
-        if (overlap) {
-          increment(stats.skippedReasons, "concurrent_write_overlap");
-          continue;
-        }
+          // If any pending same-file write overlaps this read, the read is
+          // unreliable for the whole file: skip it as a superseder.
+          const overlap = pendingWrites.some((candidate) =>
+            sameFileWriteOverlapsRead(candidate.record, read.record),
+          );
+          if (overlap) {
+            increment(stats.skippedReasons, "concurrent_write_overlap");
+            continue;
+          }
 
-        for (const candidate of pendingWrites) {
-          if (candidate.decided) continue;
-          if (candidate.order >= read.order) continue; // write after read: retained (Case C)
-          // `readCoversWrite` falls back to emission order only when timings are
-          // missing; record that the decision rests on weaker evidence.
-          const usedOrderFallback =
-            options.allowOrderFallback &&
-            (timeEnd(candidate.record) === null || timeStart(read.record) === null);
-          if (!readCoversWrite(candidate.record, read.record, options)) {
-            if (!candidate.blockedReason) candidate.blockedReason = "read_not_after_write";
-            // Diagnostic only: the missing evidence is a timestamp, and the
-            // emission order would still prove happens-before.
-            if (
-              !options.allowOrderFallback &&
-              (timeEnd(candidate.record) === null || timeStart(read.record) === null) &&
-              Number.isFinite(candidate.order) &&
-              Number.isFinite(read.order) &&
-              read.order > candidate.order
-            ) {
-              // One write may pair with several reads; count the write once.
-              if (!(stats._orderFallbackSeen instanceof Set)) {
-                stats._orderFallbackSeen = new Set();
+          for (const candidate of pendingWrites) {
+            if (candidate.decided) continue;
+            if (candidate.order >= read.order) continue; // write after read: retained (Case C)
+            // `readCoversWrite` falls back to emission order only when timings are
+            // missing; record that the decision rests on weaker evidence.
+            const usedOrderFallback =
+              options.allowOrderFallback &&
+              (timeEnd(candidate.record) === null || timeStart(read.record) === null);
+            if (!readCoversWrite(candidate.record, read.record, options)) {
+              if (!candidate.blockedReason) candidate.blockedReason = "read_not_after_write";
+              // Diagnostic only: the missing evidence is a timestamp, and the
+              // emission order would still prove happens-before.
+              if (
+                !options.allowOrderFallback &&
+                (timeEnd(candidate.record) === null || timeStart(read.record) === null) &&
+                Number.isFinite(candidate.order) &&
+                Number.isFinite(read.order) &&
+                read.order > candidate.order
+              ) {
+                // One write may pair with several reads; count the write once.
+                if (!(stats._orderFallbackSeen instanceof Set)) {
+                  stats._orderFallbackSeen = new Set();
+                }
+                if (!stats._orderFallbackSeen.has(candidate.record.id)) {
+                  stats._orderFallbackSeen.add(candidate.record.id);
+                  stats.orderFallbackAvailableCount += 1;
+                }
               }
-              if (!stats._orderFallbackSeen.has(candidate.record.id)) {
-                stats._orderFallbackSeen.add(candidate.record.id);
-                stats.orderFallbackAvailableCount += 1;
-              }
+              continue;
             }
-            continue;
+            if (usedOrderFallback) stats.orderFallbackCount += 1;
+            if (options.preserveAcrossUserTurns && candidate.userSegment !== read.userSegment) {
+              if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
+              continue;
+            }
+            if (hasOrderInRange(timeline.barrierOrders, candidate.order, read.order)) {
+              if (!candidate.blockedReason) candidate.blockedReason = "intervening_broad_mutation";
+              continue;
+            }
+            // Reached this point only after the read is complete, the file
+            // identity matches, and the version relation (happens-before, no
+            // overlap, no intervening mutation) is verified.
+            if (!verifiedIds.has(candidate.record.id)) {
+              verifiedIds.add(candidate.record.id);
+              stats.versionVerifiedCount += 1;
+            }
+            decide(candidate, read);
           }
-          if (usedOrderFallback) stats.orderFallbackCount += 1;
-          if (options.preserveAcrossUserTurns && candidate.userSegment !== read.userSegment) {
-            if (!candidate.blockedReason) candidate.blockedReason = "across_user_turn";
-            continue;
-          }
-          if (hasOrderInRange(timeline.barrierOrders, candidate.order, read.order)) {
-            if (!candidate.blockedReason) candidate.blockedReason = "intervening_broad_mutation";
-            continue;
-          }
-          // Reached this point only after the read is complete, the file
-          // identity matches, and the version relation (happens-before, no
-          // overlap, no intervening mutation) is verified.
-          stats.versionVerifiedCount += 1;
-          decide(candidate, read);
         }
       }
+      applyFullWriteChain(writes);
     }
   } else {
     for (const writes of writesByFile.values()) {
@@ -991,7 +1118,11 @@ export function planSupersedeWrites(records, config = {}) {
         } else if (anyReads.length > 0) {
           reason = "read_not_full";
         } else {
-          reason = "no_superseding_read";
+          // A full-write record with nothing later to supersede it is the
+          // retained chain top, not a write that "was never read".
+          reason = options.fullWriteTools.has(candidate.record.tool)
+            ? "retained_latest_full_write"
+            : "no_superseding_read";
         }
       }
       increment(stats.skippedReasons, reason);
@@ -1000,7 +1131,7 @@ export function planSupersedeWrites(records, config = {}) {
 
   decisions.sort((left, right) => left.order - right.order);
   stats.markedCount = decisions.length;
-  stats.prunableCount = stats.fileMatchCount;
+  stats.prunableCount = verifiedIds.size;
   stats.plannedPruneCount = decisions.length;
   stats.preservedCount = Math.max(0, stats.candidateCount - decisions.length);
   stats.highConfidencePruneCount = decisions.length;

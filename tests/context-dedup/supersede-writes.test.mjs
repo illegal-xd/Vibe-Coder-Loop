@@ -9,6 +9,7 @@ import {
   redactWriteInput,
 } from "../../.opencode/context-dedup/supersede-writes.js";
 import { toolRecord } from "./helpers.mjs";
+import { summarizePruning } from "../../.opencode/context-dedup/token-usage.js";
 import {
   compactReadOutput,
   createSlimEditState,
@@ -436,8 +437,19 @@ test("a failed write between the write and the read is a barrier", () => {
 test("writes with no full read still report a skip reason", () => {
   const { decisions, stats } = plan([writeRec({ id: "w1", order: 1 })]);
   assert.equal(decisions.length, 0);
-  assert.equal(stats.skippedReasons.no_superseding_read, 1);
+  // The latest full write is the retained chain top, not "a file was never read".
+  assert.equal(stats.skippedReasons.retained_latest_full_write, 1);
   assert.equal(stats.preservedCount, 1);
+
+  const partial = plan([
+    writeRec({
+      id: "e1",
+      order: 1,
+      tool: "edit",
+      args: { filePath: "src/a.ts", oldString: "a", newString: "b" },
+    }),
+  ]);
+  assert.equal(partial.stats.skippedReasons.no_superseding_read, 1);
 });
 
 test("write payloads are not serialized while planning barriers", () => {
@@ -580,6 +592,27 @@ test("the runtime's end-of-file notice proves a full read without metadata", () 
   assert.equal(capped.stats.readRejectedReasons.read_limited, 1);
 });
 
+test("a real OpenCode read output proves EOF after the closing tag", () => {
+  // OpenCode emits `(End of file - total N lines)\n</content>`, so the notice is
+  // not the last text in the string. Without this the EOF-text proof never
+  // fires on the real host and only `metadata.truncated` keeps the strategy
+  // alive.
+  const output =
+    `<path>/repo/src/a.ts</path>\n<type>file</type>\n<content>\n` +
+    `${READ_OUTPUT}(End of file - total 40 lines)\n</content>`;
+  const full = plan([
+    writeRec({ id: "w1", order: 1 }),
+    readRec({
+      id: "r1",
+      order: 2,
+      output,
+      args: { filePath: "src/a.ts", offset: 1, limit: 2000 },
+    }),
+  ]);
+  assert.equal(full.decisions.length, 1);
+  assert.equal(full.stats.readRejectedReasons.read_limited, undefined);
+});
+
 test("a read compacted by Slim Edit still proves a full read", () => {
   // Slim Edit runs on the tool result before it is persisted, so its rewrite is
   // what the next request sees. Stripping the footer there would disqualify the
@@ -643,4 +676,174 @@ test("an end-of-file notice that disagrees with the returned text proves nothing
   ]);
   assert.equal(lookAlike.decisions.length, 0);
   assert.equal(lookAlike.stats.readRejectedReasons.read_unverified, 1);
+});
+
+// --- full-write chain (no read required) ---------------------------------
+
+test("a later full write supersedes an earlier write without any read", () => {
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    writeRec({ id: "w2", order: 2 }),
+  ]);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["w1"],
+  );
+  assert.equal(decisions[0].kind, "superseded_by_write");
+  assert.equal(decisions[0].keeperId, "w2");
+  assert.equal(stats.writeChainMatchCount, 1);
+  assert.equal(stats.prunableCount, 1);
+  assert.equal(stats.confirmedReadCount, 0);
+});
+
+test("a later full write also supersedes an earlier partial edit", () => {
+  const { decisions } = plan([
+    writeRec({
+      id: "e1",
+      order: 1,
+      tool: "edit",
+      args: {
+        filePath: "src/a.ts",
+        oldString: "old line\n".repeat(80),
+        newString: "new line\n".repeat(80),
+      },
+      output: "Edit applied successfully",
+    }),
+    writeRec({ id: "w2", order: 2 }),
+  ]);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["e1"],
+  );
+  assert.equal(decisions[0].kind, "superseded_by_write");
+});
+
+test("the latest full write is kept and earlier full writes chain to it", () => {
+  const { decisions } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    writeRec({ id: "w2", order: 2 }),
+    writeRec({ id: "w3", order: 3 }),
+  ]);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["w1", "w2"],
+  );
+  const keeperOf = new Map(decisions.map((decision) => [decision.id, decision.keeperId]));
+  // Earlier payloads point at the retained chain top, never at a write that is
+  // itself pruned (a dangling keeper would leave the audit trail unresolved).
+  assert.equal(keeperOf.get("w1"), "w3");
+  assert.equal(keeperOf.get("w2"), "w3");
+});
+
+test("full-write supersession needs a later confirmed, non-overlapping write", () => {
+  // A full write followed by a partial edit: the edit has no later full write.
+  const reversed = plan([
+    writeRec({ id: "w1", order: 1 }),
+    writeRec({
+      id: "e1",
+      order: 2,
+      tool: "edit",
+      args: { filePath: "src/a.ts", oldString: "a".repeat(500), newString: "b".repeat(500) },
+      output: "ok",
+    }),
+  ]);
+  assert.equal(reversed.decisions.length, 0);
+
+  // A failed later write changed nothing, so the earlier payload is still the
+  // last content this file had.
+  const failed = plan([
+    writeRec({ id: "w1", order: 1 }),
+    writeRec({ id: "w2", order: 2, status: "error" }),
+  ]);
+  assert.equal(failed.decisions.length, 0);
+
+  // A concurrent write (started before the earlier one finished) cannot define
+  // the final content.
+  const concurrent = plan([
+    writeRec({ id: "w1", order: 1, time: { start: 1, end: 5 } }),
+    writeRec({ id: "w2", order: 2, time: { start: 4, end: 6 } }),
+  ]);
+  assert.equal(concurrent.decisions.length, 0);
+});
+
+test("fullWriteTools: [] disables the write-chain rule", () => {
+  const { decisions, stats } = plan(
+    [writeRec({ id: "w1", order: 1 }), writeRec({ id: "w2", order: 2 })],
+    { fullWriteTools: [] },
+  );
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.writeChainMatchCount, 0);
+});
+
+test("writeChainMatchCount counts decisions, not mere chain matches", () => {
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1, content: "tiny" }),
+    writeRec({ id: "w2", order: 2 }),
+  ]);
+  assert.equal(decisions.length, 0);
+  // The write reached the token gate (verified) but was not worth rewriting.
+  assert.equal(stats.versionVerifiedCount, 1);
+  assert.equal(stats.prunableCount, 1);
+  assert.equal(stats.writeChainMatchCount, 0);
+  assert.equal(stats.skippedReasons.no_token_benefit, 1);
+});
+
+test("versionVerified counts distinct writes, not read pairs", () => {
+  const { stats } = plan([
+    writeRec({ id: "w1", order: 1, content: "tiny" }),
+    readRec({ id: "r1", order: 2, metadata: { truncated: false } }),
+    readRec({ id: "r2", order: 3, metadata: { truncated: false } }),
+  ]);
+  assert.equal(stats.versionVerifiedCount, 1);
+  assert.equal(stats.prunableCount, 1);
+});
+
+test("a full write superseded by a read is not reused as the chain keeper", () => {
+  const { decisions } = plan([
+    writeRec({ id: "w1", order: 1, time: { start: 1, end: 2 } }),
+    toolRecord({
+      id: "b1",
+      order: 2,
+      tool: "bash",
+      args: { command: "npm test" },
+      output: "ok",
+      cwd: "/repo",
+      root: "/repo",
+      time: { start: 3, end: 4 },
+    }),
+    writeRec({ id: "w2", order: 3, time: { start: 5, end: 6 } }),
+    readRec({ id: "r1", order: 4, time: { start: 7, end: 8 }, metadata: { truncated: false } }),
+  ]);
+  // w2 is pruned by the read, so it holds no content and cannot keep w1 pruned.
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["w2"],
+  );
+  assert.equal(decisions[0].kind, "superseded_by_read");
+});
+
+test("a placeholder payload cannot act as the full-write keeper", () => {
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1 }),
+    writeRec({ id: "w2", order: 2, content: DEFAULT_SUPERSEDE_PLACEHOLDER }),
+  ]);
+  assert.equal(decisions.length, 0);
+  assert.equal(stats.writeChainMatchCount, 0);
+});
+
+test("the write-chain order fallback is reported separately from reads", () => {
+  const { decisions, stats } = plan([
+    writeRec({ id: "w1", order: 1, time: null }),
+    writeRec({ id: "w2", order: 2, time: null }),
+  ]);
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["w1"],
+  );
+  assert.equal(stats.writeChainOrderFallbackCount, 1);
+  assert.equal(stats.orderFallbackCount, 0);
+
+  const summary = summarizePruning({ supersedeWrites: stats });
+  assert.equal(summary.supersede_writes.writes.order_fallback_used, 1);
+  assert.equal(summary.supersede_writes.reads.order_fallback_used, undefined);
 });

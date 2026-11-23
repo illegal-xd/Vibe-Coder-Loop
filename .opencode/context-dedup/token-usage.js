@@ -472,8 +472,12 @@ const ELIGIBILITY_REASONS = new Set([
   "later_success_args_changed",
   "success_only_before_error",
   // Supersede Writes: no read, or no complete read, of the written file.
+  // `read_before_write` is an eligibility gap too: the only full read of the
+  // file happened before the write, so no superseder ever existed.
   "no_superseding_read",
   "read_not_full",
+  "read_before_write",
+  "retained_latest_full_write",
   // Slim Edit: the payload never reached the point where it could change.
   "already_slim",
   "no_change",
@@ -484,6 +488,7 @@ const ELIGIBILITY_REASONS = new Set([
   "file_unreadable",
   "range_out_of_bounds",
   "empty_range",
+  "ambiguous_range",
 ]);
 
 const APPLICATION_REASONS = new Set([
@@ -600,6 +605,12 @@ function strategySummary(stats, fallbackEnabled, scope = null) {
       marked: markedItems,
       changed: changedItems,
     };
+    // Present only when the write-chain rule fired, like the evidence gaps:
+    // absent means "no later full write superseded anything".
+    const writeChainMatches = intOrNull(stats.writeChainMatchCount) ?? 0;
+    if (writeChainMatches > 0) summary.writes.write_chain_matches = writeChainMatches;
+    const writeChainFallback = intOrNull(stats.writeChainOrderFallbackCount) ?? 0;
+    if (writeChainFallback > 0) summary.writes.order_fallback_used = writeChainFallback;
     summary.reads = {
       observed: intOrNull(stats.observedReadCount) ?? 0,
       full: intOrNull(stats.fullReadCount) ?? 0,

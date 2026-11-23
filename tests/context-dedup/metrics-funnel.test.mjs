@@ -419,6 +419,88 @@ test("every strategy reports a monotone funnel and the supersede sub-counters", 
   assert.equal(summary.total_removed_tokens.value, 60);
 });
 
+test("supersede: a full read that predates the write is an eligibility gap", () => {
+  // The model reads a file and then edits it; the write never gets a later full
+  // read. Counting that write as a "candidate" made the dashboard read as a
+  // total failure. It is an eligibility gap and must be reported as one.
+  const read = toolRecord({
+    id: "r1",
+    order: 1,
+    tool: "read",
+    args: { filePath: "a.ts" },
+    output: "content",
+    time: { start: 1, end: 2 },
+    metadata: { truncated: false },
+  });
+  const write = toolRecord({
+    id: "w1",
+    order: 2,
+    tool: "write",
+    args: { filePath: "a.ts", content: "x".repeat(2000) },
+    output: "ok",
+    time: { start: 3, end: 4 },
+  });
+  const plan = planSupersedeWrites([read, write]);
+
+  assert.equal(plan.stats.fileMatchCount, 1);
+  assert.equal(plan.stats.versionVerifiedCount, 0);
+  assert.equal(plan.stats.prunableCount, 0);
+  assert.equal(plan.stats.skippedReasons.read_before_write, 1);
+
+  const summary = summarizePruning({ supersedeWrites: plan.stats });
+  assert.equal(summary.supersede_writes.candidate_items, 0);
+  assert.equal(summary.supersede_writes.skipped.eligible.read_before_write, 1);
+  assert.equal(summary.supersede_writes.skipped.candidate.read_before_write, undefined);
+});
+
+test("supersede: the retained latest full write is an eligibility gap", () => {
+  const write = toolRecord({
+    id: "w1",
+    order: 1,
+    tool: "write",
+    args: { filePath: "a.ts", content: "x".repeat(2000) },
+    output: "ok",
+    time: { start: 1, end: 2 },
+  });
+  const plan = planSupersedeWrites([write]);
+  assert.equal(plan.stats.skippedReasons.retained_latest_full_write, 1);
+
+  const summary = summarizePruning({ supersedeWrites: plan.stats });
+  assert.equal(summary.supersede_writes.candidate_items, 0);
+  assert.equal(summary.supersede_writes.skipped.eligible.retained_latest_full_write, 1);
+  assert.equal(summary.supersede_writes.skipped.candidate.retained_latest_full_write, undefined);
+});
+
+test("supersede: a verified write is the prunable candidate", () => {
+  const write = toolRecord({
+    id: "w1",
+    order: 1,
+    tool: "write",
+    args: { filePath: "a.ts", content: "x".repeat(2000) },
+    output: "ok",
+    time: { start: 1, end: 2 },
+  });
+  const read = toolRecord({
+    id: "r1",
+    order: 2,
+    tool: "read",
+    args: { filePath: "a.ts" },
+    output: "content",
+    time: { start: 3, end: 4 },
+    metadata: { truncated: false },
+  });
+  const plan = planSupersedeWrites([write, read]);
+  assert.equal(plan.stats.prunableCount, 1);
+  assert.equal(plan.stats.markedCount, 1);
+
+  const summary = summarizePruning({ supersedeWrites: plan.stats });
+  assert.equal(summary.supersede_writes.candidate_items, 1);
+  // The planner produced the decision; only the adapter's apply step can count
+  // it as changed.
+  assert.equal(summary.supersede_writes.marked_items, 1);
+  assert.equal(summary.supersede_writes.changed_items, 0);
+});
+
 test("supersede planner exposes the write/read funnel end to end", () => {
   const write = toolRecord({ id: "w1", order: 1, tool: "write", args: { filePath: "a.ts", content: "x".repeat(2000) }, output: "ok", time: { start: 1, end: 2 } });
   const read = toolRecord({

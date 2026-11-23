@@ -196,6 +196,31 @@ test("a later read covering a larger window subsumes the earlier one", () => {
   assert.equal(stats.readWindowCollapseCount, 1);
 });
 
+test("the same window with different arguments still collapses", () => {
+  // Byte-identical deduplication requires identical canonical arguments, and
+  // OpenCode re-reads the same window with and without explicit offset/limit.
+  // Coverage must therefore be inclusive, or neither rule prunes the pair.
+  const { decisions, stats } = planDeduplication(
+    [
+      readRec({ id: "c1", order: 1, args: { filePath: "a.txt" }, output: numberedLines(1, 40) }),
+      readRec({
+        id: "c2",
+        order: 2,
+        args: { filePath: "a.txt", offset: 1, limit: 40 },
+        output: numberedLines(1, 40),
+      }),
+    ],
+    { enabled: true },
+  );
+  assert.deepEqual(
+    decisions.map((decision) => decision.id),
+    ["c1"],
+  );
+  assert.equal(decisions[0].kind, "read_window_subsumed");
+  assert.equal(stats.readWindowCollapseCount, 1);
+  assert.equal(stats.duplicateGroupCount, 0);
+});
+
 test("a narrower or mutating-interval window is preserved", () => {
   const narrower = planDeduplication(
     [
@@ -412,3 +437,31 @@ test("transform stats expose the window-collapse funnel and repeated targets", (
   assert.deepEqual(result.stats.repeatedTargets, []);
 });
 
+
+test("an identical window with a different body is preserved", () => {
+  // Same arguments, same window, but the file changed outside the conversation:
+  // the earlier snapshot is the only record of the old state.
+  const first = numberedLines(1, 40);
+  const second = first.replace("line 1 ", "LINE 1 ");
+  const { decisions } = planDeduplication(
+    [
+      readRec({ id: "c1", order: 1, args: { filePath: "a.txt", offset: 1, limit: 40 }, output: first }),
+      readRec({ id: "c2", order: 2, args: { filePath: "a.txt", offset: 1, limit: 40 }, output: second }),
+    ],
+    { enabled: true },
+  );
+  assert.equal(decisions.length, 0);
+});
+
+test("a host without rendered line numbers only collapses identical bodies", () => {
+  const body = "x".repeat(2000);
+  const output = (suffix) => `${body}${suffix}\n(End of file - total 40 lines)`;
+  const { decisions } = planDeduplication(
+    [
+      readRec({ id: "c1", order: 1, args: { filePath: "a.txt", offset: 1, limit: 100 }, output: output("") }),
+      readRec({ id: "c2", order: 2, args: { filePath: "a.txt", offset: 1, limit: 100 }, output: output("y") }),
+    ],
+    { enabled: true },
+  );
+  assert.equal(decisions.length, 0);
+});

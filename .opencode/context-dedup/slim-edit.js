@@ -23,7 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { byteLength, estimateTokens } from "./core.js";
+import { byteLength, estimateTokens, isPlainObject } from "./core.js";
 
 /** Minimal descriptions; only existing tools are touched. */
 export const DEFAULT_SLIM_TOOL_DESCRIPTIONS = Object.freeze({
@@ -37,6 +37,19 @@ export const DEFAULT_SLIM_TOOL_DESCRIPTIONS = Object.freeze({
   list: "List directory.",
   fetch: "Fetch URL.",
   webfetch: "Fetch URL.",
+});
+
+/**
+ * Parameter-level hints. A slimmed tool description is one line, and the model
+ * fills `oldString` by reading the parameter schema, so the range syntax has to
+ * be visible there as well. Kept beside the tool descriptions so both sides of
+ * the same strategy change together.
+ */
+export const DEFAULT_SLIM_PARAM_DESCRIPTIONS = Object.freeze({
+  edit: Object.freeze({
+    oldString:
+      "The exact text to replace (must be unique), or a line range like '55-64' using line numbers from read output.",
+  }),
 });
 
 /**
@@ -104,10 +117,11 @@ export function createSlimStats({ enabled = true, preview = false } = {}) {
     tokenSavingsEstimated: 0,
     tokenSavingsEstimatedIfApplied: 0,
     outputBytesRemovedActual: 0,
-    // Tool-description text actually rewritten in this round, in estimated
-    // tokens. `before - after` equals `tokenSavingsEstimated`, but reporting
-    // both sides lets the usage record show a schema-side delta instead of an
-    // unsourced saving (the message-array context delta cannot see them).
+    // Tool-description (and parameter-description) text actually rewritten in
+    // this round, in estimated tokens. `before - after` equals
+    // `tokenSavingsEstimated`, but reporting both sides lets the usage record
+    // show a schema-side delta instead of an unsourced saving (the message-array
+    // context delta cannot see them).
     descriptionTokensBefore: 0,
     descriptionTokensAfter: 0,
     skippedReasons: {},
@@ -220,6 +234,32 @@ export function createSlimEditStore(config = DEFAULT_SLIM_EDIT, options = {}) {
 }
 
 /**
+ * Parameter descriptions this module would rewrite for a tool, skipping any
+ * that are already slim. Returns the live property objects so the caller can
+ * mutate them in place; an unreadable schema yields no rewrites (fail open).
+ */
+function planParameterSlimming(output, paramSlims) {
+  if (!paramSlims) return [];
+  const parameters = output && isPlainObject(output.parameters) ? output.parameters : null;
+  const properties =
+    parameters && isPlainObject(parameters.properties) ? parameters.properties : null;
+  if (!properties) return [];
+  const rewrites = [];
+  for (const [key, next] of Object.entries(paramSlims)) {
+    const property = properties[key];
+    if (!isPlainObject(property)) continue;
+    if (typeof property.description !== "string" || property.description === next) continue;
+    rewrites.push({
+      property,
+      next,
+      before: estimateTokens(property.description),
+      after: estimateTokens(next),
+    });
+  }
+  return rewrites;
+}
+
+/**
  * Replace a verbose tool description. The model-facing schema is rebuilt for
  * every request, so this saving repeats per request rather than per session.
  *
@@ -242,11 +282,32 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
     return;
   }
   const toolID = canonicalToolID(input?.toolID);
-  const slim = DEFAULT_SLIM_TOOL_DESCRIPTIONS[toolID];
-  if (typeof slim !== "string") {
+  const defaultSlim = DEFAULT_SLIM_TOOL_DESCRIPTIONS[toolID];
+  if (typeof defaultSlim !== "string") {
     skip(stats, "unsupported_tool");
     return;
   }
+  // The default edit one-liner advertises the range syntax; with that strategy
+  // switched off the tool description must not promise it either.
+  const slim =
+    toolID === "edit" && config.lineRangeEdit === false
+      ? "Edit file by exact string replacement."
+      : defaultSlim;
+
+  // The hint advertises `lineRangeEdit`; with that strategy switched off the
+  // schema must not promise a range expansion that will never happen.
+  const paramSlims =
+    config.lineRangeEdit === false ? null : DEFAULT_SLIM_PARAM_DESCRIPTIONS[toolID];
+  const rewrites = planParameterSlimming(output, paramSlims);
+  const applyParameters = () => {
+    for (const rewrite of rewrites) {
+      try {
+        rewrite.property.description = rewrite.next;
+      } catch {
+        // Best-effort: accounting never turns a failed rewrite into an error.
+      }
+    }
+  };
 
   const seen = state.seenToolIDs;
   if (seen instanceof Set && seen.has(toolID)) {
@@ -256,6 +317,7 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
       } catch {
         // Best-effort: accounting never turns a failed rewrite into an error.
       }
+      applyParameters();
     }
     skip(stats, "duplicate_definition");
     return;
@@ -263,12 +325,16 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
 
   stats.eligibleCount += 1;
   if (output.description === slim) {
+    if (!config.preview) applyParameters();
     skip(stats, "already_slim");
     return;
   }
 
-  const beforeTokens = estimateTokens(output.description);
-  const afterTokens = estimateTokens(slim);
+  const beforeTokens =
+    estimateTokens(output.description) +
+    rewrites.reduce((total, rewrite) => total + rewrite.before, 0);
+  const afterTokens =
+    estimateTokens(slim) + rewrites.reduce((total, rewrite) => total + rewrite.after, 0);
   stats.candidateCount += 1;
   const saved = beforeTokens - afterTokens;
   if (saved <= 0) {
@@ -289,6 +355,7 @@ export function slimToolDefinition(input, output, state, config = DEFAULT_SLIM_E
     skip(stats, "output_read_only");
     return;
   }
+  applyParameters();
   stats.changedCount += 1;
   stats.tokenSavingsEstimated += saved;
   stats.descriptionTokensBefore += beforeTokens;
@@ -475,6 +542,11 @@ export function expandLineRangeEdit(
   }
 
   const lines = content.split("\n");
+  // A trailing newline produces one phantom empty element. OpenCode reports the
+  // file's line count without it, so drop it before the bounds check.
+  if (lines.length > 1 && lines[lines.length - 1] === "" && content.endsWith("\n")) {
+    lines.pop();
+  }
   const startLine = parseInt(match[1], 10);
   const endLine = match[2] ? parseInt(match[2], 10) : startLine;
   if (!(startLine >= 1 && endLine <= lines.length && startLine <= endLine)) {
@@ -483,8 +555,15 @@ export function expandLineRangeEdit(
   }
 
   const expanded = lines.slice(startLine - 1, endLine).join("\n");
-  if (expanded.length === 0) {
+  if (expanded.trim().length === 0) {
     skip(stats, "empty_range");
+    return;
+  }
+  // The native edit tool rejects a non-unique oldString. Expanding a range whose
+  // text occurs more than once would turn a line-addressed edit into a hard
+  // failure, so keep the original arguments (fail open) instead.
+  if (content.indexOf(expanded) !== content.lastIndexOf(expanded)) {
+    skip(stats, "ambiguous_range");
     return;
   }
   stats.candidateCount += 1;

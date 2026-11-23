@@ -102,6 +102,8 @@ function sanitizeSupersedeWritesStats(stats) {
     fullReadCount: Number(stats.fullReadCount) || 0,
     ambiguousWriteCount: Number(stats.ambiguousWriteCount) || 0,
     fileMatchCount: Number(stats.fileMatchCount) || 0,
+    writeChainMatchCount: Number(stats.writeChainMatchCount) || 0,
+    writeChainOrderFallbackCount: Number(stats.writeChainOrderFallbackCount) || 0,
     versionVerifiedCount: Number(stats.versionVerifiedCount) || 0,
     readRejectedReasons: compactReasons(stats.readRejectedReasons),
     orderFallbackAvailableCount: Number(stats.orderFallbackAvailableCount) || 0,

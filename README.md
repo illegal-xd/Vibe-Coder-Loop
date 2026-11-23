@@ -142,13 +142,13 @@ python3 scripts/memory/skill_draft.py generate --dry-run --json
 
 - **Dedup**：裁剪重复的只读工具结果（默认 `read` / `grep` / `glob`）；工具名、规范化参数、cwd/root、成功状态、输出内容全部一致才裁剪。
 - **Error Purge**：只裁剪结构化确认且被后续等价成功取代的工具错误（`state.status === "error"` + 非空 `state.error`）；不改成功结果中的诊断文本，不按 `error` 字样猜测。
-- **Supersede Writes**：成功写入同一文件后，若后续完整读取能代表文件当前状态，则抹去旧写操作的内容载荷（`state.input` 内容字段 + `state.output`），保留文件路径、状态、metadata 与审计身份；部分读取、失败写入、并发/版本不确定时保守保留。
-- **Slim Edit**（改编自 [openslimedit](https://github.com/ASidorenkoCode/openslimedit)，MIT）：压缩内置工具描述（每次请求重复收益）、压缩 `read` 输出（相对路径 + 去掉 type/footer）、把 `edit` 的 `oldString: "55-64"` 展开为真实行区间；三者可独立关闭。
+- **Supersede Writes**：成功写入同一文件后，若后续完整读取（或同一文件更晚的一次全量写，默认 `write`）能代表文件当前状态，则抹去旧写操作的内容载荷（`state.input` 内容字段 + `state.output`），保留文件路径、状态、metadata 与审计身份；部分读取、失败写入、身份/版本不确定时保守保留，缺时间戳时默认按发射顺序回退（可设 `allowOrderFallback:false` 关闭）。
+- **Slim Edit**（改编自 [openslimedit](https://github.com/ASidorenkoCode/openslimedit)，MIT）：压缩内置工具描述（每次请求重复收益，含 `edit.oldString` 的参数级行区间提示）、压缩 `read` 输出（绝对路径改相对、去掉 `<type>` 头，**保留** `(End of file - total N lines)` footer）、把 `edit` 的 `oldString: "55-64"` 展开为真实行区间（展开文本非唯一或纯空白时保留原参数）；三者可独立关闭。
 
 六条策略都只修改本次请求副本或工具 hook 的输出，不删除消息或工具调用；结构异常、输出/范围不一致、状态变更、跨用户轮次、callID 引用时保留原文。原始会话对象与磁盘文件不被修改。
 
 ```bash
-# Dedup + Error Purge + Supersede Writes + Slim Edit / 回退 / 幂等 / 类型契约（276 项）
+# Dedup + Error Purge + Supersede Writes + Slim Edit / 回退 / 幂等 / 类型契约（367 项）
 bash scripts/tests/test-context-dedup.sh
 ```
 

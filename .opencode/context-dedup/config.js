@@ -23,6 +23,7 @@ import {
 } from "./error-purge.js";
 import {
   DEFAULT_BARRIER_EXEMPT_TOOLS,
+  DEFAULT_FULL_WRITE_TOOLS,
   DEFAULT_SUPERSEDE_PLACEHOLDER,
   DEFAULT_SUPERSEDE_READ_TOOLS,
   DEFAULT_WRITE_TOOLS,
@@ -96,6 +97,12 @@ export const DEFAULT_CONFIG = Object.freeze({
     preview: null,
     placeholder: DEFAULT_SUPERSEDE_PLACEHOLDER,
     writeTools: Object.freeze([...DEFAULT_WRITE_TOOLS]),
+    /**
+     * Write tools that carry the file's complete new content. A later call to
+     * one of these supersedes every earlier write payload for the same file,
+     * with no read required. Set `[]` to disable the write-chain rule.
+     */
+    fullWriteTools: Object.freeze([...DEFAULT_FULL_WRITE_TOOLS]),
     readTools: Object.freeze([...DEFAULT_SUPERSEDE_READ_TOOLS]),
     /** Tools that cannot modify files; they never block a supersession. */
     barrierExemptTools: Object.freeze([...DEFAULT_BARRIER_EXEMPT_TOOLS]),
@@ -446,6 +453,30 @@ function resolveSupersedeWrites(raw, env, globalPreview) {
       ? globalPreview
       : assertBoolean(raw.preview, "supersedeWrites.preview");
 
+  const writeTools = stringList(
+    raw.writeTools,
+    "supersedeWrites.writeTools",
+    DEFAULT_CONFIG.supersedeWrites.writeTools,
+  );
+  let fullWriteTools = optionalStringList(
+    raw.fullWriteTools,
+    "supersedeWrites.fullWriteTools",
+    DEFAULT_CONFIG.supersedeWrites.fullWriteTools,
+  );
+  // A full-write tool that is not a write tool can never be a candidate, so the
+  // chain would silently never fire. Fail closed when it was configured
+  // explicitly; intersect silently when only `writeTools` narrowed a default.
+  const invalidFullWriteTools = fullWriteTools.filter((tool) => !writeTools.includes(tool));
+  if (invalidFullWriteTools.length > 0) {
+    if (raw.fullWriteTools !== undefined) {
+      throw new ConfigError(
+        "supersedeWrites.fullWriteTools must be a subset of supersedeWrites.writeTools " +
+          `(not in writeTools: ${invalidFullWriteTools.join(", ")})`,
+      );
+    }
+    fullWriteTools = fullWriteTools.filter((tool) => writeTools.includes(tool));
+  }
+
   return {
     enabled: isTruthy(env.VIBE_CONTEXT_SUPERSEDE_WRITES_DISABLED) ? false : enabled,
     preview: isTruthy(env.VIBE_CONTEXT_SUPERSEDE_WRITES_PREVIEW) ? true : preview,
@@ -454,11 +485,9 @@ function resolveSupersedeWrites(raw, env, globalPreview) {
       "supersedeWrites.placeholder",
       DEFAULT_CONFIG.supersedeWrites.placeholder,
     ),
-    writeTools: stringList(
-      raw.writeTools,
-      "supersedeWrites.writeTools",
-      DEFAULT_CONFIG.supersedeWrites.writeTools,
-    ),
+    writeTools,
+    // Empty list disables the write-chain rule (protection-style opt-out).
+    fullWriteTools,
     readTools: stringList(
       raw.readTools,
       "supersedeWrites.readTools",

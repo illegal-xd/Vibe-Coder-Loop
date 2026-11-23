@@ -237,6 +237,39 @@ test("supersedeWrites uses order fallback by default and can be disabled", () =>
   );
 });
 
+test("supersedeWrites.fullWriteTools defaults to write and accepts an opt-out", () => {
+  assert.deepEqual(resolveConfig({}, {}).supersedeWrites.fullWriteTools, ["write"]);
+
+  const off = resolveConfig({ supersedeWrites: { fullWriteTools: [] } }, {});
+  assert.deepEqual(off.supersedeWrites.fullWriteTools, []);
+
+  const custom = resolveConfig(
+    {
+      supersedeWrites: {
+        writeTools: ["write", "overwrite"],
+        fullWriteTools: ["write", "overwrite"],
+      },
+    },
+    {},
+  );
+  assert.deepEqual(custom.supersedeWrites.fullWriteTools, ["write", "overwrite"]);
+
+  // A full-write tool outside `writeTools` can never be a candidate: explicit
+  // configuration fails closed instead of silently disabling the chain.
+  assert.throws(
+    () => resolveConfig({ supersedeWrites: { fullWriteTools: ["overwrite"] } }, {}),
+    ConfigError,
+  );
+  assert.throws(
+    () => resolveConfig({ supersedeWrites: { fullWriteTools: "write" } }, {}),
+    ConfigError,
+  );
+
+  // Narrowing writeTools intersects the defaulted full-write list silently.
+  const narrowed = resolveConfig({ supersedeWrites: { writeTools: ["edit"] } }, {});
+  assert.deepEqual(narrowed.supersedeWrites.fullWriteTools, []);
+});
+
 test("referenceProtection defaults to any and accepts strong", () => {
   assert.equal(resolveConfig({}, {}).referenceProtection, "any");
   assert.equal(

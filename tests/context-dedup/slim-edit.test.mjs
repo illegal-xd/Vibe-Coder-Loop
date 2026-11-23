@@ -125,6 +125,67 @@ test("line range oldString expands before the edit tool runs", async () => {
   }
 });
 
+test("a non-unique or whitespace-only line range keeps the original arguments", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-slim-ambiguous-"));
+  try {
+    const file = path.join(directory, "sample.txt");
+    await writeFile(file, "alpha\nbeta\ngamma\n...\nalpha\nbeta\ngamma\n");
+
+    // Expanding 1-2 would produce an oldString the native edit tool rejects as
+    // ambiguous, so the range must be left untouched instead of breaking it.
+    const duplicatedState = createSlimEditState(slimConfig());
+    const duplicated = { args: { filePath: "sample.txt", oldString: "1-2", newString: "x" } };
+    expandLineRangeEdit(directory, { tool: "edit" }, duplicated, duplicatedState, slimConfig());
+    assert.equal(duplicated.args.oldString, "1-2");
+    assert.equal(duplicatedState.lineRangeEdit.changedCount, 0);
+    assert.equal(duplicatedState.lineRangeEdit.skippedReasons.ambiguous_range, 1);
+
+    const blankFile = path.join(directory, "blank.txt");
+    await writeFile(blankFile, "alpha\n\n\nomega\n");
+    const blankState = createSlimEditState(slimConfig());
+    const blanks = { args: { filePath: "blank.txt", oldString: "2-3", newString: "x" } };
+    expandLineRangeEdit(directory, { tool: "edit" }, blanks, blankState, slimConfig());
+    assert.equal(blanks.args.oldString, "2-3");
+    assert.equal(blankState.lineRangeEdit.changedCount, 0);
+    assert.equal(blankState.lineRangeEdit.skippedReasons.empty_range, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the edit definition carries the line-range hint on oldString too", () => {
+  const state = createSlimEditState(slimConfig());
+  const output = {
+    description: "Performs exact string replacements in files. ".repeat(20),
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "The absolute path to the file to modify" },
+        oldString: { type: "string", description: "The text to replace" },
+        newString: { type: "string", description: "The text to replace it with" },
+      },
+    },
+  };
+
+  slimToolDefinition({ toolID: "edit" }, output, state, slimConfig());
+  assert.match(output.parameters.properties.oldString.description, /line range/);
+  assert.equal(
+    output.parameters.properties.filePath.description,
+    "The absolute path to the file to modify",
+  );
+  assert.equal(state.toolDescriptions.changedCount, 1);
+
+  // With lineRangeEdit off, the schema must not advertise a feature that never
+  // runs; only the tool-level description is slimmed.
+  const offConfig = slimConfig({ lineRangeEdit: false });
+  const offState = createSlimEditState(offConfig);
+  const offOutput = JSON.parse(JSON.stringify(output));
+  offOutput.parameters.properties.oldString.description = "The text to replace";
+  slimToolDefinition({ toolID: "edit" }, offOutput, offState, offConfig);
+  assert.equal(offOutput.parameters.properties.oldString.description, "The text to replace");
+  assert.equal(offOutput.description.includes("line range"), false);
+});
+
 test("literal oldString wins over a line range and preview never mutates", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "vibe-slim-preview-"));
   try {

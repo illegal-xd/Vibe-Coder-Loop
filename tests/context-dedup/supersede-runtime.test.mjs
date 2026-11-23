@@ -283,11 +283,41 @@ test("a stale read (started before the write ended) keeps the write", () => {
 test("a concurrent same-file write invalidates the read for the whole file", () => {
   const { result } = transform([
     { id: "a1", parts: [writePart({ callID: "w1", time: { start: 1, end: 2 } })] },
-    { id: "a2", parts: [writePart({ callID: "w2", time: { start: 5, end: 30 } })] },
+    {
+      id: "a2",
+      // A partial writer: it cannot define the whole file, so the only possible
+      // superseder here is the read, and that read is concurrent.
+      parts: [
+        toolPart({
+          id: "part_e2",
+          messageID: "a2",
+          callID: "w2",
+          tool: "edit",
+          input: { filePath: "src/a.ts", oldString: "a", newString: "b" },
+          output: "Edit applied successfully",
+          status: "completed",
+          time: { start: 5, end: 30 },
+        }),
+      ],
+    },
     { id: "a3", parts: [readPart({ time: { start: 20, end: 21 } })] },
   ]);
 
   assert.equal(result.changed, false);
+  assert.equal(result.stats.supersedeWrites.skippedReasons.concurrent_write_overlap, 1);
+});
+
+test("a later full write supersedes the earlier payload even when a read overlaps it", () => {
+  // The read cannot prove the file state, but the later full write's own input
+  // does: its content is what the file holds once the call completes.
+  const { result } = transform([
+    { id: "a1", parts: [writePart({ callID: "w1", time: { start: 1, end: 2 } })] },
+    { id: "a2", parts: [writePart({ callID: "w2", time: { start: 5, end: 30 } })] },
+    { id: "a3", parts: [readPart({ time: { start: 20, end: 21 } })] },
+  ]);
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.supersedeWrites.decisionKinds.superseded_by_write, 1);
   assert.equal(result.stats.supersedeWrites.skippedReasons.concurrent_write_overlap, 1);
 });
 
